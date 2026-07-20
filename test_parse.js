@@ -3,7 +3,7 @@
  */
 "use strict";
 const fs = require("fs");
-const { parseReplay, extractCar, runStats } = require("./acreplay.js");
+const { parseReplay, extractCar, runStats } = require("./ui/acreplay.js");
 
 const path = process.argv[2];
 if (!path) { console.error("usage: node test_parse.js <file.acreplay>"); process.exit(1); }

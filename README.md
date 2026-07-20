@@ -17,7 +17,11 @@ Open `ui/index.html` in any browser. Drop a `.acreplay` from
 - timeline scrubber replays the run; red ticks are lap-line crossings
 
 Zero runtime dependencies. The viewer is `ui/index.html` + `ui/acreplay.js`
-(parser); `test_parse.js` is a Node smoke test: `node test_parse.js <file.acreplay>`.
+(parser). A sample replay ships in `samples/` — run the Node smoke test on it:
+
+```
+node test_parse.js samples/centrifuge.acreplay
+```
 
 ## How the parser works (the interesting part)
 
