@@ -208,6 +208,41 @@ fn find_track(name: String) -> Result<Vec<TrackFile>, String> {
     Err(format!("track '{}' not found in any Steam library", name))
 }
 
+// The shared driver 3D model (content/driver/driver.kn5) + this car's steering
+// animation (content/cars/<car_id>/animations/steer.ksanim). Returns [driver, steer]
+// (steer omitted if absent). The car's own driver override lives in the packed
+// data.acd, which we don't read — the default driver is a close-enough stand-in.
+#[tauri::command]
+fn find_driver(car_id: String) -> Result<Vec<TrackFile>, String> {
+    for lib in steam_libraries() {
+        let base = lib
+            .join("steamapps")
+            .join("common")
+            .join("assettocorsa")
+            .join("content");
+        let driver = base.join("driver").join("driver.kn5");
+        if driver.exists() {
+            let mut out = vec![TrackFile {
+                name: "driver".to_string(),
+                path: driver.to_string_lossy().to_string(),
+            }];
+            let anim = base
+                .join("cars")
+                .join(&car_id)
+                .join("animations")
+                .join("steer.ksanim");
+            if anim.exists() {
+                out.push(TrackFile {
+                    name: "steer".to_string(),
+                    path: anim.to_string_lossy().to_string(),
+                });
+            }
+            return Ok(out);
+        }
+    }
+    Err("driver model not found in any Steam library".to_string())
+}
+
 // Locate a car's visual model kn5 from the Steam AC install. Cars live at
 // content/cars/<car_id>/ and ship several kn5 (the body plus tiny collider.kn5
 // / driver.kn5). We want the visual body: prefer <car_id>.kn5 if it exists,
@@ -1479,6 +1514,7 @@ pub fn run() {
             list_screenshots,
             find_track,
             find_car,
+            find_driver,
             list_tracks,
             replays_for_track,
             track_outline,

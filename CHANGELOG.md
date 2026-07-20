@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-07-20 — steered wheels + driver model (WIP), camera refinements
+
+### Added
+- Wheels are split out of the car body during kn5 parse (by `WHEEL_LF/RF/LR/RR`
+  nodes, keeping each centre pivot) and steered every frame to point along the
+  actual direction of travel (the slip angle) while the body keeps its crab. No
+  steering-lock cap — the wheels follow the line even in a 90°+ slide.
+- Driver model + steering animation groundwork: `parseDriver` (skeleton + class-3
+  skinned meshes with bone weights/inverse-bind) and `parseKsanim` (v2: per-node
+  position/quaternion/scale keyframes) in kn5.js; `find_driver` Tauri command
+  locates the shared driver kn5 + the car's `steer.ksanim`. The driver renders at
+  its bind (seated) pose for now — skinned steering animation is next.
+
+### Changed
+- Camera: fully-zoomed view drops the eye to the car's level and tilts up the road
+  with a wider FOV (was looking at the ground); zoom range pulled back slightly.
+- Playback defaults to 1×; the transport bar auto-hides when idle; the HUD metric
+  chips are slimmer/subtler.
+
+### Fixed
+- Close-up clipping: the eye no longer sits inside the car body when zoomed (min
+  distance clears the tail), and the follow-cam near plane is small enough not to
+  clip the car.
+
 ## 2026-07-20 — drone follow-cam, world collision, drift-heading fix, lighting
 
 ### Added

@@ -82,16 +82,17 @@
   }
 
   #hud {
-    position: absolute; left: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px;
-    pointer-events: none;
+    position: absolute; left: 10px; top: 10px; display: flex; flex-direction: column; gap: 3px;
+    pointer-events: none; max-width: 46vw;
   }
   .chip {
-    background: rgba(16,21,30,0.82); border: 1px solid var(--edge); border-radius: 5px;
-    padding: 6px 10px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
-    font-variant-numeric: tabular-nums;
+    background: rgba(10,13,19,0.42); border: 1px solid rgba(255,255,255,0.05); border-radius: 4px;
+    padding: 2px 7px; font-family: "Cascadia Code", Consolas, monospace; font-size: 10.5px;
+    font-variant-numeric: tabular-nums; color: var(--muted); line-height: 1.4;
+    letter-spacing: -0.01em; backdrop-filter: blur(2px);
   }
-  .chip b { color: var(--accent); font-weight: 600; }
-  .chip .dim { color: var(--muted); }
+  .chip b { color: #dbe2ee; font-weight: 600; }   /* values read, chrome recedes */
+  .chip .dim { color: var(--muted); opacity: 0.7; }
 
   #help {
     position: absolute; right: 12px; top: 12px;
@@ -263,9 +264,12 @@
   .seg.on { color: var(--ink); border-color: var(--accent); background: rgba(226,58,46,0.10); }
 
   #transport {
-    flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
-    padding: 8px 16px; border-top: 1px solid var(--edge);
+    position: absolute; left: 0; right: 0; bottom: 0; z-index: 6;
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px 12px;
+    background: linear-gradient(to top, rgba(6,8,12,0.9), rgba(6,8,12,0));
+    transition: opacity .45s ease, transform .45s ease;
   }
+  #transport.faded { opacity: 0; transform: translateY(75%); pointer-events: none; }
   #scrub { flex: 1; height: 34px; cursor: pointer; }
   #timelabel {
     font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
@@ -291,9 +295,9 @@
   <button id="btnLap" class="on">lap only</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
-    <option value="1">1×</option>
+    <option value="1" selected>1×</option>
     <option value="6">6×</option>
-    <option value="24" selected>24×</option>
+    <option value="24">24×</option>
     <option value="60">60×</option>
   </select>
   <button id="btnOpen">open replay…</button>
@@ -321,11 +325,10 @@
     <div class="chip" id="chipTrack" style="color:var(--accent)">NO TRACK LOADED — the ribbon is your driven line, not the road. Click "load track kn5…" to render the real track.</div>
   </div>
   <div id="help" class="hidden">drag orbit · wheel zoom · right-drag pan</div>
-</div>
-
-<div id="transport" class="hidden">
-  <canvas id="scrub" height="34" aria-label="Timeline scrubber"></canvas>
-  <div id="timelabel"></div>
+  <div id="transport" class="hidden">
+    <canvas id="scrub" height="34" aria-label="Timeline scrubber"></canvas>
+    <div id="timelabel"></div>
+  </div>
 </div>
 
 <input type="file" id="filepick" accept=".acreplay" class="hidden">
@@ -408,7 +411,7 @@
 "use strict";
 /* ===================== state ===================== */
 let replay = null, ex = null, stats = null;
-let playing = true, rate = 24, tCur = 0;
+let playing = true, rate = 1, tCur = 0;
 let colorMode = "speed";
 let lapOnly = true;
 
@@ -552,6 +555,9 @@ const tLoc = {
 
 const IDENT4 = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
 let carGroups = null;   // uploaded car model mesh groups (LOD0)
+let carWheels = null;   // steerable wheel groups {corner, pivot, front, groups}
+let carDriver = null;   // { groups, skel, anim } — driver model (bind pose for now)
+let carSteerAngle = 0;  // front-wheel steer this frame (radians), set by carModelMatrix
 let showCar = true;     // render the car model on the cursor
 let showLine = true;    // render the driven-line ribbon
 let carLift = 0.0;      // vertical placement tweak (metres)
@@ -682,6 +688,22 @@ function carModelMatrix(fpos) {
     }
   }
   const rx = -(uy * hz - uz * hy), ry = -(uz * hx - ux * hz), rz = -(ux * hy - uy * hx); // right
+  // steer angle for the FRONT wheels: turn them to point along the actual travel
+  // direction (the line) while the body keeps its crabbed heading. It's the slip
+  // angle, capped at the steering lock. (X = right, Z = nose in the car's frame.)
+  {
+    let sx = vx, sy = vy, sz = vz;
+    const sd = sx * ux + sy * uy + sz * uz; sx -= ux * sd; sy -= uy * sd; sz -= uz * sd; // travel ⟂ up
+    const sl = Math.hypot(sx, sy, sz);
+    if (sl > 1e-4) {
+      sx /= sl; sy /= sl; sz /= sl;
+      const vH = sx * hx + sy * hy + sz * hz;   // along nose (+Z local)
+      const vR = sx * rx + sy * ry + sz * rz;   // along right (+X local)
+      // point the wheels EXACTLY at the line — no steering-lock cap. The T-180
+      // crabs to 90°+ and the wheels follow all the way (atan2 handles the full range).
+      carSteerAngle = Math.atan2(vR, vH);
+    }
+  }
   // local axes → world: X→right, Y→up, Z(nose)→heading
   return new Float32Array([
     rx, ry, rz, 0,
@@ -689,6 +711,31 @@ function carModelMatrix(fpos) {
     hx, hy, hz, 0,
     px0 + ux * carLift, py0 + uy * carLift, pz0 + uz * carLift, 1,
   ]);
+}
+
+// draw a set of car mesh groups under a model matrix (progT must be active with its
+// shared uniforms already set; sets uModel per call so wheels can differ from body)
+function drawCarGroups(groups, modelMat) {
+  gl.uniformMatrix4fv(tLoc.model, false, modelMat);
+  for (const g of groups) {
+    gl.bindTexture(gl.TEXTURE_2D, g.tex);
+    gl.uniform1f(tLoc.alphaTest, g.alphaTested ? 1 : 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
+    gl.enableVertexAttribArray(tLoc.pos); gl.vertexAttribPointer(tLoc.pos, 3, gl.FLOAT, false, 12, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, g.nrmBuf);
+    gl.enableVertexAttribArray(tLoc.nrm); gl.vertexAttribPointer(tLoc.nrm, 3, gl.FLOAT, false, 12, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, g.uvBuf);
+    gl.enableVertexAttribArray(tLoc.uv); gl.vertexAttribPointer(tLoc.uv, 2, gl.FLOAT, false, 8, 0);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
+    gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+  }
+}
+// carMat ⊗ (rotate about model-up through the wheel centre by `steer`) — steers a
+// front wheel to point down the line. X=right, Z=nose in the car's local frame.
+function wheelSteerModel(carMat, pivot, steer) {
+  const c = Math.cos(steer), s = Math.sin(steer), px = pivot[0], pz = pivot[2];
+  const S = [c, 0, -s, 0,  0, 1, 0, 0,  s, 0, c, 0,  px * (1 - c) - s * pz, 0, pz * (1 - c) + s * px, 1];
+  return new Float32Array(mMul(carMat, S));
 }
 
 function makeFallbackTexture(rgb) {
@@ -904,8 +951,12 @@ function followUpdate(fp, dt) {
   // shape targets: right on the car's tail, low, opening out on straights. Much
   // closer than before — the framing pass below guarantees the car stays in shot.
   const DMIN = 4, DMAX = 18, HMIN = 2, HMAX = 6.5;
+  // zoomN: 0 at the default distance, 1 fully zoomed in (wheel min). As it zooms in
+  // the eye must also DROP to the car's level, or it ends up above the car looking
+  // down at the ground; low + behind lets the framing tilt up the road instead.
+  const zoomN = Math.max(0, Math.min(1, (1 - (follow.distMul || 1)) / 0.58));
   const distT = (DMIN + (DMAX - DMIN) * speedN * (1 - 0.55 * curveN)) * (follow.distMul || 1);
-  const heightT = HMIN + (HMAX - HMIN) * speedN * (1 - 0.5 * curveN);
+  const heightT = (HMIN + (HMAX - HMIN) * speedN * (1 - 0.5 * curveN)) * (1 - 0.8 * zoomN);
   const sideT = distT * 0.34 * curveN * turnSign * FOLLOW_SWING;   // swing into the corner
   const bankT = 0.16 * curveN * speedN * turnSign * FOLLOW_SWING;  // drone roll into the turn
   const R = rig;
@@ -940,21 +991,23 @@ function followUpdate(fp, dt) {
   let exW = pivot[0] + (desx - pivot[0]) * fr;
   let eyW = pivot[1] + (desy - pivot[1]) * fr;
   let ezW = pivot[2] + (desz - pivot[2]) * fr;
-  // never ram the car: keep the eye outside a small sphere around it
-  const MINCAR = 2.5;
+  // never ram the car: keep the eye outside the car BODY, not just its centre. The
+  // T-180's tail reaches ~2.7 m behind its origin, so a smaller radius put the low
+  // zoomed eye inside the model (backfaces + near-clip glitch). Sit just behind it.
+  const MINCAR = 3.6;
   const cvx = exW - px, cvy = eyW - py, cvz = ezW - pz, cvl = Math.hypot(cvx, cvy, cvz);
   if (cvl > 1e-4 && cvl < MINCAR) { const g = MINCAR / cvl; exW = px + cvx * g; eyW = py + cvy * g; ezW = pz + cvz * g; }
   // anti-clip floor: keep the eye a minimum clearance on the +up side of the road
   const upDot = (exW - px) * R.up[0] + (eyW - py) * R.up[1] + (ezW - pz) * R.up[2];
-  const MINH = 1.6;
+  const MINH = 1.6 * (1 - 0.8 * zoomN);   // let the eye ride low when fully zoomed in
   if (upDot < MINH) { const add = MINH - upDot; exW += R.up[0] * add; eyW += R.up[1] * add; ezW += R.up[2] * add; }
   R.eye = R.eye || [0, 0, 0];
   R.eye[0] = exW; R.eye[1] = eyW; R.eye[2] = ezW;   // rigid, no lag
   // FOV + framing height ease SLOWLY toward their close/far targets: as it closes in
   // the FOV widens and the car sinks lower, angling the lens up the road ahead.
   const closeN = Math.max(0, Math.min(1, (22 - R.dist) / (22 - 4)));
-  const fovT = 0.85 + 0.40 * closeN;                // ~49° far → ~72° right on the tail
-  const frameYT = -0.28 - 0.50 * closeN;            // fully zoomed → car sits low, lens tilts up the road
+  const fovT = Math.min(1.55, 0.85 + 0.40 * closeN + 0.28 * zoomN);  // wide-angle when zoomed in (~88°)
+  const frameYT = -0.28 - 0.50 * closeN - 0.10 * zoomN;              // fully zoomed → car sits low, lens tilts up the road
   R.fov = (R.fov == null) ? fovT : R.fov + (fovT - R.fov) * kSlow;
   R.frameY = (R.frameY == null) ? frameYT : R.frameY + (frameYT - R.frameY) * kSlow;
   // --- framing guarantee (robust): place the car at R.frameY using the STABLE
@@ -1110,7 +1163,9 @@ function render() {
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   if (!ex) return;
   const fa = followActive();
-  const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, 2, 60000);
+  // near plane: small in follow mode (the car is right in front — a 2u near plane
+  // clipped it like a solid object); larger for the overview cam's depth precision.
+  const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, fa ? 0.3 : 2, 60000);
   const view = mLookAt(camEye(), fa ? follow.rig.look : cam.target, fa ? (follow.rig.viewUp || follow.rig.up) : [0, 1, 0]);
   const mvp = new Float32Array(mMul(proj, view));
   const fogD = 0.35 / cam.dist;
@@ -1183,25 +1238,17 @@ function render() {
     const cm = carModelMatrix(tCur / ex.dt);
     gl.useProgram(progT);
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
-    gl.uniformMatrix4fv(tLoc.model, false, cm);
     gl.uniform1f(tLoc.fogD, fogD);
     gl.uniform3f(tLoc.fogC, 0.039, 0.051, 0.075);
     gl.uniform3f(tLoc.sun, 0.32, 0.82, 0.47);
     gl.uniform1i(tLoc.tex, 0);
     gl.uniform1f(tLoc.alpha, 1.0);
     gl.activeTexture(gl.TEXTURE0);
-    for (const g of carGroups) {
-      gl.bindTexture(gl.TEXTURE_2D, g.tex);
-      gl.uniform1f(tLoc.alphaTest, g.alphaTested ? 1 : 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
-      gl.enableVertexAttribArray(tLoc.pos); gl.vertexAttribPointer(tLoc.pos, 3, gl.FLOAT, false, 12, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, g.nrmBuf);
-      gl.enableVertexAttribArray(tLoc.nrm); gl.vertexAttribPointer(tLoc.nrm, 3, gl.FLOAT, false, 12, 0);
-      gl.bindBuffer(gl.ARRAY_BUFFER, g.uvBuf);
-      gl.enableVertexAttribArray(tLoc.uv); gl.vertexAttribPointer(tLoc.uv, 2, gl.FLOAT, false, 8, 0);
-      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
-      gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+    drawCarGroups(carGroups, cm);                              // body — keeps its crab
+    if (carWheels) for (const w of carWheels) {                // all four wheels steer to the line
+      drawCarGroups(w.groups, wheelSteerModel(cm, w.pivot, carSteerAngle));
     }
+    if (carDriver) drawCarGroups(carDriver.groups, cm);        // driver (bind pose for now)
     gl.disableVertexAttribArray(tLoc.nrm); gl.disableVertexAttribArray(tLoc.uv);
     if (showThruster) {
       const inten = turbineIntensity(i);
@@ -1257,7 +1304,7 @@ cv.addEventListener("contextmenu", e => e.preventDefault());
 cv.addEventListener("wheel", e => {
   e.preventDefault();
   if (follow.on) {
-    follow.distMul = Math.max(0.3, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
+    follow.distMul = Math.max(0.42, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
   } else {
     cam.dist = Math.max(50, Math.min(50000, cam.dist * (e.deltaY > 0 ? 1.12 : 0.89)));
   }
@@ -1312,6 +1359,22 @@ let scrubbing = false;
 scrub.addEventListener("mousedown", e => { scrubbing = true; scrubTo(e); });
 addEventListener("mousemove", e => { if (scrubbing) scrubTo(e); });
 addEventListener("mouseup", () => { scrubbing = false; });
+
+/* auto-hide the transport: fade + drop away when idle, reveal on activity */
+(function () {
+  const tp = document.getElementById("transport");
+  let idle = 0;
+  function poke() {
+    tp.classList.remove("faded");
+    clearTimeout(idle);
+    idle = setTimeout(() => { if (!scrubbing && !tp.matches(":hover")) tp.classList.add("faded"); }, 2600);
+  }
+  window.pokeTransport = poke;                 // called when a replay loads
+  addEventListener("mousemove", poke);
+  addEventListener("keydown", poke);
+  tp.addEventListener("mouseenter", () => { tp.classList.remove("faded"); clearTimeout(idle); });
+  tp.addEventListener("mouseleave", poke);
+})();
 
 document.getElementById("btnPlay").addEventListener("click", function () {
   playing = !playing;
@@ -1623,6 +1686,22 @@ function resetTrackScene() {
     }
     carGroups = null;
   }
+  if (carWheels) {
+    for (const w of carWheels) for (const g of w.groups) {
+      gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
+      gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
+      if (g.tex) gl.deleteTexture(g.tex);
+    }
+    carWheels = null;
+  }
+  if (carDriver) {
+    for (const g of carDriver.groups) {
+      gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
+      gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
+      if (g.tex) gl.deleteTexture(g.tex);
+    }
+    carDriver = null;
+  }
   bufs.trackIdxN = 0;
   edgeIndex = null;
   worldColl = null;
@@ -1630,12 +1709,12 @@ function resetTrackScene() {
   if (ct) ct.classList.remove("hidden");
 }
 
-// upload a parsed kn5 scene's mesh groups to the GPU (shared by track + car)
-async function uploadSceneGroups(scene, fallbackRGB) {
+// upload a list of baked kn5 mesh groups to the GPU
+async function uploadGroups(groupList, scene, fallbackRGB) {
   const texByName = {};
   for (const t of scene.textures) texByName[t.name] = t;
-  const groups = [];
-  for (const g of scene.groups) {
+  const out = [];
+  for (const g of groupList) {
     const mat = scene.materials[g.materialId] || {};
     let tex;
     try {
@@ -1643,14 +1722,16 @@ async function uploadSceneGroups(scene, fallbackRGB) {
       tex = entry ? await makeSceneTexture(entry.blob, entry.name) : makeFallbackTexture(fallbackRGB);
     } catch (e) { tex = makeFallbackTexture(fallbackRGB); }
     const mk = (data, target) => { const b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); return b; };
-    groups.push({
+    out.push({
       posBuf: mk(g.pos, gl.ARRAY_BUFFER), nrmBuf: mk(g.nrm, gl.ARRAY_BUFFER),
       uvBuf: mk(g.uv, gl.ARRAY_BUFFER), idxBuf: mk(g.idx, gl.ELEMENT_ARRAY_BUFFER),
       count: g.idx.length, tex, alphaTested: !!mat.alphaTested,
     });
   }
-  return groups;
+  return out;
 }
+// shared by track + car
+async function uploadSceneGroups(scene, fallbackRGB) { return uploadGroups(scene.groups, scene, fallbackRGB); }
 
 async function loadCarModel(carId) {
   if (!inTauri || !carId) return;
@@ -1660,7 +1741,23 @@ async function loadCarModel(carId) {
     const ab = await tinvoke("read_file", { path: files[0].path });
     const scene = KN5.extractScene(ab, { lod0Only: true });
     carGroups = await uploadSceneGroups(scene, [150, 152, 158]);
-  } catch (e) { console.warn("car model load failed:", e); carGroups = null; }
+    // steerable wheels (front pair steers to the line; the body keeps its crab)
+    carWheels = [];
+    for (const w of (scene.wheels || [])) {
+      const gpu = await uploadGroups(w.groups, scene, [150, 152, 158]);
+      carWheels.push({ corner: w.corner, pivot: w.pivot, front: /F$/.test(w.corner), groups: gpu });
+    }
+    // driver: the shared AC driver model at its bind (seated, hands-on-wheel) pose
+    try {
+      const df = await tinvoke("find_driver", { carId });
+      if (df && df.length) {
+        const dab = await tinvoke("read_file", { path: df[0].path });
+        const dscene = KN5.parseDriver(dab);
+        const dgroups = await uploadGroups(dscene.meshes, dscene, [170, 172, 178]);
+        carDriver = { groups: dgroups };
+      }
+    } catch (e) { console.warn("driver load failed:", e); carDriver = null; }
+  } catch (e) { console.warn("car model load failed:", e); carGroups = null; carWheels = null; carDriver = null; }
 }
 
 function loadReplayBuffer(ab, name) {
@@ -1675,6 +1772,7 @@ function loadReplayBuffer(ab, name) {
     document.getElementById("hud").classList.remove("hidden");
     document.getElementById("help").classList.remove("hidden");
     document.getElementById("transport").classList.remove("hidden");
+    if (window.pokeTransport) window.pokeTransport();   // show, then auto-fade when idle
     const sel = document.getElementById("carsel");
     if (replay.cars.length > 1) {
       sel.classList.remove("hidden");

@@ -254,19 +254,25 @@ function extractScene(arrayBuffer, opts) {
   const IDENT = new Float64Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
 
   const byMat = new Map(); // materialId -> { nv, ni, meshes: [{vStart,nv,iStart,ni,m}] }
+  // wheels split out by corner (LF/RF/LR/RR) so they can be steered independently of
+  // the body. corner -> { pivot:[x,y,z] (wheel centre, model-local), byMat: Map }
+  const wheelByCorner = new Map();
   let meshCount = 0, skippedTransparent = 0, lodSkipped = 0;
 
-  function readNode(parentM) {
+  function readNode(parentM, wheel) {
     const cls = i32();
     const name = str();
     const children = i32();
     u8(); // active
     let m = parentM;
+    let childWheel = wheel;
 
     if (cls === 1) {
       const t = new Float64Array(16);
       for (let i = 0; i < 16; i++) t[i] = f32();
       m = matMulRowVec(t, parentM);
+      const wm = /^WHEEL_(LF|RF|LR|RR)$/i.exec(name);   // a wheel hub → tag its subtree
+      if (wm) childWheel = { corner: wm[1].toUpperCase(), pivot: [m[12], m[13], m[14]] };
     } else if (cls === 2) {
       u8(); u8(); u8(); // castShadows, isVisible, isTransparent
       const nv = i32();
@@ -288,8 +294,14 @@ function extractScene(arrayBuffer, opts) {
           skippedTransparent++;
         } else {
           meshCount++;
-          let g = byMat.get(materialId);
-          if (!g) { g = { nv: 0, ni: 0, meshes: [] }; byMat.set(materialId, g); }
+          let bag = byMat;                       // body geometry by default
+          if (wheel) {                           // steerable wheel geometry, kept per corner
+            let wb = wheelByCorner.get(wheel.corner);
+            if (!wb) { wb = { pivot: wheel.pivot, byMat: new Map() }; wheelByCorner.set(wheel.corner, wb); }
+            bag = wb.byMat;
+          }
+          let g = bag.get(materialId);
+          if (!g) { g = { nv: 0, ni: 0, meshes: [] }; bag.set(materialId, g); }
           g.meshes.push({ vStart, nv, iStart, ni, m });
           g.nv += nv;
           g.ni += ni;
@@ -309,16 +321,14 @@ function extractScene(arrayBuffer, opts) {
       throw kn5ParseError("unknown node class " + cls, off - 4);
     }
 
-    for (let c = 0; c < children; c++) readNode(m);
+    for (let c = 0; c < children; c++) readNode(m, childWheel);
   }
 
-  readNode(IDENT);
+  readNode(IDENT, null);
   if (off > total) throw kn5ParseError("overran file (" + off + " > " + total + ")");
 
-  // pass 2: fill final-size arrays per material group
-  const groups = [];
-  let triTotal = 0;
-  for (const [materialId, g] of byMat) {
+  // pass 2: bake a material group's meshes into flat, node-transformed arrays
+  function bakeGroup(materialId, g) {
     const pos = new Float32Array(g.nv * 3);
     const nrm = new Float32Array(g.nv * 3);
     const uv  = new Float32Array(g.nv * 2);
@@ -339,26 +349,123 @@ function extractScene(arrayBuffer, opts) {
         let rz = nx * m[2] + ny * m[6] + nz * m[10];
         const len = Math.sqrt(rx * rx + ry * ry + rz * rz);
         if (len > 0) { rx /= len; ry /= len; rz /= len; }
-        nrm[o3]     = rx;
-        nrm[o3 + 1] = ry;
-        nrm[o3 + 2] = rz;
-        uv[o2]     = dv.getFloat32(b + 24, true);
-        uv[o2 + 1] = dv.getFloat32(b + 28, true);
+        nrm[o3] = rx; nrm[o3 + 1] = ry; nrm[o3 + 2] = rz;
+        uv[o2] = dv.getFloat32(b + 24, true); uv[o2 + 1] = dv.getFloat32(b + 28, true);
       }
       const iStart = mesh.iStart, ni = mesh.ni;
       for (let i = 0; i < ni; i++) idx[io + i] = dv.getUint16(iStart + i * 2, true) + vertBase;
       io += ni;
       vertBase += nv;
     }
-    triTotal += g.ni / 3;
-    groups.push({ materialId, pos, nrm, uv, idx, triCount: g.ni / 3 });
+    return { materialId, pos, nrm, uv, idx, triCount: g.ni / 3 };
+  }
+
+  const groups = [];
+  let triTotal = 0;
+  for (const [materialId, g] of byMat) { const bg = bakeGroup(materialId, g); triTotal += bg.triCount; groups.push(bg); }
+
+  // steerable wheels: baked groups per corner, plus the corner's centre pivot
+  const wheels = [];
+  for (const [corner, wb] of wheelByCorner) {
+    const wg = [];
+    for (const [materialId, g] of wb.byMat) { const bg = bakeGroup(materialId, g); triTotal += bg.triCount; wg.push(bg); }
+    wheels.push({ corner, pivot: wb.pivot, groups: wg });
   }
 
   return {
-    textures, materials, groups,
+    textures, materials, groups, wheels,
     stats: { meshCount, triCount: triTotal, skippedTransparent, lodSkipped },
   };
 }
 
-if (typeof module !== "undefined") module.exports = { extractRoadMesh, extractScene };
-if (typeof window !== "undefined") window.KN5 = { extractRoadMesh, extractScene };
+// Parse a driver kn5: the SKELETON (class-1 node tree with local bind matrices,
+// row-vector convention) + SKINNED meshes (class-3: 76-byte verts with 4 bone
+// weights + 4 bone indices, plus a per-mesh bone list with inverse-bind matrices).
+// At bind pose the raw verts already sit in the driving pose (hands on the wheel);
+// animation deforms via boneMat = invBind * nodeWorld (see the driver runtime).
+function parseDriver(arrayBuffer) {
+  const dv = new DataView(arrayBuffer);
+  let off = 0;
+  const u8 = () => dv.getUint8(off++);
+  const i32 = () => { const v = dv.getInt32(off, true); off += 4; return v; };
+  const u32 = () => { const v = dv.getUint32(off, true); off += 4; return v; };
+  const f32 = () => { const v = dv.getFloat32(off, true); off += 4; return v; };
+  const str = () => { const l = u32(); let s = ""; for (let i = 0; i < l; i++) s += String.fromCharCode(dv.getUint8(off + i)); off += l; return s; };
+  const mat16 = () => { const t = new Float32Array(16); for (let i = 0; i < 16; i++) t[i] = f32(); return t; };
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3), dv.getUint8(4), dv.getUint8(5));
+  if (magic !== "sc6969") throw kn5ParseError("bad magic '" + magic + "'");
+  off = 6;
+  const version = i32(); if (version > 5) i32();
+  const texCount = i32(); const textures = [];
+  for (let t = 0; t < texCount; t++) { i32(); const name = str(); const size = u32(); textures.push({ name, blob: new Uint8Array(arrayBuffer, off, size) }); off += size; }
+  const matCount = i32(); const materials = [];
+  for (let m = 0; m < matCount; m++) {
+    const name = str(); const shader = str(); const blendMode = u8(); const alphaTested = u8(); i32();
+    const props = i32(); for (let p = 0; p < props; p++) { str(); off += 40; }
+    const maps = i32(); let txDiffuse = null;
+    for (let q = 0; q < maps; q++) { const sampler = str(); i32(); const texName = str(); if (sampler === "txDiffuse") txDiffuse = texName; }
+    materials.push({ name, shader, blendMode, alphaTested, txDiffuse });
+  }
+  const nodes = [], nameIndex = {}, meshes = [];
+  function walk(parent) {
+    const cls = i32(); const name = str(); const children = i32(); u8();
+    const my = nodes.length;
+    let local = null;
+    if (cls === 1) local = mat16();
+    nodes.push({ name, parent, local: local || new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]) });
+    nameIndex[name] = my;
+    if (cls === 2) {
+      u8(); u8(); u8(); const nv = i32(); off += nv * 44; const ni = i32(); off += ni * 2; i32(); u32(); f32(); f32(); off += 16; u8();
+    } else if (cls === 3) {
+      u8(); u8(); u8();
+      const bones = i32(); const boneNames = [], invBind = [];
+      for (let b = 0; b < bones; b++) { boneNames.push(str()); invBind.push(mat16()); }
+      const nv = i32();
+      const pos = new Float32Array(nv * 3), nrm = new Float32Array(nv * 3), uv = new Float32Array(nv * 2), bw = new Float32Array(nv * 4), bi = new Float32Array(nv * 4);
+      for (let v = 0; v < nv; v++) {
+        pos[v*3] = f32(); pos[v*3+1] = f32(); pos[v*3+2] = f32();
+        nrm[v*3] = f32(); nrm[v*3+1] = f32(); nrm[v*3+2] = f32();
+        uv[v*2] = f32(); uv[v*2+1] = f32();
+        off += 12; // tangent
+        for (let k = 0; k < 4; k++) bw[v*4+k] = f32();
+        for (let k = 0; k < 4; k++) bi[v*4+k] = f32();
+      }
+      const ni = i32(); const idx = new Uint32Array(ni);
+      for (let i = 0; i < ni; i++) idx[i] = dv.getUint16(off + i * 2, true); off += ni * 2;
+      const materialId = i32(); u32(); off += 8;
+      meshes.push({ materialId, pos, nrm, uv, bw, bi, idx, boneNames, invBind });
+    } else if (cls !== 1) {
+      throw kn5ParseError("unknown node class " + cls, off - 4);
+    }
+    for (let c = 0; c < children; c++) walk(my);
+  }
+  walk(-1);
+  return { textures, materials, nodes, nameIndex, meshes };
+}
+
+// Parse a .ksanim (v2): per animated node, `frameCount` keyframes of
+// position(3f) + quaternion(4f) + scale(3f). Node names match the driver skeleton.
+function parseKsanim(arrayBuffer) {
+  const dv = new DataView(arrayBuffer);
+  let off = 0;
+  const i32 = () => { const v = dv.getInt32(off, true); off += 4; return v; };
+  const f32 = () => { const v = dv.getFloat32(off, true); off += 4; return v; };
+  const str = () => { const l = i32(); let s = ""; for (let i = 0; i < l; i++) s += String.fromCharCode(dv.getUint8(off + i)); off += l; return s; };
+  const version = i32();
+  const nodeCount = i32();
+  const nodes = []; let frameCount = 0;
+  for (let n = 0; n < nodeCount; n++) {
+    const name = str(); const fc = i32(); frameCount = fc;
+    const p = new Float32Array(fc * 3), q = new Float32Array(fc * 4), s = new Float32Array(fc * 3);
+    for (let f = 0; f < fc; f++) {
+      p[f*3] = f32(); p[f*3+1] = f32(); p[f*3+2] = f32();
+      q[f*4] = f32(); q[f*4+1] = f32(); q[f*4+2] = f32(); q[f*4+3] = f32();
+      s[f*3] = f32(); s[f*3+1] = f32(); s[f*3+2] = f32();
+    }
+    nodes.push({ name, p, q, s });
+  }
+  return { version, frameCount, nodes };
+}
+
+if (typeof module !== "undefined") module.exports = { extractRoadMesh, extractScene, parseDriver, parseKsanim };
+if (typeof window !== "undefined") window.KN5 = { extractRoadMesh, extractScene, parseDriver, parseKsanim };
