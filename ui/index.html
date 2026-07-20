@@ -1,0 +1,2100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BLACKBOX — AC replay telemetry, in 3D</title>
+<style>
+  :root {
+    --bg: #0A0D13;
+    --panel: #10151E;
+    --edge: #1B2330;
+    --ink: #E9EDF4;
+    --muted: #7E899C;
+    --accent: #E23A2E;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 16px; border-bottom: 1px solid var(--edge);
+    flex: 0 0 auto;
+  }
+  header .logo {
+    font-weight: 800; font-style: italic; font-size: 18px; letter-spacing: 0.02em;
+  }
+  header .logo span { color: var(--accent); }
+  header .fileinfo {
+    font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 12px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  header .spacer { flex: 1; }
+  button, select {
+    background: none; border: 1px solid var(--edge); border-radius: 4px;
+    color: var(--muted); font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 12px; padding: 5px 12px; cursor: pointer;
+  }
+  button.on { color: var(--ink); border-color: var(--accent); }
+  button:hover { color: var(--ink); }
+  select { background: var(--panel); }
+
+  #stage { position: relative; flex: 1 1 auto; min-height: 0; }
+  #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+
+  #drop {
+    position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 14px;
+    background: radial-gradient(700px 400px at 50% 40%, rgba(226,58,46,0.06), transparent 65%);
+    text-align: center; padding: 20px;
+  }
+  #drop h1 { font-size: 34px; font-weight: 800; font-style: italic; margin: 0; }
+  #drop h1 span { color: var(--accent); }
+  #drop p { color: var(--muted); max-width: 52ch; margin: 0; }
+  #drop .mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 13px; }
+  #drop.dragging { outline: 2px dashed var(--accent); outline-offset: -14px; }
+  #drop button { font-size: 14px; padding: 10px 22px; color: var(--ink); }
+  #replaylist {
+    width: min(680px, 88vw); max-height: 46vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px;
+    border: 1px solid var(--edge); border-radius: 8px; padding: 6px;
+    background: rgba(16,21,30,0.5); text-align: left;
+  }
+  .replayrow {
+    display: flex; align-items: baseline; gap: 10px;
+    padding: 7px 10px; border-radius: 5px; cursor: pointer;
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
+    color: var(--ink); border: 1px solid transparent;
+  }
+  .replayrow:hover { background: rgba(226,58,46,0.10); border-color: var(--accent); }
+  .replayrow .track { color: var(--accent); font-weight: 600; min-width: 8ch; }
+  .replayrow .car { color: var(--muted); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .replayrow .when { color: var(--muted); font-variant-numeric: tabular-nums; }
+  #replaylist .rlhead {
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 11px;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+    padding: 4px 10px 8px; position: sticky; top: 0; background: var(--panel);
+  }
+
+  #hud {
+    position: absolute; left: 12px; top: 12px; display: flex; flex-direction: column; gap: 6px;
+    pointer-events: none;
+  }
+  .chip {
+    background: rgba(16,21,30,0.82); border: 1px solid var(--edge); border-radius: 5px;
+    padding: 6px 10px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
+    font-variant-numeric: tabular-nums;
+  }
+  .chip b { color: var(--accent); font-weight: 600; }
+  .chip .dim { color: var(--muted); }
+
+  #help {
+    position: absolute; right: 12px; top: 12px;
+    background: rgba(16,21,30,0.82); border: 1px solid var(--edge); border-radius: 5px;
+    padding: 6px 10px; font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 11px; color: var(--muted);
+  }
+
+  /* ---- intro (clean title card) ---- */
+  #intro {
+    position: fixed; inset: 0; z-index: 100; background: #05070b;
+    overflow: hidden; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #intro.gone { opacity: 0; transition: opacity .55s ease-out; pointer-events: none; }
+  #introwrap { text-align: center; }
+  #introword {
+    font-weight: 800; font-style: italic; font-size: clamp(44px, 10vw, 140px);
+    letter-spacing: 0.03em; color: #eef1f6; opacity: 0; transform: scale(0.92);
+    white-space: nowrap; text-shadow: 0 0 0 rgba(226,58,46,0);
+  }
+  #introword span { color: var(--accent); }
+  #introline {
+    height: 3px; width: 0; margin: clamp(10px, 2vw, 22px) auto 0; border-radius: 2px;
+    background: linear-gradient(90deg, #1fb6d0, #f5d33f 55%, #ff3b30);
+    box-shadow: 0 0 16px rgba(255,80,50,0.55);
+  }
+  #introskip {
+    position: absolute; bottom: 22px; right: 26px;
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 11px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: rgba(233,237,244,0.28);
+    pointer-events: none;
+  }
+
+  /* ---- native gallery / track-list overlays ---- */
+  .overlay {
+    position: fixed; inset: 0; z-index: 50; background: var(--bg);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  #tracklist { z-index: 51; }
+  .ovbar {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 16px;
+    padding: 16px 24px; border-bottom: 1px solid var(--edge);
+  }
+  .ovbar .logo { font-weight: 800; font-style: italic; font-size: 20px; }
+  .ovbar .logo span { color: var(--accent); }
+  .ovsub {
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+  }
+  .ghostbtn {
+    background: none; border: 1px solid var(--edge); border-radius: 5px;
+    color: var(--ink); font-family: "Cascadia Code", Consolas, monospace;
+    font-size: 13px; padding: 7px 14px; cursor: pointer;
+  }
+  .ghostbtn:hover { border-color: var(--accent); }
+  .tabs { display: flex; gap: 4px; }
+  .tab {
+    background: none; border: none; color: var(--muted); cursor: pointer;
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 13px;
+    letter-spacing: 0.1em; text-transform: uppercase; padding: 6px 10px;
+    border-bottom: 2px solid transparent;
+  }
+  .tab.on { color: var(--ink); border-bottom-color: var(--accent); }
+  /* fullscreen single-track browser */
+  #trackview { flex: 1; position: relative; display: flex; align-items: center; justify-content: center; min-height: 0; }
+  /* fullscreen wallpaper: a real (often accidental) in-game screenshot of this track */
+  #tvbg {
+    position: absolute; inset: 0; z-index: 0;
+    background-position: center; background-size: cover; background-repeat: no-repeat;
+    opacity: 0; transition: opacity .4s ease;
+    /* vignette + flat scrim so the name/map/meta stay readable over any photo */
+    box-shadow: inset 0 0 260px 70px rgba(4,6,10,.92), inset 0 0 0 2000px rgba(6,8,12,.60);
+  }
+  #tvbg.on { opacity: 1; }
+  .navarrow {
+    position: absolute; top: 50%; transform: translateY(-50%); z-index: 5;
+    background: rgba(16,21,30,0.6); border: 1px solid var(--edge); color: var(--ink);
+    width: 52px; height: 88px; border-radius: 10px; cursor: pointer; font-size: 34px; line-height: 1;
+  }
+  .navarrow:hover { border-color: var(--accent); background: rgba(226,58,46,0.12); }
+  #tvPrev { left: 22px; } #tvNext { right: 22px; }
+  #tvstage {
+    position: relative; z-index: 1;
+    width: min(1180px, 90vw); max-height: 100%; display: flex; flex-direction: column;
+    gap: 18px; padding: 20px 20px 28px; overflow-y: auto;
+  }
+  .tvname {
+    font-family: "Bahnschrift", "Segoe UI Semibold", "Segoe UI", sans-serif;
+    font-weight: 600; font-size: clamp(30px, 4.4vw, 58px); letter-spacing: 0.01em;
+    color: #f3f6fb; text-wrap: balance; text-align: center; line-height: 1.02;
+  }
+  .tvrow { display: flex; gap: 20px; align-items: stretch; }
+  .tvrow > * { flex: 1 1 0; min-width: 0; }
+  #tvthumb {
+    aspect-ratio: 16/9; border-radius: 12px; border: 1px solid var(--edge);
+    background: #05070b center/contain no-repeat;
+  }
+  #tvmapwrap {
+    position: relative; aspect-ratio: 16/9; border-radius: 12px; border: 1px solid var(--edge);
+    background: #080b11; padding: 12px; display: flex; align-items: center; justify-content: center;
+  }
+  #tvmap { max-width: 100%; max-height: 100%; display: block; }
+  #tvmapwrap .maplabel {
+    position: absolute; left: 12px; bottom: 10px;
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 10px;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+  }
+  .tvfoot { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; justify-content: center; }
+  .tvmeta { font-family: "Cascadia Code", Consolas, monospace; font-size: 14px; color: var(--muted); }
+  .ghostbtn.big { font-size: 15px; padding: 12px 22px; }
+  .tvcount { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; color: var(--muted); }
+  #tlscroll { flex: 1; overflow-y: auto; padding: 18px 24px 40px; }
+  #tldetail { display: flex; gap: 22px; flex-wrap: wrap; margin-bottom: 22px; }
+  #tlmapwrap {
+    position: relative; flex: 1 1 440px; min-width: 300px; max-width: 760px;
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 10px; padding: 10px;
+  }
+  #tlmap { display: block; width: 100%; height: auto; background: #080b11; border-radius: 6px; }
+  #tlmapwrap .maplabel {
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 10px;
+    letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-top: 7px;
+  }
+  #tlinfo { flex: 1 1 240px; min-width: 220px; display: flex; flex-direction: column; gap: 9px; }
+  #tlinfo .tiname { font-weight: 800; font-style: italic; font-size: clamp(24px, 3vw, 34px); text-wrap: balance; }
+  #tlinfo .tidesc { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 42ch; }
+  #tlinfo .tistat { font-family: "Cascadia Code", Consolas, monospace; font-size: 13px; color: var(--muted); }
+  #tlinfo .tistat b { color: var(--ink); font-weight: 600; }
+  #tlrows { display: flex; flex-direction: column; gap: 3px; }
+  .tlrow {
+    display: flex; align-items: baseline; gap: 14px; padding: 12px 16px;
+    border: 1px solid var(--edge); border-radius: 7px; cursor: pointer;
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 13px;
+  }
+  .tlrow:hover { border-color: var(--accent); background: rgba(226,58,46,0.08); }
+  .tlrow .car { flex: 1; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tlrow .lap {
+    color: var(--muted); font-variant-numeric: tabular-nums; min-width: 9ch; text-align: right;
+  }
+  .tlrow .lap.has { color: var(--accent); font-weight: 600; }
+  .tlrow .when { color: var(--muted); min-width: 15ch; text-align: right; }
+  #hdrHome { display: none; }
+
+  /* ---- settings modal ---- */
+  .modal {
+    position: fixed; inset: 0; z-index: 60; background: rgba(4,6,11,0.72);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal.hidden { display: none; }
+  .modalcard {
+    background: var(--panel); border: 1px solid var(--edge); border-radius: 12px;
+    padding: 22px 24px; min-width: 380px; max-width: 90vw;
+  }
+  .modalhead {
+    display: flex; align-items: center; justify-content: space-between;
+    font-weight: 700; font-size: 17px; margin-bottom: 20px;
+  }
+  .setrow { display: flex; flex-direction: column; gap: 11px; }
+  .setlabel {
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 11px;
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+  }
+  .segbtns { display: flex; gap: 8px; }
+  .seg {
+    flex: 1; background: none; border: 1px solid var(--edge); border-radius: 6px;
+    color: var(--muted); padding: 11px 12px; cursor: pointer; font-size: 13px;
+  }
+  .seg:hover { color: var(--ink); }
+  .seg.on { color: var(--ink); border-color: var(--accent); background: rgba(226,58,46,0.10); }
+
+  #transport {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+    padding: 8px 16px; border-top: 1px solid var(--edge);
+  }
+  #scrub { flex: 1; height: 34px; cursor: pointer; }
+  #timelabel {
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 12px;
+    color: var(--muted); min-width: 200px; text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+  .hidden { display: none !important; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <button class="ghostbtn" id="hdrHome" title="back to your tracks">⌂ tracks</button>
+  <div class="logo">BLACK<span>BOX</span></div>
+  <div class="fileinfo" id="fileinfo">no file loaded</div>
+  <div class="spacer"></div>
+  <select id="carsel" class="hidden" aria-label="Car"></select>
+  <button id="modeSpeed" class="on">speed</button>
+  <button id="modeBank">banking</button>
+  <button id="btnFollow">follow car</button>
+  <button id="btnCar" class="on">car model</button>
+  <button id="btnLine" class="on">line</button>
+  <button id="btnLap" class="on">lap only</button>
+  <button id="btnPlay">pause</button>
+  <select id="rate" aria-label="Playback rate">
+    <option value="1">1×</option>
+    <option value="6">6×</option>
+    <option value="24" selected>24×</option>
+    <option value="60">60×</option>
+  </select>
+  <button id="btnOpen">open replay…</button>
+  <button id="btnTrack">load track kn5…</button>
+  <button id="btnTracksDir" title="point at ...\assettocorsa\content\tracks once; replays then auto-load their track">tracks folder…</button>
+</header>
+
+<div id="stage">
+  <canvas id="gl"></canvas>
+  <div id="drop">
+    <h1>BLACK<span>BOX</span></h1>
+    <p>Drop an Assetto Corsa <span class="mono">.acreplay</span> file anywhere in this window.
+    The replay is the black box: position, speed, G, lap times, and the road surface itself,
+    read straight out of the bytes — no game, no telemetry app.</p>
+    <p class="mono" style="opacity:.8">drag to orbit · wheel to zoom · right-drag to pan</p>
+    <p class="mono" style="opacity:.8" id="dropHint">optional: drop the track's .kn5 too (content\tracks\…) to see the real road under your line</p>
+    <button id="btnOpen2">choose file</button>
+    <div id="replaylist" class="hidden"></div>
+    <p class="mono" id="droperr" style="color:var(--accent)"></p>
+  </div>
+  <div id="hud" class="hidden">
+    <div class="chip" id="chipStats"></div>
+    <div class="chip" id="chipLive"></div>
+    <div class="chip" id="chipLaps"></div>
+    <div class="chip" id="chipTrack" style="color:var(--accent)">NO TRACK LOADED — the ribbon is your driven line, not the road. Click "load track kn5…" to render the real track.</div>
+  </div>
+  <div id="help" class="hidden">drag orbit · wheel zoom · right-drag pan</div>
+</div>
+
+<div id="transport" class="hidden">
+  <canvas id="scrub" height="34" aria-label="Timeline scrubber"></canvas>
+  <div id="timelabel"></div>
+</div>
+
+<input type="file" id="filepick" accept=".acreplay" class="hidden">
+<input type="file" id="trackpick" accept=".kn5" class="hidden">
+
+<!-- intro: clean title card — wordmark + a speed-line draw, on a warm sound motif -->
+<div id="intro">
+  <div id="introwrap">
+    <div id="introword">BLACK<span>BOX</span></div>
+    <div id="introline"></div>
+  </div>
+  <div id="introskip">click to skip</div>
+</div>
+
+<!-- native app: fullscreen track browser + per-track replay list (fixed overlays) -->
+<div id="gallery" class="overlay hidden">
+  <div class="ovbar">
+    <div class="logo">BLACK<span>BOX</span></div>
+    <div class="tabs"><button class="tab on">Tracks</button></div>
+    <div style="flex:1"></div>
+    <div class="ovsub" id="gallerysub"></div>
+    <button class="ghostbtn" id="btnSettings">⚙ settings</button>
+  </div>
+  <div id="trackview">
+    <div id="tvbg"></div>
+    <button class="navarrow" id="tvPrev" aria-label="previous track">‹</button>
+    <div id="tvstage">
+      <div class="tvname" id="tvname"></div>
+      <div class="tvrow">
+        <div id="tvthumb"></div>
+        <div id="tvmapwrap">
+          <canvas id="tvmap" width="720" height="720"></canvas>
+          <div class="maplabel">layout · generated from track geometry</div>
+        </div>
+      </div>
+      <div class="tvfoot">
+        <div class="tvmeta" id="tvmeta"></div>
+        <button id="tvReplays" class="ghostbtn big"></button>
+        <div class="tvcount" id="tvcount"></div>
+      </div>
+    </div>
+    <button class="navarrow" id="tvNext" aria-label="next track">›</button>
+  </div>
+</div>
+
+<div id="settings" class="modal hidden">
+  <div class="modalcard">
+    <div class="modalhead"><span>Settings</span><button class="ghostbtn" id="settingsClose">close</button></div>
+    <div class="setrow">
+      <div class="setlabel">Units</div>
+      <div class="segbtns" id="unitToggle">
+        <button class="seg" data-u="metric">Metric · km, km/h</button>
+        <button class="seg" data-u="imperial">Imperial · mi, mph</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="tracklist" class="overlay hidden">
+  <div class="ovbar">
+    <button class="ghostbtn" id="tlback">← tracks</button>
+    <div class="ovsub" id="tltitle"></div>
+  </div>
+  <div id="tlscroll">
+    <div id="tldetail">
+      <div id="tlmapwrap"><canvas id="tlmap" width="700" height="420"></canvas>
+        <div class="maplabel">layout — generated from track geometry</div></div>
+      <div id="tlinfo"></div>
+    </div>
+    <div id="tlrows"></div>
+  </div>
+</div>
+
+<script src="acreplay.js"></script>
+<script src="kn5.js"></script>
+<script src="kn5tex.js"></script>
+<script src="roadedge.js"></script>
+<script src="intro.js"></script>
+<script>
+"use strict";
+/* ===================== state ===================== */
+let replay = null, ex = null, stats = null;
+let playing = true, rate = 24, tCur = 0;
+let colorMode = "speed";
+let lapOnly = true;
+
+/* the rendered/played frame window: the timed lap when known, else everything */
+function frameRange() {
+  if (lapOnly && ex && ex.laps.length >= 2) {
+    return [ex.laps[0].frame, ex.laps[ex.laps.length - 1].frame];
+  }
+  return ex ? [0, ex.N] : [0, 0];
+}
+
+/* ===================== tiny mat4 ===================== */
+function mPerspective(fovy, aspect, near, far) {
+  const f = 1 / Math.tan(fovy / 2), nf = 1 / (near - far);
+  return [f / aspect, 0, 0, 0,  0, f, 0, 0,  0, 0, (far + near) * nf, -1,  0, 0, 2 * far * near * nf, 0];
+}
+function mLookAt(eye, at, up) {
+  let zx = eye[0] - at[0], zy = eye[1] - at[1], zz = eye[2] - at[2];
+  let zl = Math.hypot(zx, zy, zz); zx /= zl; zy /= zl; zz /= zl;
+  let xx = up[1] * zz - up[2] * zy, xy = up[2] * zx - up[0] * zz, xz = up[0] * zy - up[1] * zx;
+  const xl = Math.hypot(xx, xy, xz) || 1; xx /= xl; xy /= xl; xz /= xl;
+  const yx = zy * xz - zz * xy, yy = zz * xx - zx * xz, yz = zx * xy - zy * xx;
+  return [xx, yx, zx, 0,  xy, yy, zy, 0,  xz, yz, zz, 0,
+          -(xx * eye[0] + xy * eye[1] + xz * eye[2]),
+          -(yx * eye[0] + yy * eye[1] + yz * eye[2]),
+          -(zx * eye[0] + zy * eye[1] + zz * eye[2]), 1];
+}
+function mMul(a, b) {
+  const o = new Array(16);
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return o;
+}
+
+/* ===================== webgl ===================== */
+const cv = document.getElementById("gl");
+const gl = cv.getContext("webgl2", { antialias: true }) || cv.getContext("webgl", { antialias: true });
+const isGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
+const VS = `
+attribute vec3 aPos; attribute vec4 aCol;
+uniform mat4 uMVP; uniform float uPtSize;
+varying vec4 vCol;
+void main(){ gl_Position = uMVP * vec4(aPos,1.0); gl_PointSize = uPtSize; vCol = aCol; }`;
+const FS = `
+precision mediump float; varying vec4 vCol;
+uniform float uFogDensity; uniform vec3 uFogColor;
+void main(){
+  float depth = gl_FragCoord.z / gl_FragCoord.w;
+  float fog = clamp(exp(-uFogDensity * depth), 0.0, 1.0);
+  gl_FragColor = vec4(mix(uFogColor, vCol.rgb, fog), vCol.a);
+}`;
+function shader(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src); gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, shader(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, shader(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+gl.useProgram(prog);
+const locPos = gl.getAttribLocation(prog, "aPos");
+const locCol = gl.getAttribLocation(prog, "aCol");
+const locMVP = gl.getUniformLocation(prog, "uMVP");
+const locPt = gl.getUniformLocation(prog, "uPtSize");
+const locFogD = gl.getUniformLocation(prog, "uFogDensity");
+const locFogC = gl.getUniformLocation(prog, "uFogColor");
+gl.enable(gl.DEPTH_TEST);
+gl.uniform3f(locFogC, 0.039, 0.051, 0.075);
+gl.uniform1f(locFogD, 0.00012);
+
+const bufs = { ribbon: null, ribbonN: 0, line: null, lineN: 0, grid: null, gridN: 0, cursor: gl.createBuffer(),
+               trackPos: null, trackIdx: null, trackIdxN: 0 };
+const extUint = isGL2 || gl.getExtension("OES_element_index_uint"); // core in GL2
+const extS3TC = gl.getExtension("WEBGL_compressed_texture_s3tc");
+let edgeIndex = null;   // RoadEdge index once a kn5 is loaded
+let worldColl = null;   // full-world collider grid for the drone follow-cam
+let sceneGroups = null; // textured visual scene draw batches
+
+/* second program: textured + lit scene */
+const VST = `
+attribute vec3 aPos; attribute vec3 aNrm; attribute vec2 aUV;
+uniform mat4 uMVP; uniform mat4 uModel;
+varying vec3 vNrm; varying vec2 vUV;
+void main(){
+  vec4 wp = uModel * vec4(aPos,1.0);
+  gl_Position = uMVP * wp;
+  vNrm = mat3(uModel) * aNrm;
+  vUV = aUV;
+}`;
+const FST = `
+precision mediump float;
+varying vec3 vNrm; varying vec2 vUV;
+uniform sampler2D uTex;
+uniform float uAlphaTest;
+uniform float uAlpha;
+uniform float uFogDensity; uniform vec3 uFogColor;
+uniform vec3 uSunDir;
+void main(){
+  vec4 tex = texture2D(uTex, vUV);
+  if (uAlphaTest > 0.5 && tex.a < 0.5) discard;
+  vec3 n = normalize(vNrm);
+  // directional key light (warm) + hemisphere ambient: cool sky from above grading
+  // to a dark warm ground below — gives terrain & banking real form without shadow maps
+  float ndl = max(dot(n, normalize(uSunDir)), 0.0);
+  float sky = 0.5 + 0.5 * n.y;
+  vec3 ambient = mix(vec3(0.22, 0.23, 0.28), vec3(0.55, 0.63, 0.76), sky);
+  vec3 sunCol = vec3(1.0, 0.95, 0.86);
+  // soft wrap on the key so shaded faces don't crush to black
+  float wrap = ndl * 0.85 + 0.15 * (0.5 + 0.5 * dot(n, normalize(uSunDir)));
+  vec3 col = tex.rgb * (ambient + sunCol * (0.9 * wrap));
+  // light grade: a touch of saturation + contrast for depth
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(vec3(lum), col, 1.08);
+  col = (col - 0.5) * 1.09 + 0.5;
+  col = clamp(col, 0.0, 1.0);
+  // aerial fog for depth
+  float depth = gl_FragCoord.z / gl_FragCoord.w;
+  float fog = clamp(exp(-uFogDensity * depth), 0.0, 1.0);
+  gl_FragColor = vec4(mix(uFogColor, col, fog), uAlpha);
+}`;
+const progT = gl.createProgram();
+gl.attachShader(progT, shader(gl.VERTEX_SHADER, VST));
+gl.attachShader(progT, shader(gl.FRAGMENT_SHADER, FST));
+gl.linkProgram(progT);
+const tLoc = {
+  pos: gl.getAttribLocation(progT, "aPos"),
+  nrm: gl.getAttribLocation(progT, "aNrm"),
+  uv: gl.getAttribLocation(progT, "aUV"),
+  mvp: gl.getUniformLocation(progT, "uMVP"),
+  model: gl.getUniformLocation(progT, "uModel"),
+  tex: gl.getUniformLocation(progT, "uTex"),
+  alphaTest: gl.getUniformLocation(progT, "uAlphaTest"),
+  alpha: gl.getUniformLocation(progT, "uAlpha"),
+  fogD: gl.getUniformLocation(progT, "uFogDensity"),
+  fogC: gl.getUniformLocation(progT, "uFogColor"),
+  sun: gl.getUniformLocation(progT, "uSunDir"),
+};
+
+const IDENT4 = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+let carGroups = null;   // uploaded car model mesh groups (LOD0)
+let showCar = true;     // render the car model on the cursor
+let showLine = true;    // render the driven-line ribbon
+let carLift = 0.0;      // vertical placement tweak (metres)
+let carFlip = -1;       // forward-axis sign (T-180 nose is +Z, so flip)
+let carSlipExag = 1.0;  // 1 = EXACT recorded attitude; >1 amplifies the slip toward the film crab
+let showThruster = true;
+
+// thruster flame — round additive blue point-sprites, perspective-sized
+const progThr = gl.createProgram();
+gl.attachShader(progThr, shader(gl.VERTEX_SHADER,
+  "attribute vec3 aPos; attribute float aSize; attribute float aBright;" +
+  "uniform mat4 uMVP; varying float vB;" +
+  "void main(){ gl_Position = uMVP*vec4(aPos,1.0); gl_PointSize = aSize; vB = aBright; }"));
+gl.attachShader(progThr, shader(gl.FRAGMENT_SHADER,
+  "precision mediump float; varying float vB;" +
+  "void main(){ float r = length(gl_PointCoord-0.5)*2.0; float a = pow(smoothstep(1.0,0.0,r),1.6)*vB;" +
+  " vec3 col = mix(vec3(0.25,0.6,1.0), vec3(0.8,0.95,1.0), a);" +
+  " gl_FragColor = vec4(col*a, a); }"));
+gl.linkProgram(progThr);
+const thrLoc = {
+  pos: gl.getAttribLocation(progThr, "aPos"),
+  size: gl.getAttribLocation(progThr, "aSize"),
+  bright: gl.getAttribLocation(progThr, "aBright"),
+  mvp: gl.getUniformLocation(progThr, "uMVP"),
+};
+const thrBuf = gl.createBuffer();
+
+// turbine activity inferred from the driving state (the mod fires it under high
+// slip during hard cornering, per its design + our research). 0..1.
+function turbineIntensity(i) {
+  const N = ex.N, P = ex.pos, FW = ex.fwd;
+  if (i < 1 || i >= N - 1 || ex.gap[i]) return 0;
+  // slip: angle between velocity and real body heading
+  const a = Math.max(0, i - 3), b = Math.min(N - 1, i + 3);
+  let vx = P[b * 3] - P[a * 3], vy = P[b * 3 + 1] - P[a * 3 + 1], vz = P[b * 3 + 2] - P[a * 3 + 2];
+  const vl = Math.hypot(vx, vy, vz) || 1; vx /= vl; vy /= vl; vz /= vl;
+  let hx = FW[i * 3], hy = FW[i * 3 + 1], hz = FW[i * 3 + 2];
+  const hl = Math.hypot(hx, hy, hz);
+  let slip = 0;
+  if (hl > 1e-4) {
+    hx /= hl; hy /= hl; hz /= hl;
+    let d = Math.abs(hx * vx + hy * vy + hz * vz);
+    slip = Math.acos(Math.max(0, Math.min(1, d))); // radians
+  }
+  const slipN = Math.min(1, slip / 0.35);           // ~20° = full
+  // hard acceleration (boost) from speed rise
+  const s0 = ex.speed[i], sm = ex.speed[Math.max(0, i - 4)];
+  const acc = isFinite(s0) && isFinite(sm) ? Math.max(0, (s0 - sm)) / 40 : 0;
+  return Math.min(1, slipN * 0.85 + Math.min(1, acc) * 0.5);
+}
+
+// blue thruster plume from the Mach 6's rear, perspective-sized point sprites
+function drawThruster(m, inten, mvp) {
+  const eye = camEye();
+  const lx = 0, ly = 0.4, lz = -2.5;                          // rear emit point (local)
+  const ox = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
+  const oy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
+  const oz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
+  const bx = -m[8], by = -m[9], bz = -m[10];                  // backward = −nose
+  const K = 11, arr = new Float32Array(K * 5);
+  const t0 = performance.now();
+  const fl = 0.8 + 0.2 * Math.sin(t0 * 0.045) + 0.07 * Math.sin(t0 * 0.13);
+  const th = Math.tan(0.9 / 2), Hpx = cv.height;
+  for (let k = 0; k < K; k++) {
+    const t = k / (K - 1);
+    const px = ox + bx * t * 3.4, py = oy + by * t * 3.4, pz = oz + bz * t * 3.4;
+    const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
+    const worldR = (0.5 * (1 - t * 0.55)) * inten;
+    arr[k * 5] = px; arr[k * 5 + 1] = py; arr[k * 5 + 2] = pz;
+    arr[k * 5 + 3] = Math.min(500, worldR * Hpx / (dist * th));
+    arr[k * 5 + 4] = (1 - t) * inten * fl;
+  }
+  gl.useProgram(progThr);
+  gl.uniformMatrix4fv(thrLoc.mvp, false, mvp);
+  gl.bindBuffer(gl.ARRAY_BUFFER, thrBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, arr, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(thrLoc.pos); gl.vertexAttribPointer(thrLoc.pos, 3, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(thrLoc.size); gl.vertexAttribPointer(thrLoc.size, 1, gl.FLOAT, false, 20, 12);
+  gl.enableVertexAttribArray(thrLoc.bright); gl.vertexAttribPointer(thrLoc.bright, 1, gl.FLOAT, false, 20, 16);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
+  gl.drawArrays(gl.POINTS, 0, K);
+  gl.depthMask(true); gl.disable(gl.BLEND);
+}
+
+// build the car's world matrix at a FRACTIONAL frame position. Orientation is
+// the REAL recorded body attitude: up = road surface normal, heading = the
+// front-axle→rear-axle vector from the wheels (carries the true slip angle the
+// car actually had). Everything interpolated so it's smooth at any refresh.
+function carModelMatrix(fpos) {
+  const P = ex.pos, NM = ex.nrm, FW = ex.fwd, N = ex.N;
+  const i0 = Math.max(0, Math.min(N - 1, Math.floor(fpos)));
+  const i1 = Math.min(N - 1, i0 + 1);
+  const f = ex.gap[i1] ? 0 : Math.max(0, Math.min(1, fpos - i0));
+  const lp = (A, o) => A[i0 * 3 + o] + (A[i1 * 3 + o] - A[i0 * 3 + o]) * f;
+  const px0 = lp(P, 0), py0 = lp(P, 1), pz0 = lp(P, 2);
+  // up
+  let ux = lp(NM, 0), uy = lp(NM, 1), uz = lp(NM, 2);
+  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+  // real body heading (wheels); velocity as sign-reference + fallback
+  const a = Math.max(0, i0 - 3), b = Math.min(N - 1, i0 + 4);
+  const vx = P[b * 3] - P[a * 3], vy = P[b * 3 + 1] - P[a * 3 + 1], vz = P[b * 3 + 2] - P[a * 3 + 2];
+  let hx = lp(FW, 0), hy = lp(FW, 1), hz = lp(FW, 2);
+  if (Math.hypot(hx, hy, hz) < 1e-4) { hx = vx; hy = vy; hz = vz; }  // fallback to velocity
+  let hl = Math.hypot(hx, hy, hz) || 1; hx /= hl; hy /= hl; hz /= hl;
+  // NOTE: do NOT re-align the nose to the velocity. The wheel heading (front axle −
+  // rear axle) already IS the true nose direction; forcing it to point with travel
+  // flips the car 180° ("switches ends") exactly when the drift passes 90°, which is
+  // when we most want to see the real backward-facing slide. Trust the wheels.
+  const hd = hx * ux + hy * uy + hz * uz; hx -= ux * hd; hy -= uy * hd; hz -= uz * hd; // ⟂ up
+  hl = Math.hypot(hx, hy, hz) || 1; hx /= hl; hy /= hl; hz /= hl;
+  // amplify the real slip (angle between travel and body heading) toward the crab look
+  if (carSlipExag !== 1) {
+    let vpx = vx, vpy = vy, vpz = vz;
+    const vd = vpx * ux + vpy * uy + vpz * uz; vpx -= ux * vd; vpy -= uy * vd; vpz -= uz * vd;
+    const vpl = Math.hypot(vpx, vpy, vpz);
+    if (vpl > 1e-4) {
+      vpx /= vpl; vpy /= vpl; vpz /= vpl;
+      const dvh = Math.max(-1, Math.min(1, vpx * hx + vpy * hy + vpz * hz));
+      const cX = vpy * hz - vpz * hy, cY = vpz * hx - vpx * hz, cZ = vpx * hy - vpy * hx;
+      const sign = (cX * ux + cY * uy + cZ * uz) >= 0 ? 1 : -1;
+      let ang = Math.acos(dvh) * sign * carSlipExag;
+      ang = Math.max(-1.4, Math.min(1.4, ang)); // cap at ~80°
+      const c = Math.cos(ang), s = Math.sin(ang);
+      hx = vpx * c + (uy * vpz - uz * vpy) * s;
+      hy = vpy * c + (uz * vpx - ux * vpz) * s;
+      hz = vpz * c + (ux * vpy - uy * vpx) * s;
+      hl = Math.hypot(hx, hy, hz) || 1; hx /= hl; hy /= hl; hz /= hl;
+    }
+  }
+  const rx = -(uy * hz - uz * hy), ry = -(uz * hx - ux * hz), rz = -(ux * hy - uy * hx); // right
+  // local axes → world: X→right, Y→up, Z(nose)→heading
+  return new Float32Array([
+    rx, ry, rz, 0,
+    ux, uy, uz, 0,
+    hx, hy, hz, 0,
+    px0 + ux * carLift, py0 + uy * carLift, pz0 + uz * carLift, 1,
+  ]);
+}
+
+function makeFallbackTexture(rgb) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                new Uint8Array([rgb[0], rgb[1], rgb[2], 255]));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  return t;
+}
+function isPOT(x) { return (x & (x - 1)) === 0; }
+function uploadImageTexture(bitmap) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  let src = bitmap;
+  if (!isGL2 && (!isPOT(bitmap.width) || !isPOT(bitmap.height))) {
+    // WebGL1: repeat-wrap needs power-of-two — resample via canvas.
+    // GL2 handles NPOT + REPEAT + mips natively, keeping full fidelity.
+    const cw = 1 << Math.round(Math.log2(bitmap.width));
+    const ch = 1 << Math.round(Math.log2(bitmap.height));
+    const cnv = document.createElement("canvas");
+    cnv.width = Math.max(1, cw); cnv.height = Math.max(1, ch);
+    cnv.getContext("2d").drawImage(bitmap, 0, 0, cnv.width, cnv.height);
+    src = cnv;
+  }
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
+  gl.generateMipmap(gl.TEXTURE_2D);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+  return t;
+}
+
+/* camera: orbit */
+const cam = { yaw: -0.7, pitch: 0.5, dist: 2500, target: [0, 0, 0] };
+/* follow-cam: a cinematographer, not a rigid boom. It lives in the car's own
+ * local frame (right / up = road-normal / back = −heading, all from the recorded
+ * wheel attitude), so it stays locked through loops & spirals and never dips
+ * through the road it's following. Speed opens it up on straights; curvature
+ * tightens it and swings it into the corner. drag = orbit offset, wheel = zoom. */
+let FOLLOW_SWING = 1;   // sign of the into-corner swing (flip if it swings out)
+const follow = {
+  on: false, yawOff: 0, distMul: 1, saved: null, prevTs: 0,
+  rig: { ready: false, dist: 160, height: 60, side: 0, la: 30, up: [0, 1, 0], eye: null, look: null },
+};
+function followActive() { return follow.on && follow.rig.ready && !!follow.rig.eye; }
+function camEye() {
+  if (followActive()) return follow.rig.eye;
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  return [
+    cam.target[0] + cam.dist * cp * Math.cos(cam.yaw),
+    cam.target[1] + cam.dist * sp,
+    cam.target[2] + cam.dist * cp * Math.sin(cam.yaw),
+  ];
+}
+// frame-rate-independent exponential approach factor for a given stiffness.
+function easeK(rate, dt) { return 1 - Math.exp(-rate * Math.max(0, Math.min(0.1, dt))); }
+
+// ---- world collider: a coarse XZ grid over ALL solid track geometry (road,
+// terrain, walls, scenery) so the drone cam paths around anything that would
+// come between it and the car, for unbroken flow with no clipping. Triangles
+// whose XZ footprint spans too many cells (huge terrain quads) go into a small
+// overflow list tested every query, so the grid stays memory-bounded. ----
+function buildWorldCollider(verts, tris) {
+  const nt = tris.length / 3;
+  if (!nt) return null;
+  let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+  for (let v = 0; v < verts.length; v += 3) {
+    const x = verts[v], z = verts[v + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const spanX = Math.max(1, maxX - minX), spanZ = Math.max(1, maxZ - minZ);
+  const cell = Math.max(6, Math.min(48, Math.max(spanX, spanZ) / 96));
+  const nx = Math.max(1, Math.ceil(spanX / cell)), nz = Math.max(1, Math.ceil(spanZ / cell));
+  const cells = new Array(nx * nz);
+  const bigTris = [];              // triangles too large to bucket sanely
+  const BIGCAP = 48;               // max cells a triangle may occupy
+  for (let t = 0; t < nt; t++) {
+    const i0 = tris[t * 3], i1 = tris[t * 3 + 1], i2 = tris[t * 3 + 2];
+    const ax = verts[i0 * 3], az = verts[i0 * 3 + 2];
+    const bx = verts[i1 * 3], bz = verts[i1 * 3 + 2];
+    const cx2 = verts[i2 * 3], cz2 = verts[i2 * 3 + 2];
+    const c0 = Math.max(0, Math.floor((Math.min(ax, bx, cx2) - minX) / cell));
+    const c1 = Math.min(nx - 1, Math.floor((Math.max(ax, bx, cx2) - minX) / cell));
+    const r0 = Math.max(0, Math.floor((Math.min(az, bz, cz2) - minZ) / cell));
+    const r1 = Math.min(nz - 1, Math.floor((Math.max(az, bz, cz2) - minZ) / cell));
+    if ((c1 - c0 + 1) * (r1 - r0 + 1) > BIGCAP) { bigTris.push(t); continue; }
+    for (let cz = r0; cz <= r1; cz++) for (let cx = c0; cx <= c1; cx++) {
+      const k = cz * nx + cx; (cells[k] || (cells[k] = [])).push(t);
+    }
+  }
+  return { verts, tris, minX, minZ, cell, nx, nz, cells, bigTris, stamp: new Int32Array(nt), stampCur: 0, count: nt };
+}
+// nearest hit parameter t in (0,1] of segment p0→p1 vs the world, or -1 if clear.
+function collideSegment(C, p0, p1) {
+  if (!C) return -1;
+  const { verts, tris, minX, minZ, cell, nx, nz, cells, bigTris, stamp } = C;
+  const dx = p1[0] - p0[0], dy = p1[1] - p0[1], dz = p1[2] - p0[2];
+  const cur = ++C.stampCur;
+  let best = -1;
+  const test = (ti) => {
+    if (stamp[ti] === cur) return; stamp[ti] = cur;
+    const i0 = tris[ti * 3], i1 = tris[ti * 3 + 1], i2 = tris[ti * 3 + 2];
+    const ax = verts[i0 * 3], ay = verts[i0 * 3 + 1], az = verts[i0 * 3 + 2];
+    const e1x = verts[i1 * 3] - ax, e1y = verts[i1 * 3 + 1] - ay, e1z = verts[i1 * 3 + 2] - az;
+    const e2x = verts[i2 * 3] - ax, e2y = verts[i2 * 3 + 1] - ay, e2z = verts[i2 * 3 + 2] - az;
+    const px = dy * e2z - dz * e2y, py = dz * e2x - dx * e2z, pz = dx * e2y - dy * e2x;
+    const det = e1x * px + e1y * py + e1z * pz;
+    if (det > -1e-7 && det < 1e-7) return;
+    const inv = 1 / det;
+    const tx = p0[0] - ax, ty = p0[1] - ay, tz = p0[2] - az;
+    const u = (tx * px + ty * py + tz * pz) * inv;
+    if (u < 0 || u > 1) return;
+    const qx = ty * e1z - tz * e1y, qy = tz * e1x - tx * e1z, qz = tx * e1y - ty * e1x;
+    const vv = (dx * qx + dy * qy + dz * qz) * inv;
+    if (vv < 0 || u + vv > 1) return;
+    const tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
+    if (tt > 1e-4 && tt <= 1 && (best < 0 || tt < best)) best = tt;
+  };
+  const c0 = Math.max(0, Math.floor((Math.min(p0[0], p1[0]) - minX) / cell));
+  const c1 = Math.min(nx - 1, Math.floor((Math.max(p0[0], p1[0]) - minX) / cell));
+  const r0 = Math.max(0, Math.floor((Math.min(p0[2], p1[2]) - minZ) / cell));
+  const r1 = Math.min(nz - 1, Math.floor((Math.max(p0[2], p1[2]) - minZ) / cell));
+  for (let cz = r0; cz <= r1; cz++) for (let cx = c0; cx <= c1; cx++) {
+    const list = cells[cz * nx + cx]; if (!list) continue;
+    for (let n = 0; n < list.length; n++) test(list[n]);
+  }
+  for (let n = 0; n < bigTris.length; n++) test(bigTris[n]);
+  return best;
+}
+// merge non-translucent scene groups' world-space geometry into one collider.
+function buildWorldColliderFromGroups(groups) {
+  let nv = 0, nt = 0;
+  for (const g of groups) { nv += g.pos.length; nt += g.idx.length; }
+  if (!nt) return null;
+  const verts = new Float32Array(nv), tris = new Uint32Array(nt);
+  let vo = 0, to = 0, base = 0;
+  for (const g of groups) {
+    verts.set(g.pos, vo);
+    const id = g.idx;
+    for (let i = 0; i < id.length; i++) tris[to + i] = id[i] + base;
+    base += g.pos.length / 3; vo += g.pos.length; to += id.length;
+  }
+  return buildWorldCollider(verts, tris);
+}
+
+// Drive the follow rig one step. fp = fractional frame, dt = seconds since last.
+function followUpdate(fp, dt) {
+  const P = ex.pos, NM = ex.nrm, N = ex.N;
+  const i0 = Math.max(0, Math.min(N - 1, Math.floor(fp)));
+  if (ex.gap[i0]) return;                       // car absent this frame — hold
+  const i1 = Math.min(N - 1, i0 + 1);
+  const f = ex.gap[i1] ? 0 : Math.max(0, Math.min(1, fp - i0));
+  const lp = (A, o) => A[i0 * 3 + o] + (A[i1 * 3 + o] - A[i0 * 3 + o]) * f;
+  const px = lp(P, 0), py = lp(P, 1), pz = lp(P, 2);
+  // up = road-surface normal
+  let ux = lp(NM, 0), uy = lp(NM, 1), uz = lp(NM, 2);
+  const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
+  // the wheel-plane normal can flip sign past ~90° of bank (loops / corkscrews),
+  // which would snap the camera to the far side of the track and read as the car
+  // swapping over. Keep it on the SAME side as last frame — a genuine inversion
+  // rotates gradually (small per-frame steps, dot stays positive), so only a true
+  // sign-flip gets corrected. This makes Bf<0 hold, which keeps the aim forward.
+  { const pv = follow.rig.up; if (pv && follow.rig.ready && (ux * pv[0] + uy * pv[1] + uz * pv[2]) < 0) { ux = -ux; uy = -uy; uz = -uz; } }
+  // chase heading = DIRECTION OF TRAVEL (velocity), NOT the body heading. The
+  // body crabs during slip (the T-180's whole character) and would whip the
+  // camera 180° when slip passes 90°. Velocity is smooth and always points
+  // down-road, so the car stays facing correctly away from the lens.
+  const wf = Math.max(4, Math.round(0.12 / ex.dt));
+  // GAP-FREE velocity window: online replays (AC_*_O_*) teleport the car between
+  // frames; a window spanning the jump made the heading point along the teleport
+  // and whipped the camera ~90°. Never let the window cross a gap.
+  let a = i0, b = i0;
+  while (a > 0 && i0 - a < wf && !ex.gap[a - 1]) a--;
+  while (b < N - 1 && b - i0 < wf && !ex.gap[b + 1]) b++;
+  let hx = P[b * 3] - P[a * 3], hy = P[b * 3 + 1] - P[a * 3 + 1], hz = P[b * 3 + 2] - P[a * 3 + 2];
+  let hd = hx * ux + hy * uy + hz * uz; hx -= ux * hd; hy -= uy * hd; hz -= uz * hd; // ⟂ up
+  let hl = Math.hypot(hx, hy, hz);
+  const rig = follow.rig;
+  // hold the heading when the car is actually stopped (gate on real speed, not
+  // window length — a teleport makes the window huge, not tiny) or the window
+  // collapsed against a gap. This freezes orientation instead of spinning it.
+  const moving = (ex.speed[i0] || 0) > 3 && b > a && hl > 1e-3;
+  if (!moving) {
+    if (rig.fwd) { hx = rig.fwd[0]; hy = rig.fwd[1]; hz = rig.fwd[2]; } else { hx = 1; hy = 0; hz = 0; }
+  } else { hx /= hl; hy /= hl; hz /= hl; }
+  if (!rig.fwd) rig.fwd = [hx, hy, hz];          // light smoothing kills residual jitter
+  const kFwd = easeK(9.0, dt);
+  rig.fwd[0] += (hx - rig.fwd[0]) * kFwd; rig.fwd[1] += (hy - rig.fwd[1]) * kFwd; rig.fwd[2] += (hz - rig.fwd[2]) * kFwd;
+  const fl = Math.hypot(rig.fwd[0], rig.fwd[1], rig.fwd[2]) || 1;
+  hx = rig.fwd[0] / fl; hy = rig.fwd[1] / fl; hz = rig.fwd[2] / fl;
+  // right = up × heading
+  const rx = uy * hz - uz * hy, ry = uz * hx - ux * hz, rz = ux * hy - uy * hx;
+  // signed curvature: turn between the segment before and after the car, on the road plane
+  const proj = (vx, vy, vz) => {
+    const dd = vx * ux + vy * uy + vz * uz;
+    let ox = vx - ux * dd, oy = vy - uy * dd, oz = vz - uz * dd;
+    const l = Math.hypot(ox, oy, oz) || 1; return [ox / l, oy / l, oz / l];
+  };
+  const c = Math.min(N - 1, i0 + 2 * wf);
+  const D1 = proj(P[i0 * 3] - P[a * 3], P[i0 * 3 + 1] - P[a * 3 + 1], P[i0 * 3 + 2] - P[a * 3 + 2]);
+  const D2 = proj(P[c * 3] - P[i0 * 3], P[c * 3 + 1] - P[i0 * 3 + 1], P[c * 3 + 2] - P[i0 * 3 + 2]);
+  const dot = Math.max(-1, Math.min(1, D1[0] * D2[0] + D1[1] * D2[1] + D1[2] * D2[2]));
+  const ang = Math.acos(dot);
+  const crossU = (D1[1] * D2[2] - D1[2] * D2[1]) * ux + (D1[2] * D2[0] - D1[0] * D2[2]) * uy + (D1[0] * D2[1] - D1[1] * D2[0]) * uz;
+  const turnSign = crossU >= 0 ? 1 : -1;
+  const curveN = Math.min(1, ang / 0.6);
+  // speed
+  let s = ex.speed[i0]; if (!isFinite(s)) s = 0;
+  const speedN = Math.min(1, s / 300);
+  // shape targets: right on the car's tail, low, opening out on straights. Much
+  // closer than before — the framing pass below guarantees the car stays in shot.
+  const DMIN = 4, DMAX = 18, HMIN = 2, HMAX = 6.5;
+  const distT = (DMIN + (DMAX - DMIN) * speedN * (1 - 0.55 * curveN)) * (follow.distMul || 1);
+  const heightT = HMIN + (HMAX - HMIN) * speedN * (1 - 0.5 * curveN);
+  const sideT = distT * 0.34 * curveN * turnSign * FOLLOW_SWING;   // swing into the corner
+  const bankT = 0.16 * curveN * speedN * turnSign * FOLLOW_SWING;  // drone roll into the turn
+  const R = rig;
+  if (!R.ready) { R.dist = distT; R.height = heightT; R.side = sideT; R.bank = bankT; R.up = [ux, uy, uz]; R.ready = true; }
+  // kUp fast enough to track a corkscrew's spinning road-normal; kSlow eases FOV/framing
+  const kMed = easeK(5.0, dt), kUp = easeK(5.5, dt), kBank = easeK(3.0, dt), kSlow = easeK(2.0, dt);
+  R.dist += (distT - R.dist) * kMed;
+  R.height += (heightT - R.height) * kMed;
+  R.side += (sideT - R.side) * kMed;
+  R.bank = (R.bank || 0) + (bankT - (R.bank || 0)) * kBank;
+  R.up[0] += (ux - R.up[0]) * kUp; R.up[1] += (uy - R.up[1]) * kUp; R.up[2] += (uz - R.up[2]) * kUp;
+  const sul = Math.hypot(R.up[0], R.up[1], R.up[2]) || 1; R.up[0] /= sul; R.up[1] /= sul; R.up[2] /= sul;
+  // chase direction = −heading rotated by the user's drag offset about up (Rodrigues)
+  const yaw = follow.yawOff || 0, cy = Math.cos(yaw), sy = Math.sin(yaw);
+  const kd = ux * hx + uy * hy + uz * hz;   // heading is ⟂ up so ~0, kept for generality
+  const Hx = hx * cy + (uy * hz - uz * hy) * sy + ux * kd * (1 - cy);
+  const Hy = hy * cy + (uz * hx - ux * hz) * sy + uy * kd * (1 - cy);
+  const Hz = hz * cy + (ux * hy - uy * hx) * sy + uz * kd * (1 - cy);
+  // rigid desired eye — tracks the car every frame with only the SHAPE smoothed,
+  // so there is NO positional lag (the old eye-smoothing trailed ~15 m at 300 km/h
+  // and couldn't hold a corkscrew). Collision & framing ride on top.
+  const desx = px - Hx * R.dist + R.up[0] * R.height + rx * R.side;
+  const desy = py - Hy * R.dist + R.up[1] * R.height + ry * R.side;
+  const desz = pz - Hz * R.dist + R.up[2] * R.height + rz * R.side;
+  // --- drone collision: fold the boom in fluidly if the world would occlude the car.
+  // Only the fraction is smoothed (spring feel) — the base still tracks rigidly. ---
+  const pivot = [px - Hx * 2 + R.up[0] * 2, py - Hy * 2 + R.up[1] * 2, pz - Hz * 2 + R.up[2] * 2];
+  const hit = collideSegment(worldColl, pivot, [desx, desy, desz]);
+  const fracT = (hit > 0 && hit < 1) ? Math.max(0.12, hit * 0.9) : 1;
+  R.collFrac = (R.collFrac == null) ? fracT : R.collFrac + (fracT - R.collFrac) * kMed;
+  const fr = Math.min(1, R.collFrac);
+  let exW = pivot[0] + (desx - pivot[0]) * fr;
+  let eyW = pivot[1] + (desy - pivot[1]) * fr;
+  let ezW = pivot[2] + (desz - pivot[2]) * fr;
+  // never ram the car: keep the eye outside a small sphere around it
+  const MINCAR = 2.5;
+  const cvx = exW - px, cvy = eyW - py, cvz = ezW - pz, cvl = Math.hypot(cvx, cvy, cvz);
+  if (cvl > 1e-4 && cvl < MINCAR) { const g = MINCAR / cvl; exW = px + cvx * g; eyW = py + cvy * g; ezW = pz + cvz * g; }
+  // anti-clip floor: keep the eye a minimum clearance on the +up side of the road
+  const upDot = (exW - px) * R.up[0] + (eyW - py) * R.up[1] + (ezW - pz) * R.up[2];
+  const MINH = 1.6;
+  if (upDot < MINH) { const add = MINH - upDot; exW += R.up[0] * add; eyW += R.up[1] * add; ezW += R.up[2] * add; }
+  R.eye = R.eye || [0, 0, 0];
+  R.eye[0] = exW; R.eye[1] = eyW; R.eye[2] = ezW;   // rigid, no lag
+  // FOV + framing height ease SLOWLY toward their close/far targets: as it closes in
+  // the FOV widens and the car sinks lower, angling the lens up the road ahead.
+  const closeN = Math.max(0, Math.min(1, (22 - R.dist) / (22 - 4)));
+  const fovT = 0.85 + 0.40 * closeN;                // ~49° far → ~72° right on the tail
+  const frameYT = -0.28 - 0.50 * closeN;            // fully zoomed → car sits low, lens tilts up the road
+  R.fov = (R.fov == null) ? fovT : R.fov + (fovT - R.fov) * kSlow;
+  R.frameY = (R.frameY == null) ? frameYT : R.frameY + (frameYT - R.frameY) * kSlow;
+  // --- framing guarantee (robust): place the car at R.frameY using the STABLE
+  // heading/up basis — never the eye→car direction, which degenerates (and used to
+  // flip 180°) when the camera rides near overhead. Solve the aim pitch β in the
+  // heading–up plane that lands the car's vertical screen position exactly at frameY. ---
+  const dEx = px - R.eye[0], dEy = py - R.eye[1], dEz = pz - R.eye[2];
+  const Af = dEx * Hx + dEy * Hy + dEz * Hz;                // car-ahead component (along heading)
+  const Bf = dEx * R.up[0] + dEy * R.up[1] + dEz * R.up[2]; // car-vertical component (along up)
+  const kf = R.frameY * Math.tan(R.fov * 0.5);
+  let beta = Math.atan2(Bf - kf * Af, Af + kf * Bf);        // pitch that puts the car at frameY
+  const BMAX = 1.45; if (beta > BMAX) beta = BMAX; else if (beta < -BMAX) beta = -BMAX; // never aim backward
+  const cbe = Math.cos(beta), sbe = Math.sin(beta);
+  const fX = Hx * cbe + R.up[0] * sbe, fY = Hy * cbe + R.up[1] * sbe, fZ = Hz * cbe + R.up[2] * sbe;
+  R.look = [R.eye[0] + fX * 60, R.eye[1] + fY * 60, R.eye[2] + fZ * 60];
+  // drone bank: roll the VIEW up around the heading (view only — doesn't move eye)
+  const bc = Math.cos(R.bank || 0), bs = Math.sin(R.bank || 0);
+  R.viewUp = [R.up[0] * bc - rx * bs, R.up[1] * bc - ry * bs, R.up[2] * bc - rz * bs];  // up' = up·cos + (H×up)·sin
+  cam.dist = R.dist;   // fog scales with chase distance
+  cam.target[0] = R.look[0]; cam.target[1] = R.look[1]; cam.target[2] = R.look[2];
+}
+
+/* colors */
+function speedRGB(s) {
+  const t = Math.max(0, Math.min(1, s / 950));
+  if (t < 0.5) { const u = t / 0.5; return [(31 + u * 214) / 255, (182 + u * 29) / 255, (208 - u * 145) / 255]; }
+  const u = (t - 0.5) / 0.5; return [(245 + u * 10) / 255, (211 - u * 152) / 255, (63 - u * 15) / 255];
+}
+function bankRGB(deg) {
+  const t = Math.max(0, Math.min(1, deg / 130));
+  if (t < 0.46) { const u = t / 0.46; return [(58 + u * 187) / 255, (76 + u * 100) / 255, (110 - u * 74) / 255]; }
+  if (t < 0.7) { const u = (t - 0.46) / 0.24; return [(245 + u * 10) / 255, (176 - u * 56) / 255, (36 + u * 4) / 255]; }
+  const u = (t - 0.7) / 0.3; return [1, (120 - u * 90) / 255, (40 - u * 10) / 255];
+}
+
+/* build GPU geometry from extracted car */
+function buildGeometry() {
+  const N = ex.N, P = ex.pos, NM = ex.nrm;
+  // the ribbon is ALWAYS the driven line, never a road stand-in — that costume
+  // read as "track with a centered line" until the real road renders under it
+  const trackLoaded = !!(bufs.trackIdxN || sceneGroups);
+  const HALF = trackLoaded ? 0.95 : 2.0;
+  const LIFT = trackLoaded ? 0.4 : 0;
+  const rib = new Float32Array((N - 1) * 2 * 7 * 2); // 2 verts/frame, pos3+col4, x2 triangles handled by strip via degenerate skip
+  // simpler: build triangle list segment by segment to survive gaps
+  const verts = [];
+  function colAt(i) {
+    const v = colorMode === "speed" ? ex.speed[i] : ex.tilt[i];
+    if (colorMode === "speed") return isFinite(v) ? speedRGB(v) : [0.3, 0.34, 0.42];
+    return isFinite(v) ? bankRGB(v) : [0.3, 0.34, 0.42];
+  }
+  function edge(i) {
+    // right vector = normalize(cross(normal, forward))
+    const j = Math.min(i + 1, N - 1);
+    let fx = P[j * 3] - P[i * 3], fy = P[j * 3 + 1] - P[i * 3 + 1], fz = P[j * 3 + 2] - P[i * 3 + 2];
+    const fl = Math.hypot(fx, fy, fz) || 1; fx /= fl; fy /= fl; fz /= fl;
+    const nx = NM[i * 3], ny = NM[i * 3 + 1], nz = NM[i * 3 + 2];
+    let rx = ny * fz - nz * fy, ry = nz * fx - nx * fz, rz = nx * fy - ny * fx;
+    const rl = Math.hypot(rx, ry, rz) || 1; rx /= rl; ry /= rl; rz /= rl;
+    const lx = nx * LIFT, ly = ny * LIFT, lz = nz * LIFT;
+    return [
+      P[i * 3] - rx * HALF + lx, P[i * 3 + 1] - ry * HALF + ly, P[i * 3 + 2] - rz * HALF + lz,
+      P[i * 3] + rx * HALF + lx, P[i * 3 + 1] + ry * HALF + ly, P[i * 3 + 2] + rz * HALF + lz,
+    ];
+  }
+  const [ra, rb] = frameRange();
+  let prevEdge = null, prevCol = null, prevI = -1;
+  for (let i = ra; i < rb; i++) {
+    if (ex.gap[i]) { prevEdge = null; continue; }
+    const e = edge(i), c = colAt(i);
+    if (prevEdge && i - prevI <= 3) {
+      // two triangles: (pL,pR,cL) (pR,cR,cL)
+      const shade = 0.85 + 0.15 * Math.max(0, NM[i * 3 + 1]); // slight top-light
+      const cc = [c[0] * shade, c[1] * shade, c[2] * shade];
+      const pc = prevCol;
+      verts.push(
+        prevEdge[0], prevEdge[1], prevEdge[2], pc[0], pc[1], pc[2], 1,
+        prevEdge[3], prevEdge[4], prevEdge[5], pc[0], pc[1], pc[2], 1,
+        e[0], e[1], e[2], cc[0], cc[1], cc[2], 1,
+        prevEdge[3], prevEdge[4], prevEdge[5], pc[0], pc[1], pc[2], 1,
+        e[3], e[4], e[5], cc[0], cc[1], cc[2], 1,
+        e[0], e[1], e[2], cc[0], cc[1], cc[2], 1,
+      );
+    }
+    prevEdge = e; prevCol = c; prevI = i;
+  }
+  const arr = new Float32Array(verts);
+  if (!bufs.ribbon) bufs.ribbon = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufs.ribbon);
+  gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+  bufs.ribbonN = arr.length / 7;
+
+  // center line (slightly lifted along normal) — only over a real track;
+  // over the bare ribbon it reads as "a line in the middle of the road"
+  const lv = [];
+  for (let i = trackLoaded ? ra + 1 : rb; i < rb; i++) {
+    if (ex.gap[i] || ex.gap[i - 1]) continue;
+    const c1 = colAt(i - 1), c2 = colAt(i);
+    lv.push(
+      P[(i - 1) * 3] + NM[(i - 1) * 3] * 0.6, P[(i - 1) * 3 + 1] + NM[(i - 1) * 3 + 1] * 0.6, P[(i - 1) * 3 + 2] + NM[(i - 1) * 3 + 2] * 0.6,
+      Math.min(1, c1[0] * 1.35), Math.min(1, c1[1] * 1.35), Math.min(1, c1[2] * 1.35), 1,
+      P[i * 3] + NM[i * 3] * 0.6, P[i * 3 + 1] + NM[i * 3 + 1] * 0.6, P[i * 3 + 2] + NM[i * 3 + 2] * 0.6,
+      Math.min(1, c2[0] * 1.35), Math.min(1, c2[1] * 1.35), Math.min(1, c2[2] * 1.35), 1,
+    );
+  }
+  const larr = new Float32Array(lv);
+  if (!bufs.line) bufs.line = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufs.line);
+  gl.bufferData(gl.ARRAY_BUFFER, larr, gl.STATIC_DRAW);
+  bufs.lineN = larr.length / 7;
+
+  // ground grid at minY - 20
+  let minX = 1e30, maxX = -1e30, minY = 1e30, minZ = 1e30, maxZ = -1e30, maxY = -1e30;
+  for (let i = ra; i < rb; i++) {
+    const x = P[i * 3], y = P[i * 3 + 1], z = P[i * 3 + 2];
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (y < minY) minY = y; if (y > maxY) maxY = y;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+  }
+  const gy = minY - 20, gstep = 200;
+  const gv = [];
+  const gx0 = Math.floor((minX - 400) / gstep) * gstep, gx1 = maxX + 400;
+  const gz0 = Math.floor((minZ - 400) / gstep) * gstep, gz1 = maxZ + 400;
+  for (let x = gx0; x <= gx1; x += gstep) gv.push(x, gy, gz0, 0.10, 0.12, 0.17, 1, x, gy, gz1, 0.10, 0.12, 0.17, 1);
+  for (let z = gz0; z <= gz1; z += gstep) gv.push(gx0, gy, z, 0.10, 0.12, 0.17, 1, gx1, gy, z, 0.10, 0.12, 0.17, 1);
+  const garr = new Float32Array(gv);
+  if (!bufs.grid) bufs.grid = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, bufs.grid);
+  gl.bufferData(gl.ARRAY_BUFFER, garr, gl.STATIC_DRAW);
+  bufs.gridN = garr.length / 7;
+
+  // camera fit
+  cam.target = [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+  cam.dist = Math.max(maxX - minX, maxZ - minZ, maxY - minY) * 0.9 + 200;
+}
+
+function bindAndDraw(buf, n, mode, ptSize) {
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.enableVertexAttribArray(locPos);
+  gl.enableVertexAttribArray(locCol);
+  gl.vertexAttribPointer(locPos, 3, gl.FLOAT, false, 28, 0);
+  gl.vertexAttribPointer(locCol, 4, gl.FLOAT, false, 28, 12);
+  gl.uniform1f(locPt, ptSize || 1);
+  gl.drawArrays(mode, 0, n);
+}
+
+function render() {
+  const w = cv.clientWidth, h = cv.clientHeight;
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+  gl.viewport(0, 0, cv.width, cv.height);
+  gl.clearColor(0.039, 0.051, 0.075, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  if (!ex) return;
+  const fa = followActive();
+  const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, 2, 60000);
+  const view = mLookAt(camEye(), fa ? follow.rig.look : cam.target, fa ? (follow.rig.viewUp || follow.rig.up) : [0, 1, 0]);
+  const mvp = new Float32Array(mMul(proj, view));
+  const fogD = 0.35 / cam.dist;
+
+  // textured scene pass (track verts are already world-space → model = identity)
+  if (sceneGroups) {
+    gl.useProgram(progT);
+    gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
+    gl.uniformMatrix4fv(tLoc.model, false, IDENT4);
+    gl.uniform1f(tLoc.fogD, fogD);
+    gl.uniform3f(tLoc.fogC, 0.039, 0.051, 0.075);
+    gl.uniform3f(tLoc.sun, 0.32, 0.82, 0.47);
+    gl.uniform1i(tLoc.tex, 0);
+    gl.activeTexture(gl.TEXTURE0);
+    for (const g of sceneGroups) {
+      gl.bindTexture(gl.TEXTURE_2D, g.tex);
+      gl.uniform1f(tLoc.alphaTest, g.alphaTested ? 1 : 0);
+      if (g.translucent) {
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        gl.depthMask(false);
+        gl.uniform1f(tLoc.alpha, 0.16);
+      } else {
+        gl.disable(gl.BLEND);
+        gl.depthMask(true);
+        gl.uniform1f(tLoc.alpha, 1.0);
+      }
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
+      gl.enableVertexAttribArray(tLoc.pos);
+      gl.vertexAttribPointer(tLoc.pos, 3, gl.FLOAT, false, 12, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.nrmBuf);
+      gl.enableVertexAttribArray(tLoc.nrm);
+      gl.vertexAttribPointer(tLoc.nrm, 3, gl.FLOAT, false, 12, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.uvBuf);
+      gl.enableVertexAttribArray(tLoc.uv);
+      gl.vertexAttribPointer(tLoc.uv, 2, gl.FLOAT, false, 8, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
+      gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+    }
+    gl.disableVertexAttribArray(tLoc.nrm);
+    gl.disableVertexAttribArray(tLoc.uv);
+    gl.disable(gl.BLEND);
+    gl.depthMask(true);
+  }
+
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(locMVP, false, mvp);
+  gl.uniform1f(locFogD, fogD);
+
+  if (!sceneGroups) bindAndDraw(bufs.grid, bufs.gridN, gl.LINES);
+  if (!sceneGroups && bufs.trackIdxN) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufs.trackPos);
+    gl.enableVertexAttribArray(locPos);
+    gl.vertexAttribPointer(locPos, 3, gl.FLOAT, false, 12, 0);
+    gl.disableVertexAttribArray(locCol);
+    gl.vertexAttrib4f(locCol, 0.10, 0.125, 0.165, 1);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bufs.trackIdx);
+    gl.drawElements(gl.TRIANGLES, bufs.trackIdxN, gl.UNSIGNED_INT, 0);
+  }
+  if (showLine) {
+    bindAndDraw(bufs.ribbon, bufs.ribbonN, gl.TRIANGLES);
+    bindAndDraw(bufs.line, bufs.lineN, gl.LINES);
+  }
+
+  const i = Math.max(0, Math.min(ex.N - 1, Math.floor(tCur / ex.dt)));
+
+  // the car model on the cursor (its meshes are local-space → uModel = carMatrix)
+  const carShown = carGroups && showCar && !ex.gap[i];
+  if (carShown) {
+    const cm = carModelMatrix(tCur / ex.dt);
+    gl.useProgram(progT);
+    gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
+    gl.uniformMatrix4fv(tLoc.model, false, cm);
+    gl.uniform1f(tLoc.fogD, fogD);
+    gl.uniform3f(tLoc.fogC, 0.039, 0.051, 0.075);
+    gl.uniform3f(tLoc.sun, 0.32, 0.82, 0.47);
+    gl.uniform1i(tLoc.tex, 0);
+    gl.uniform1f(tLoc.alpha, 1.0);
+    gl.activeTexture(gl.TEXTURE0);
+    for (const g of carGroups) {
+      gl.bindTexture(gl.TEXTURE_2D, g.tex);
+      gl.uniform1f(tLoc.alphaTest, g.alphaTested ? 1 : 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
+      gl.enableVertexAttribArray(tLoc.pos); gl.vertexAttribPointer(tLoc.pos, 3, gl.FLOAT, false, 12, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.nrmBuf);
+      gl.enableVertexAttribArray(tLoc.nrm); gl.vertexAttribPointer(tLoc.nrm, 3, gl.FLOAT, false, 12, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.uvBuf);
+      gl.enableVertexAttribArray(tLoc.uv); gl.vertexAttribPointer(tLoc.uv, 2, gl.FLOAT, false, 8, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
+      gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+    }
+    gl.disableVertexAttribArray(tLoc.nrm); gl.disableVertexAttribArray(tLoc.uv);
+    if (showThruster) {
+      const inten = turbineIntensity(i);
+      if (inten > 0.03) drawThruster(cm, inten, mvp);
+    }
+    gl.useProgram(prog);
+  }
+
+  // cursor point — shown when the car model isn't
+  if (!carShown) {
+    const cpt = new Float32Array([
+      ex.pos[i * 3] + ex.nrm[i * 3] * 1.5,
+      ex.pos[i * 3 + 1] + ex.nrm[i * 3 + 1] * 1.5,
+      ex.pos[i * 3 + 2] + ex.nrm[i * 3 + 2] * 1.5,
+      1, 1, 1, 1,
+    ]);
+    gl.bindBuffer(gl.ARRAY_BUFFER, bufs.cursor);
+    gl.bufferData(gl.ARRAY_BUFFER, cpt, gl.DYNAMIC_DRAW);
+    gl.disable(gl.DEPTH_TEST);
+    bindAndDraw(bufs.cursor, 1, gl.POINTS, 10);
+    gl.enable(gl.DEPTH_TEST);
+  }
+}
+
+/* ===================== input: orbit controls ===================== */
+let dragging = null;
+cv.addEventListener("mousedown", e => {
+  dragging = { x: e.clientX, y: e.clientY, btn: e.button, moved: false };
+});
+addEventListener("mousemove", e => {
+  if (!dragging) return;
+  const dx = e.clientX - dragging.x, dy = e.clientY - dragging.y;
+  dragging.x = e.clientX; dragging.y = e.clientY;
+  if (Math.abs(dx) + Math.abs(dy) > 1) dragging.moved = true;
+  if (dragging.btn === 0) {
+    if (follow.on) follow.yawOff += dx * 0.005;
+    else cam.yaw += dx * 0.005;
+    cam.pitch = Math.max(-1.5, Math.min(1.55, cam.pitch + dy * 0.005));
+  } else {
+    // pan in camera plane
+    const eye = camEye();
+    const fz = [cam.target[0] - eye[0], cam.target[1] - eye[1], cam.target[2] - eye[2]];
+    const fl = Math.hypot(fz[0], fz[1], fz[2]);
+    const rx = [fz[2] / fl, 0, -fz[0] / fl];
+    const scale = cam.dist * 0.0012;
+    cam.target[0] -= (dx * rx[0]) * scale;
+    cam.target[2] -= (dx * rx[2]) * scale;
+    cam.target[1] += dy * scale;
+  }
+});
+addEventListener("mouseup", () => { dragging = null; });
+cv.addEventListener("contextmenu", e => e.preventDefault());
+cv.addEventListener("wheel", e => {
+  e.preventDefault();
+  if (follow.on) {
+    follow.distMul = Math.max(0.3, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
+  } else {
+    cam.dist = Math.max(50, Math.min(50000, cam.dist * (e.deltaY > 0 ? 1.12 : 0.89)));
+  }
+}, { passive: false });
+
+/* ===================== transport ===================== */
+const scrub = document.getElementById("scrub");
+const timelabel = document.getElementById("timelabel");
+const fmtT = s => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, "0")}`;
+function drawScrub() {
+  const w = scrub.clientWidth, h = 34;
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  if (scrub.width !== w * dpr) { scrub.width = w * dpr; scrub.height = h * dpr; }
+  const c = scrub.getContext("2d");
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, w, h);
+  if (!ex) return;
+  const [ra, rb] = frameRange();
+  const t0r = ra * ex.dt, t1r = rb * ex.dt;
+  // speed sparkline background
+  c.beginPath();
+  c.moveTo(0, h);
+  for (let x = 0; x < w; x++) {
+    const i = ra + Math.floor(x / w * (rb - ra));
+    const v = ex.speed[i];
+    c.lineTo(x, h - (isFinite(v) ? v / 1000 * (h - 4) : 0));
+  }
+  c.lineTo(w, h);
+  c.closePath();
+  c.fillStyle = "rgba(245,211,63,0.18)";
+  c.fill();
+  // lap lines
+  for (const l of ex.laps) {
+    const lt = l.frame * ex.dt;
+    if (lt < t0r || lt > t1r) continue;
+    const x = (lt - t0r) / (t1r - t0r) * w;
+    c.strokeStyle = "rgba(226,58,46,0.8)"; c.lineWidth = 1;
+    c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke();
+  }
+  // playhead
+  const x = (tCur - t0r) / (t1r - t0r) * w;
+  c.strokeStyle = "#FFFFFF"; c.lineWidth = 1.5;
+  c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke();
+}
+function scrubTo(e) {
+  const r = scrub.getBoundingClientRect();
+  const [ra, rb] = frameRange();
+  const t0r = ra * ex.dt, t1r = rb * ex.dt;
+  tCur = t0r + Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)) * (t1r - t0r);
+}
+let scrubbing = false;
+scrub.addEventListener("mousedown", e => { scrubbing = true; scrubTo(e); });
+addEventListener("mousemove", e => { if (scrubbing) scrubTo(e); });
+addEventListener("mouseup", () => { scrubbing = false; });
+
+document.getElementById("btnPlay").addEventListener("click", function () {
+  playing = !playing;
+  this.textContent = playing ? "pause" : "play";
+});
+document.getElementById("rate").addEventListener("change", function () { rate = +this.value; });
+document.getElementById("modeSpeed").addEventListener("click", () => setMode("speed"));
+document.getElementById("modeBank").addEventListener("click", () => setMode("bank"));
+document.getElementById("btnLap").addEventListener("click", function () {
+  lapOnly = !lapOnly;
+  this.classList.toggle("on", lapOnly);
+  if (ex) {
+    buildGeometry();
+    tCur = frameRange()[0] * ex.dt;
+  }
+});
+document.getElementById("btnFollow").addEventListener("click", function () {
+  follow.on = !follow.on;
+  this.classList.toggle("on", follow.on);
+  if (follow.on) {
+    follow.saved = { yaw: cam.yaw, pitch: cam.pitch, dist: cam.dist, target: cam.target.slice() };
+    follow.yawOff = 0;
+    follow.distMul = 1;
+    follow.rig.ready = false; follow.rig.eye = null; follow.rig.look = null; follow.rig.fwd = null;  // snap to car, then ease
+  } else if (follow.saved) {
+    cam.yaw = follow.saved.yaw; cam.pitch = follow.saved.pitch;
+    cam.dist = follow.saved.dist; cam.target = follow.saved.target;
+  }
+});
+document.getElementById("btnCar").addEventListener("click", function () {
+  showCar = !showCar;
+  this.classList.toggle("on", showCar);
+});
+document.getElementById("btnLine").addEventListener("click", function () {
+  showLine = !showLine;
+  this.classList.toggle("on", showLine);
+});
+function setMode(m) {
+  colorMode = m;
+  document.getElementById("modeSpeed").classList.toggle("on", m === "speed");
+  document.getElementById("modeBank").classList.toggle("on", m === "bank");
+  if (ex) buildGeometry();
+}
+
+/* ===================== file loading ===================== */
+const drop = document.getElementById("drop");
+const droperr = document.getElementById("droperr");
+const filepick = document.getElementById("filepick");
+const trackpick = document.getElementById("trackpick");
+document.getElementById("btnOpen").addEventListener("click", () => filepick.click());
+document.getElementById("btnOpen2").addEventListener("click", () => filepick.click());
+document.getElementById("btnTrack").addEventListener("click", () => trackpick.click());
+filepick.addEventListener("change", () => { if (filepick.files[0]) loadFile(filepick.files[0]); });
+trackpick.addEventListener("change", () => { if (trackpick.files[0]) loadTrack(trackpick.files[0]); });
+addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("dragging"); });
+addEventListener("dragleave", () => drop.classList.remove("dragging"));
+addEventListener("drop", e => {
+  e.preventDefault(); drop.classList.remove("dragging");
+  for (const f of e.dataTransfer.files) {
+    if (/\.kn5$/i.test(f.name)) loadTrack(f);
+    else loadFile(f);
+  }
+});
+
+/* ---- tracks-folder persistence (File System Access API) ---- */
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open("blackbox", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbGet(key) {
+  try {
+    const db = await idbOpen();
+    return await new Promise(res => {
+      const g = db.transaction("kv", "readonly").objectStore("kv").get(key);
+      g.onsuccess = () => res(g.result || null);
+      g.onerror = () => res(null);
+    });
+  } catch (e) { return null; }
+}
+async function idbSet(key, val) {
+  try {
+    const db = await idbOpen();
+    await new Promise(res => {
+      const p = db.transaction("kv", "readwrite").objectStore("kv").put(val, key);
+      p.onsuccess = res; p.onerror = res;
+    });
+  } catch (e) { /* non-fatal */ }
+}
+
+const chipTrack = () => document.getElementById("chipTrack");
+document.getElementById("btnTracksDir").addEventListener("click", async () => {
+  if (!window.showDirectoryPicker) { alert("This browser lacks the File System Access API (use Chrome/Edge) — drag the kn5 in manually."); return; }
+  try {
+    const dir = await showDirectoryPicker();
+    await idbSet("tracksDir", dir);
+    if (replay && !sceneGroups && !bufs.trackIdxN) maybeAutoLoadTrack(replay.track);
+    else chipTrack().textContent = "tracks folder saved — future replays auto-load their track";
+  } catch (e) { /* user cancelled */ }
+});
+
+async function maybeAutoLoadTrack(trackName) {
+  if (!trackName || sceneGroups || bufs.trackIdxN) return;
+  // native app: fetch the track's kn5 files straight from the Steam AC install
+  if (inTauri) {
+    try {
+      chipTrack().textContent = `finding ${trackName} in your AC install…`;
+      const files = await tinvoke("find_track", { name: trackName });
+      if (!files || !files.length) {
+        chipTrack().textContent = `track "${trackName}" not found in your Steam AC install — load a kn5 manually`;
+        return;
+      }
+      chipTrack().textContent = `loading ${trackName} (${files.length} kn5)…`;
+      const items = [];
+      for (const f of files) {
+        const ab = await tinvoke("read_file", { path: f.path });
+        items.push({ name: f.name, ab });
+      }
+      await loadTrackBuffers(items);
+    } catch (e) {
+      chipTrack().textContent = "track auto-load failed: " + e;
+    }
+    return;
+  }
+  const dir = await idbGet("tracksDir");
+  if (!dir) {
+    chipTrack().textContent = `NO TRACK LOADED — click "tracks folder…" once (pick ...\\assettocorsa\\content\\tracks) and replays will load their track automatically.`;
+    return;
+  }
+  try {
+    let perm = await dir.queryPermission({ mode: "read" });
+    if (perm !== "granted") perm = await dir.requestPermission({ mode: "read" });
+    if (perm !== "granted") return;
+    let found = null;
+    for await (const [name, handle] of dir.entries()) {
+      if (handle.kind === "directory" && name.toLowerCase() === trackName.toLowerCase()) { found = handle; break; }
+    }
+    if (!found) {
+      chipTrack().textContent = `track folder "${trackName}" not found in the saved tracks folder — load the kn5 manually`;
+      return;
+    }
+    const items = [];
+    for await (const [name, handle] of found.entries()) {
+      if (handle.kind === "file" && /\.kn5$/i.test(name)) {
+        items.push({ name, ab: await (await handle.getFile()).arrayBuffer() });
+      }
+    }
+    if (!items.length) {
+      chipTrack().textContent = `no .kn5 files in "${trackName}" — load manually`;
+      return;
+    }
+    chipTrack().textContent = `auto-loading ${trackName} (${items.length} kn5)…`;
+    await loadTrackBuffers(items);
+  } catch (e) {
+    chipTrack().textContent = "track auto-load failed: " + e.message;
+  }
+}
+
+async function makeSceneTexture(blob, name) {
+  const fmt = KN5Tex.sniffFormat(blob);
+  if (fmt === "dds") {
+    const parsed = KN5Tex.parseDDS(blob);
+    // placeholder textures (NULL.dds etc.): tiny and near-black would kill the
+    // material — probe and substitute a neutral surface grey
+    if (parsed.width <= 4 && parsed.height <= 4) {
+      let rgba;
+      if (parsed.format === "rgba8") rgba = parsed.mips[0].data;
+      else rgba = KN5Tex.decodeDXT(parsed.mips[0], parsed.format);
+      let lum = 0;
+      for (let i = 0; i < rgba.length; i += 4) lum += rgba[i] + rgba[i + 1] + rgba[i + 2];
+      lum /= (rgba.length / 4) * 3;
+      if (lum < 24) return makeFallbackTexture([120, 124, 132]);
+    }
+    return KN5Tex.uploadTexture(gl, parsed, extS3TC);
+  }
+  // png / jpg / unknown: let the browser decode
+  const bmp = await createImageBitmap(new Blob([blob]));
+  return uploadImageTexture(bmp);
+}
+
+async function loadTrackBuffers(items) { // items: [{name, ab}]
+  const fi = document.getElementById("fileinfo");
+  const prev = fi.textContent;
+  try {
+    if (!extUint) throw new Error("browser lacks uint index support for big track meshes");
+    const t0 = performance.now();
+    let triCount = 0;
+    const allGroups = [];
+    const roadChunks = []; // {verts, tris} per file for the edge index
+    const collGroups = []; // {pos, idx} of solid meshes for the world collider
+
+    for (const item of items) {
+      try {
+        const scene = KN5.extractScene(item.ab);
+        const texByName = {};
+        for (const t of scene.textures) texByName[t.name] = t;
+        for (const g of scene.groups) {
+          const mat = scene.materials[g.materialId] || {};
+          let tex;
+          try {
+            const entry = mat.txDiffuse && texByName[mat.txDiffuse];
+            tex = entry ? await makeSceneTexture(entry.blob, entry.name) : makeFallbackTexture([120, 124, 132]);
+          } catch (e) {
+            tex = makeFallbackTexture([120, 124, 132]);
+          }
+          const posBuf = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, g.pos, gl.STATIC_DRAW);
+          const nrmBuf = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, nrmBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, g.nrm, gl.STATIC_DRAW);
+          const uvBuf = gl.createBuffer();
+          gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
+          gl.bufferData(gl.ARRAY_BUFFER, g.uv, gl.STATIC_DRAW);
+          const idxBuf = gl.createBuffer();
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+          gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, g.idx, gl.STATIC_DRAW);
+          const translucent = /transparent|glass/i.test(mat.name || "");
+          allGroups.push({ posBuf, nrmBuf, uvBuf, idxBuf, count: g.idx.length, tex,
+                           alphaTested: !!(mat.alphaTested), translucent });
+          if (!translucent) collGroups.push({ pos: g.pos, idx: g.idx }); // solid → collider
+          triCount += g.triCount;
+        }
+      } catch (sceneErr) {
+        console.warn("scene path failed for " + item.name + ":", sceneErr);
+      }
+      try {
+        const road = KN5.extractRoadMesh(item.ab);
+        if (road.tris.length) roadChunks.push(road);
+      } catch (e) { console.warn("road extract failed for " + item.name + ":", e); }
+    }
+
+    if (allGroups.length) {
+      allGroups.sort((a, b) => (a.translucent ? 1 : 0) - (b.translucent ? 1 : 0));
+      sceneGroups = allGroups;
+    } else if (roadChunks.length) {
+      // bare fallback from the first road chunk set
+      const road = roadChunks[0];
+      if (!bufs.trackPos) bufs.trackPos = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, bufs.trackPos);
+      gl.bufferData(gl.ARRAY_BUFFER, road.verts, gl.STATIC_DRAW);
+      if (!bufs.trackIdx) bufs.trackIdx = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, bufs.trackIdx);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, road.tris, gl.STATIC_DRAW);
+      bufs.trackIdxN = road.tris.length;
+      triCount = road.tris.length / 3;
+    } else {
+      throw new Error("no renderable meshes found in " + items.map(i => i.name).join(", "));
+    }
+
+    if (ex) buildGeometry(); // ribbon shrinks to car width now that the road is real
+    document.getElementById("chipTrack").classList.add("hidden");
+    fi.textContent = prev + ` · track: ${items.length} kn5, ${(triCount).toLocaleString()} tris${allGroups.length ? " textured" : " (bare)"} (${((performance.now() - t0) / 1000).toFixed(1)}s) · building edge index…`;
+
+    setTimeout(() => {
+      try {
+        // merge road chunks for one edge index
+        let nv = 0, nt = 0;
+        for (const r of roadChunks) { nv += r.verts.length; nt += r.tris.length; }
+        const verts = new Float32Array(nv);
+        const tris = new Uint32Array(nt);
+        let vo = 0, to = 0, base = 0;
+        for (const r of roadChunks) {
+          verts.set(r.verts, vo);
+          for (let i = 0; i < r.tris.length; i++) tris[to + i] = r.tris[i] + base;
+          base += r.verts.length / 3; vo += r.verts.length; to += r.tris.length;
+        }
+        edgeIndex = RoadEdge.buildEdgeIndex(verts, tris);
+        // world collider: full solid scene if we have it, else the road mesh
+        try {
+          worldColl = collGroups.length ? buildWorldColliderFromGroups(collGroups)
+                                        : buildWorldCollider(verts, tris);
+        } catch (e) { worldColl = null; console.warn("collider build failed:", e); }
+        fi.textContent = fi.textContent.replace(" · building edge index…",
+          ` · ${edgeIndex.count.toLocaleString()} edge segments${worldColl ? ", " + worldColl.count.toLocaleString() + " collider tris" : ""}`);
+      } catch (err) {
+        fi.textContent = fi.textContent.replace(" · building edge index…", " · edge index failed");
+      }
+    }, 60);
+  } catch (err) {
+    fi.textContent = prev;
+    alert("kn5 load failed: " + err.message);
+  }
+}
+
+function loadTrack(file) {
+  file.arrayBuffer().then(ab => loadTrackBuffers([{ name: file.name, ab }]));
+}
+
+// clear the prior track's scene + GPU buffers before loading another, or they
+// stack (bug: open track A, then B → both rendered at once)
+function resetTrackScene() {
+  if (sceneGroups) {
+    for (const g of sceneGroups) {
+      gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
+      gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
+      if (g.tex) gl.deleteTexture(g.tex);
+    }
+    sceneGroups = null;
+  }
+  if (carGroups) {
+    for (const g of carGroups) {
+      gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
+      gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
+      if (g.tex) gl.deleteTexture(g.tex);
+    }
+    carGroups = null;
+  }
+  bufs.trackIdxN = 0;
+  edgeIndex = null;
+  worldColl = null;
+  const ct = document.getElementById("chipTrack");
+  if (ct) ct.classList.remove("hidden");
+}
+
+// upload a parsed kn5 scene's mesh groups to the GPU (shared by track + car)
+async function uploadSceneGroups(scene, fallbackRGB) {
+  const texByName = {};
+  for (const t of scene.textures) texByName[t.name] = t;
+  const groups = [];
+  for (const g of scene.groups) {
+    const mat = scene.materials[g.materialId] || {};
+    let tex;
+    try {
+      const entry = mat.txDiffuse && texByName[mat.txDiffuse];
+      tex = entry ? await makeSceneTexture(entry.blob, entry.name) : makeFallbackTexture(fallbackRGB);
+    } catch (e) { tex = makeFallbackTexture(fallbackRGB); }
+    const mk = (data, target) => { const b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); return b; };
+    groups.push({
+      posBuf: mk(g.pos, gl.ARRAY_BUFFER), nrmBuf: mk(g.nrm, gl.ARRAY_BUFFER),
+      uvBuf: mk(g.uv, gl.ARRAY_BUFFER), idxBuf: mk(g.idx, gl.ELEMENT_ARRAY_BUFFER),
+      count: g.idx.length, tex, alphaTested: !!mat.alphaTested,
+    });
+  }
+  return groups;
+}
+
+async function loadCarModel(carId) {
+  if (!inTauri || !carId) return;
+  try {
+    const files = await tinvoke("find_car", { carId });
+    if (!files || !files.length) return;
+    const ab = await tinvoke("read_file", { path: files[0].path });
+    const scene = KN5.extractScene(ab, { lod0Only: true });
+    carGroups = await uploadSceneGroups(scene, [150, 152, 158]);
+  } catch (e) { console.warn("car model load failed:", e); carGroups = null; }
+}
+
+function loadReplayBuffer(ab, name) {
+  droperr.textContent = "";
+  try {
+    resetTrackScene(); // a new replay starts with a clean track + car
+    replay = ACReplay.parseReplay(ab);
+    selectCar(0);
+    document.getElementById("fileinfo").textContent =
+      `${name} · ${replay.track}${replay.trackConfig ? "/" + replay.trackConfig : ""} · ${replay.weather} · ${replay.intervalMs} ms`;
+    drop.classList.add("hidden");
+    document.getElementById("hud").classList.remove("hidden");
+    document.getElementById("help").classList.remove("hidden");
+    document.getElementById("transport").classList.remove("hidden");
+    const sel = document.getElementById("carsel");
+    if (replay.cars.length > 1) {
+      sel.classList.remove("hidden");
+      sel.innerHTML = replay.cars.map((c, i) =>
+        `<option value="${i}">${c.driver || c.carId} (${c.carId})</option>`).join("");
+      sel.onchange = () => selectCar(+sel.value);
+    } else sel.classList.add("hidden");
+    maybeAutoLoadTrack(replay.track);
+    if (replay.cars[0]) loadCarModel(replay.cars[0].carId);
+  } catch (err) {
+    droperr.textContent = err.message;
+    drop.classList.remove("hidden");
+  }
+}
+
+function loadFile(file) {
+  file.arrayBuffer().then(ab => loadReplayBuffer(ab, file.name));
+}
+
+/* ===================== native (Tauri) integration ===================== */
+// One codebase, two modes. In a browser: drag-drop + File System Access.
+// In the BLACKBOX app: native disk access — the replay folder is auto-listed,
+// files load with no prompts, and a replay's track is fetched from the Steam
+// AC install automatically. Feature-detected via the global Tauri API.
+const TAURI = (window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
+const inTauri = !!TAURI;
+function tinvoke(cmd, args) { return TAURI.invoke(cmd, args); }
+
+function fmtAgo(unixSec) {
+  const d = Date.now() / 1000 - unixSec;
+  if (d < 3600) return Math.round(d / 60) + "m ago";
+  if (d < 86400) return Math.round(d / 3600) + "h ago";
+  return Math.round(d / 86400) + "d ago";
+}
+function parseReplayName(name) {
+  // ohyeah2389_t180_mach6_centrifuge__190726-094516.acreplay -> {track, car, stamp}
+  const base = name.replace(/\.acreplay$/i, "");
+  const stamp = (base.match(/(\d{6}-\d{6})$/) || [])[1] || "";
+  const body = base.replace(/_+\d{6}-\d{6}$/, "");
+  return { body, stamp };
+}
+
+async function loadReplayByPath(path, name) {
+  droperr.textContent = "";
+  try {
+    const ab = await tinvoke("read_file", { path });
+    loadReplayBuffer(ab, name);
+  } catch (e) {
+    droperr.textContent = "could not read " + name + ": " + e;
+  }
+}
+
+function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+function assetUrl(p) { return TAURI.convertFileSrc(p); }
+
+function hideOverlays() {
+  document.getElementById("gallery").classList.add("hidden");
+  document.getElementById("tracklist").classList.add("hidden");
+}
+function showGallery() {
+  hideOverlays();
+  document.getElementById("tracklist").classList.add("hidden");
+  document.getElementById("gallery").classList.remove("hidden");
+}
+
+/* ---- units (metric / imperial), user-toggleable in Settings ---- */
+let units = localStorage.getItem("blackbox_units") || "metric";
+function parseLengthMeters(s) {
+  if (!s) return null;
+  const m = String(s).toLowerCase().replace(",", ".").match(/([\d.]+)\s*(km|mi|miles|m)?/);
+  if (!m) return null;
+  const v = parseFloat(m[1]), u = m[2] || "";
+  if (u === "km") return v * 1000;
+  if (u === "mi" || u === "miles") return v * 1609.34;
+  if (u === "m") return v;
+  return v > 100 ? v : v * 1000; // no unit given: guess (>100 = metres)
+}
+function fmtDistance(meters) {
+  if (meters == null) return "";
+  if (units === "imperial") { const mi = meters / 1609.34; return (mi < 10 ? mi.toFixed(2) : mi.toFixed(1)) + " mi"; }
+  const km = meters / 1000; return (km < 10 ? km.toFixed(2) : km.toFixed(1)) + " km";
+}
+function fmtWidth(s) {
+  const m = parseFloat(String(s || "")); if (!isFinite(m)) return "";
+  return units === "imperial" ? Math.round(m * 3.28084) + " ft" : Math.round(m) + " m";
+}
+function fmtSpeed(kph) {
+  return isFinite(kph) ? (units === "imperial" ? Math.round(kph * 0.621371) + " mph" : Math.round(kph) + " km/h") : "—";
+}
+function trackMetaStr(t) {
+  return [fmtDistance(parseLengthMeters(t.length)), t.run].filter(Boolean).join(" · ");
+}
+
+// draw our own top-down map from the track's road geometry (Rust track_outline),
+// overlaid on the thumbnail. Points are normalized 0..1; fit preserving aspect.
+async function drawTrackOutline(folder, canvas) {
+  if (!canvas) return;
+  try {
+    const o = await tinvoke("track_outline", { folder });
+    if (!o || !o.count || !o.points || !o.points.length) return;
+    const ctx = canvas.getContext("2d");
+    const W = canvas.width, H = canvas.height, pad = 14;
+    const bw = o.bounds[2] - o.bounds[0], bh = o.bounds[3] - o.bounds[1];
+    const aspect = (bw && bh) ? bw / bh : 1;
+    let dw = W - 2 * pad, dh = H - 2 * pad;
+    if (dw / dh > aspect) dw = dh * aspect; else dh = dw / aspect;
+    const ox = (W - dw) / 2, oy = (H - dh) / 2;
+    ctx.clearRect(0, 0, W, H);
+    const ps = W > 420 ? 2.4 : 1.6;
+    ctx.fillStyle = "rgba(242,245,250,0.7)";
+    ctx.shadowColor = "rgba(226,58,46,0.95)"; ctx.shadowBlur = W > 420 ? 5 : 3;
+    const p = o.points;
+    for (let i = 0; i < p.length; i += 2) {
+      const x = ox + p[i] * dw;
+      const y = oy + (1 - p[i + 1]) * dh; // flip so it reads north-up
+      ctx.fillRect(x, y, ps, ps);
+    }
+    ctx.shadowBlur = 0;
+    canvas.classList.add("ready");
+  } catch (e) { /* command may be absent or track unresolved — leave thumb as-is */ }
+}
+
+let allTracks = [], curTrack = 0;
+async function renderGallery() {
+  const sub = document.getElementById("gallerysub");
+  document.getElementById("tvname").textContent = "scanning your Assetto Corsa install…";
+  try {
+    const tracks = await tinvoke("list_tracks");
+    tracks.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())); // alphabetical
+    allTracks = tracks;
+    const driven = tracks.filter(t => t.replays > 0).length;
+    sub.textContent = `${tracks.length} tracks · ${driven} driven`;
+    await indexScreenshots();      // map AC's in-game screenshots to tracks (best-effort)
+    showTrackAt(0);
+  } catch (e) {
+    document.getElementById("tvname").textContent = "could not scan tracks: " + e;
+  }
+}
+
+// Index AC's in-game screenshots by track. Files are
+// `Screenshot_<carId>_<trackId>_<timestamp>.jpg`; both ids can hold underscores,
+// so the track is the LONGEST known folder id that ends the mid-section. Many of
+// these are accidental button-presses — that randomness is the charm.
+let screenshotsByTrack = {};
+async function indexScreenshots() {
+  screenshotsByTrack = {};
+  let files;
+  try { files = await tinvoke("list_screenshots"); }
+  catch (e) { console.warn("screenshots unavailable:", e); return; }
+  if (!files || !files.length) return;
+  const folders = allTracks.map(t => (t.folder || "").toLowerCase()).filter(Boolean);
+  // fallback index: a folder's last `_`-token → the folder, but only kept if that
+  // token is unique across all folders (so a renamed track like onuris→chases_onuris
+  // still lands, without risking an ambiguous mis-match).
+  const lastTok = {};
+  for (const f of folders) {
+    const tk = f.split("_").pop();
+    if (tk.length < 4) continue;
+    (lastTok[tk] = lastTok[tk] || new Set()).add(f);
+  }
+  const tsRe = /_\d+(?:-\d+){3,}$/;   // trailing d-m-yy-h-m-s (+ optional dup index)
+  for (const path of files) {
+    const base = path.replace(/^.*[\\/]/, "").replace(/\.[^.]+$/, "");
+    const mid = base.replace(/^screenshot_/i, "").replace(tsRe, "").toLowerCase();
+    let best = "";
+    for (const f of folders) {                        // primary: longest folder that ends the mid
+      if (f.length <= best.length) continue;
+      if (mid === f || mid.endsWith("_" + f)) best = f;
+    }
+    if (!best) {                                       // fallback: unique last-token match
+      const set = lastTok[mid.split("_").pop()];
+      if (set && set.size === 1) best = [...set][0];
+    }
+    if (best) (screenshotsByTrack[best] = screenshotsByTrack[best] || []).push(path);
+  }
+}
+function setTrackBackground(folder) {
+  const bg = document.getElementById("tvbg");
+  if (!bg) return;
+  const shots = screenshotsByTrack[(folder || "").toLowerCase()] || [];
+  if (!shots.length) { bg.classList.remove("on"); bg.style.backgroundImage = "none"; return; }
+  const pick = shots[Math.floor(Math.random() * shots.length)];  // random accidental shot
+  bg.style.backgroundImage = `url('${assetUrl(pick)}')`;
+  bg.classList.add("on");
+}
+
+function showTrackAt(i) {
+  if (!allTracks.length) return;
+  curTrack = ((i % allTracks.length) + allTracks.length) % allTracks.length; // wrap
+  const t = allTracks[curTrack];
+  document.getElementById("tvname").textContent = t.name;
+  setTrackBackground(t.folder);
+  const thumb = document.getElementById("tvthumb");
+  thumb.style.backgroundImage = t.preview ? `url('${assetUrl(t.preview)}')` : "none";
+  const bits = [fmtDistance(parseLengthMeters(t.length)), t.run, t.country].filter(Boolean);
+  document.getElementById("tvmeta").textContent = bits.join(" · ");
+  const rbtn = document.getElementById("tvReplays");
+  rbtn.textContent = t.replays ? `${t.replays} replay${t.replays === 1 ? "" : "s"} — view` : "no replays";
+  rbtn.disabled = !t.replays;
+  rbtn.onclick = t.replays ? () => openTrack(t) : null;
+  document.getElementById("tvcount").textContent = `${curTrack + 1} / ${allTracks.length}`;
+  const mapCv = document.getElementById("tvmap");
+  mapCv.getContext("2d").clearRect(0, 0, mapCv.width, mapCv.height);
+  drawTrackMap(t.folder, mapCv);
+}
+function trackStep(d) { showTrackAt(curTrack + d); }
+
+// solid filled track map from the road triangles (Rust track_map_raster).
+// Returns true on success; caller falls back to the dotted outline otherwise.
+async function drawTrackMapRaster(folder, canvas) {
+  try {
+    const ab = await tinvoke("track_map_raster", { folder });
+    const dv = new DataView(ab);
+    const w = dv.getUint32(0, true), h = dv.getUint32(4, true);
+    if (!w || !h || 24 + w * h > ab.byteLength) return false;
+    const cov = new Uint8Array(ab, 24, w * h);
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    const img = ctx.createImageData(w, h), d = img.data;
+    for (let i = 0; i < w * h; i++) {
+      d[i * 4] = 236; d[i * 4 + 1] = 241; d[i * 4 + 2] = 249; d[i * 4 + 3] = cov[i];
+    }
+    ctx.putImageData(img, 0, 0);
+    return true;
+  } catch (e) { return false; }
+}
+
+function drawTrackMap(folder, canvas) {
+  drawTrackMapRaster(folder, canvas).then(ok => {
+    if (!ok) { canvas.width = 720; canvas.height = 720; drawTrackOutline(folder, canvas); }
+  });
+}
+
+function fmtLapMs(ms) {
+  return `${Math.floor(ms / 60000)}:${((ms % 60000) / 1000).toFixed(3).padStart(6, "0")}`;
+}
+// fastest full lap = min lap time excluding the out-lap (laps[0] is the roll-in)
+function fastestLap(ex) {
+  if (!ex.laps || ex.laps.length < 2) return null;
+  let best = Infinity;
+  for (let i = 1; i < ex.laps.length; i++) best = Math.min(best, ex.laps[i].timeMs);
+  return isFinite(best) ? best : null;
+}
+// date: prefer the DDMMYY-HHMMSS stamp AC embeds in the filename, else file mtime
+function fmtReplayDate(r) {
+  const m = r.name.match(/(\d{2})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})/);
+  const d = m ? new Date(2000 + +m[3], +m[2] - 1, +m[1], +m[4], +m[5], +m[6])
+              : new Date(r.modified * 1000);
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+         " · " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+}
+
+async function openTrack(t) {
+  const list = document.getElementById("tracklist");
+  const rows = document.getElementById("tlrows");
+  document.getElementById("tltitle").textContent = esc(t.name);
+  rows.innerHTML = `<div class="ovsub">loading…</div>`;
+  document.getElementById("gallery").classList.add("hidden");
+  list.classList.remove("hidden");
+
+  // detail: track info + the generated layout map (drawn from geometry)
+  const stat = (v, label) => v ? `<span class="tistat"><b>${esc(v)}</b>${label ? " " + label : ""}</span>` : "";
+  document.getElementById("tlinfo").innerHTML =
+    `<div class="tiname">${esc(t.name)}</div>`
+    + (t.description ? `<div class="tidesc">${esc(t.description)}</div>` : "")
+    + stat(fmtDistance(parseLengthMeters(t.length)), "length") + stat(fmtWidth(t.width), "wide") + stat(t.run, "")
+    + stat(t.country, "") + (t.author ? `<span class="tistat">by ${esc(t.author)}</span>` : "")
+    + `<span class="tistat" style="margin-top:4px"><b>${t.replays}</b> replay${t.replays === 1 ? "" : "s"}</span>`;
+  const mapCv = document.getElementById("tlmap");
+  mapCv.getContext("2d").clearRect(0, 0, mapCv.width, mapCv.height);
+  drawTrackMap(t.folder, mapCv);
+  document.getElementById("tlscroll").scrollTop = 0;
+  let replays;
+  try {
+    replays = await tinvoke("replays_for_track", { track: t.folder });
+  } catch (e) {
+    rows.innerHTML = `<div class="ovsub" style="color:var(--accent)">${esc(e)}</div>`; return;
+  }
+  if (!replays.length) { rows.innerHTML = `<div class="ovsub">no replays for this track</div>`; return; }
+  rows.innerHTML = "";
+  const built = [];
+  for (const r of replays) {
+    const row = document.createElement("div");
+    row.className = "tlrow";
+    row.innerHTML =
+      `<span class="car">…</span><span class="lap">—</span><span class="when">${esc(fmtReplayDate(r))}</span>`;
+    row.addEventListener("click", () => { hideOverlays(); loadReplayByPath(r.path, r.name); });
+    rows.appendChild(row);
+    built.push({ r, row });
+  }
+  // fill car + fastest lap by parsing each replay (sequential — a few MB each)
+  for (const { r, row } of built) {
+    try {
+      const ab = await tinvoke("read_file", { path: r.path });
+      const rep = ACReplay.parseReplay(ab);
+      const ex = ACReplay.extractCar(rep, 0);
+      const car = (rep.cars[0] && rep.cars[0].carId) || parseReplayName(r.name).body;
+      const best = fastestLap(ex);
+      row.querySelector(".car").textContent = car;
+      const lapEl = row.querySelector(".lap");
+      lapEl.textContent = best ? fmtLapMs(best) : "—";
+      if (best) lapEl.classList.add("has");
+    } catch (e) {
+      row.querySelector(".car").textContent = parseReplayName(r.name).body;
+    }
+  }
+}
+
+if (inTauri) {
+  // browser-only affordances are replaced by the native track gallery
+  document.getElementById("btnTracksDir").classList.add("hidden");
+  document.getElementById("btnOpen2").classList.add("hidden");
+  document.getElementById("hdrHome").style.display = "inline-block";
+  document.getElementById("chipTrack").textContent =
+    "NO TRACK LOADED — the ribbon is your driven line. The track loads itself once a replay is open.";
+  document.getElementById("hdrHome").addEventListener("click", showGallery);
+  document.getElementById("tlback").addEventListener("click", showGallery);
+  const boot = () => { showGallery(); renderGallery(); };
+  if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", boot);
+  else boot();
+}
+
+/* settings modal (units) — wired regardless of environment */
+(function () {
+  const modal = document.getElementById("settings");
+  const segs = () => document.querySelectorAll("#unitToggle .seg");
+  const markActive = () => segs().forEach(b => b.classList.toggle("on", b.dataset.u === units));
+  const openBtn = document.getElementById("btnSettings");
+  if (openBtn) openBtn.addEventListener("click", () => { markActive(); modal.classList.remove("hidden"); });
+  const closeBtn = document.getElementById("settingsClose");
+  if (closeBtn) closeBtn.addEventListener("click", () => modal.classList.add("hidden"));
+  if (modal) modal.addEventListener("click", e => { if (e.target === modal) modal.classList.add("hidden"); });
+  segs().forEach(b => b.addEventListener("click", () => {
+    units = b.dataset.u; localStorage.setItem("blackbox_units", units); markActive();
+    if (inTauri && allTracks.length) showTrackAt(curTrack);   // refresh current track's units
+    if (typeof ex !== "undefined" && ex && typeof refreshStatsChip === "function") refreshStatsChip();
+  }));
+})();
+
+/* fullscreen track browser navigation: arrows, scroll wheel, arrow keys */
+(function () {
+  const view = document.getElementById("trackview");
+  const prev = document.getElementById("tvPrev"), next = document.getElementById("tvNext");
+  if (prev) prev.addEventListener("click", () => trackStep(-1));
+  if (next) next.addEventListener("click", () => trackStep(1));
+  let wheelLock = 0;
+  if (view) view.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const now = performance.now();
+    if (now - wheelLock < 40) return; // fast, but one notch = one track
+    wheelLock = now;
+    trackStep(e.deltaY > 0 ? 1 : -1);
+  }, { passive: false });
+  addEventListener("keydown", (e) => {
+    const g = document.getElementById("gallery");
+    if (!g || g.classList.contains("hidden")) return;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") { trackStep(1); e.preventDefault(); }
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { trackStep(-1); e.preventDefault(); }
+  });
+})();
+
+function selectCar(i) {
+  ex = ACReplay.extractCar(replay, i);
+  stats = ACReplay.runStats(ex);
+  buildGeometry();
+  tCur = frameRange()[0] * ex.dt;
+  refreshStatsChip();
+  const fmtLap = ms => `${Math.floor(ms / 60000)}:${((ms % 60000) / 1000).toFixed(3).padStart(6, "0")}`;
+  document.getElementById("chipLaps").innerHTML = ex.laps.length
+    ? "laps: " + ex.laps.map(l => `<b>${fmtLap(l.timeMs)}</b>`).join(" · ")
+    : `<span class="dim">no completed laps detected</span>`;
+}
+
+function refreshStatsChip() {
+  if (!stats) return;
+  const dist = units === "imperial" ? (stats.distanceKm * 0.621371).toFixed(2) + " mi" : stats.distanceKm.toFixed(2) + " km";
+  const vert = units === "imperial" ? Math.round(stats.verticalM * 3.28084) + " ft" : stats.verticalM.toFixed(0) + " m";
+  document.getElementById("chipStats").innerHTML =
+    `<b>${fmtSpeed(stats.maxKph)}</b> max · ${fmtSpeed(stats.medianKph)} median · ` +
+    `${dist} · vert ${vert} · ` +
+    `tilt med ${isFinite(stats.medianTilt) ? stats.medianTilt.toFixed(0) : "—"}° · inv ${stats.invertedPct.toFixed(1)}%`;
+}
+
+/* ===================== main loop ===================== */
+let lastTs = 0;
+let fpsEMA = 0, fpsPrev = 0;
+function loop(ts) {
+  if (fpsPrev) { const inst = 1000 / Math.max(0.1, ts - fpsPrev); fpsEMA += (inst - fpsEMA) * 0.08; }
+  fpsPrev = ts;
+  if (ex) {
+    const [ra, rb] = frameRange();
+    if (playing && !scrubbing) {
+      if (lastTs) tCur += (ts - lastTs) / 1000 * rate;
+      if (tCur >= rb * ex.dt || tCur < ra * ex.dt) tCur = ra * ex.dt;
+    }
+    lastTs = ts;
+    const i = Math.max(0, Math.min(ex.N - 1, Math.floor(tCur / ex.dt)));
+    if (follow.on) {
+      const camDt = follow.prevTs ? (ts - follow.prevTs) / 1000 : 0.016;
+      followUpdate(tCur / ex.dt, camDt);
+    }
+    follow.prevTs = ts;
+    const sp = ex.speed[i], tl = ex.tilt[i];
+    let edgeTxt = "";
+    if (edgeIndex) {
+      const e = RoadEdge.distanceToEdge(edgeIndex, ex.pos[i * 3], ex.pos[i * 3 + 1], ex.pos[i * 3 + 2]);
+      const warm = e.dist < 2 ? "<b>" : "";
+      edgeTxt = ` · edge ${warm}${e.dist.toFixed(2)} m${warm ? "</b>" : ""}`;
+    }
+    const altV = units === "imperial" ? Math.round(ex.pos[i * 3 + 1] * 3.28084) + " ft" : ex.pos[i * 3 + 1].toFixed(0) + " m";
+    document.getElementById("chipLive").innerHTML =
+      `t <b>${fmtT(tCur)}</b> · ${fmtSpeed(sp)} · ` +
+      `alt ${altV} · tilt ${isFinite(tl) ? tl.toFixed(0) : "—"}°${edgeTxt}`;
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${fpsEMA.toFixed(0)} fps`;
+    drawScrub();
+  }
+  render();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

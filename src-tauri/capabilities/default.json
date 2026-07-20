@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the main window. Custom commands (list_replays, read_file, find_track) are allowed by default; the app reads local files only.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default"
+  ]
+}
