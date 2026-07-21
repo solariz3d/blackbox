@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-07-21 — HDR pipeline (blacks black, light LIGHT) — VISUALLY UNTESTED
+
+### Added
+- **True HDR rendering.** The scene renders into an RGBA16F float buffer with an
+  UNCLAMPED range (the in-shader clamp + grade were removed — the tonemap owns tone
+  now). A post chain blooms only genuinely-bright pixels (threshold ≈ 1.0) and
+  **ACES-tonemaps** to the screen: darkness stays crushed, highlights roll to white
+  and never hard-clip. `HDR` toolbar toggle; falls back to direct rendering without
+  `EXT_color_buffer_float`.
+- Night ambient crushed toward black so unlit night is truly dark; the moon key + the
+  car's own lights do the lighting.
+- Car lamps / tail / LEDs / backfire / turbine emit real HDR (`HDR_EMIT`) so they blow
+  out and bloom instead of clamping to flat white.
+
+### Notes
+- **Built during an autonomous session — compiles + launches, but NOT visually verified.**
+  Tuning knobs: `hdrFX.exposure/threshold/bloomAmt/sat`, `HDR_EMIT`, the night
+  `LIGHT_KEYS` ambient. Daytime tone may need a keyframe re-tune (the old keys were set
+  for clamped LDR). If anything looks wrong, the `HDR` toggle reverts to the prior look.
+
 ## 2026-07-21 — cast shadows (car + track) + headlight occlusion
 
 ### Added

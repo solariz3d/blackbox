@@ -294,6 +294,7 @@
   <button id="btnLine" class="on">line</button>
   <span id="timeCtl" title="Time of day" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.85"><span id="timeIcon">🌙</span><input id="timeSlider" type="range" min="0" max="1439" value="60" style="width:92px;vertical-align:middle"><span id="timeLabel" style="min-width:38px">01:00</span></span>
   <button id="btnShadow" class="on">shadows</button>
+  <button id="btnHDR" class="on">HDR</button>
   <button id="btnLap" class="on">lap only</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
@@ -598,7 +599,7 @@ function drawBackfire(cm, mvp, th, inten, nightF) {
   gl.enableVertexAttribArray(glowLoc.pos); gl.vertexAttribPointer(glowLoc.pos, 3, gl.FLOAT, false, 20, 0);
   gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
   gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
-  gl.uniform3f(glowLoc.color, 1.0, 0.5, 0.15);                 // orange flame
+  gl.uniform3f(glowLoc.color, 1.3 * HDR_EMIT, 0.55 * HDR_EMIT, 0.14 * HDR_EMIT);   // orange flame (HDR → blooms)
   gl.drawArrays(gl.POINTS, 0, NB);
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
@@ -659,9 +660,10 @@ function drawCarLights(cm, mvp, th, nightF, brakeF) {
     gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
     gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
     gl.uniform3f(glowLoc.color, col[0], col[1], col[2]); gl.drawArrays(gl.POINTS, 0, n); };
-  batch(warm, [1.0, 0.92, 0.72]);                  // warm headlamp glow (3 lamps/side)
-  batch(red, [1.0, 0.06 + 0.13 * brakeF, 0.03]);   // tail + red accents (hotter when braking)
-  batch(white, [0.85, 0.93, 1.0]);                 // cool-white LED accents
+  const E = HDR_EMIT;
+  batch(warm, [1.0*E, 0.92*E, 0.72*E]);                        // warm headlamp glow (3 lamps/side)
+  batch(red, [1.0*E, (0.06 + 0.13 * brakeF)*E, 0.03*E]);       // tail + red accents (hotter when braking)
+  batch(white, [0.85*E, 0.93*E, 1.0*E]);                       // cool-white LED accents
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
@@ -1127,11 +1129,11 @@ function bindAndDraw(buf, n, mode, ptSize) {
 let timeOfDay = 1.0;   // 24h clock; 1:00 = deep night
 const LIGHT_KEYS = [
   // t   dir (toward light, unnormalised)  key colour+intensity   ambSky            ambGround         fog/sky
-  { t: 0,  dir: [0.25, 0.72, 0.34], sun: [0.26, 0.32, 0.48], ambSky: [0.06, 0.09, 0.17], ambGround: [0.02, 0.03, 0.06], fog: [0.02, 0.03, 0.07] },
+  { t: 0,  dir: [0.25, 0.72, 0.34], sun: [0.22, 0.28, 0.44], ambSky: [0.022, 0.032, 0.07], ambGround: [0.008, 0.012, 0.026], fog: [0.012, 0.02, 0.05] },
   { t: 6,  dir: [0.92, 0.20, 0.34], sun: [1.00, 0.60, 0.40], ambSky: [0.36, 0.35, 0.44], ambGround: [0.16, 0.12, 0.12], fog: [0.52, 0.40, 0.42] },
   { t: 12, dir: [0.18, 0.95, 0.20], sun: [1.00, 0.97, 0.90], ambSky: [0.50, 0.60, 0.75], ambGround: [0.28, 0.28, 0.26], fog: [0.55, 0.63, 0.74] },
   { t: 18, dir: [-0.92, 0.20, 0.34], sun: [1.00, 0.48, 0.28], ambSky: [0.42, 0.32, 0.44], ambGround: [0.18, 0.12, 0.14], fog: [0.52, 0.32, 0.32] },
-  { t: 24, dir: [0.25, 0.72, 0.34], sun: [0.26, 0.32, 0.48], ambSky: [0.06, 0.09, 0.17], ambGround: [0.02, 0.03, 0.06], fog: [0.02, 0.03, 0.07] },
+  { t: 24, dir: [0.25, 0.72, 0.34], sun: [0.22, 0.28, 0.44], ambSky: [0.022, 0.032, 0.07], ambGround: [0.008, 0.012, 0.026], fog: [0.012, 0.02, 0.05] },
 ];
 function lightingFor(t) {
   t = ((t % 24) + 24) % 24;
@@ -1294,6 +1296,96 @@ function renderHeadlightDepth(cm, headVP) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);       // must not occlude its own headlights (nose spar → black blob)
 }
 
+/* ===================== HDR pipeline (blacks black, light LIGHT) =====================
+ * The scene renders into a float (RGBA16F) buffer with an UNCLAMPED range — the night
+ * ambient sits near black, and the lights emit real HDR (values > 1). A post chain then
+ * blooms only the genuinely-bright pixels (threshold ~1) and ACES-tonemaps to the screen,
+ * so darkness stays crushed and highlights blow out. Needs EXT_color_buffer_float. */
+const hdrFX = {
+  ok: false, enabled: true, w: 0, h: 0, hdr: null, bloomA: null, bloomB: null, quad: null,
+  bright: null, blur: null, comp: null,
+  exposure: 1.05, threshold: 1.0, bloomAmt: 0.75, sat: 1.12,
+};
+let HDR_EMIT = 2.7;   // how hard the car lamps/backfire emit into HDR (>1 so they bloom)
+(function initHDR() {
+  if (!isGL2 || !gl.getExtension("EXT_color_buffer_float")) return;
+  gl.getExtension("OES_texture_float_linear");
+  const VS = `attribute vec2 aP; varying vec2 vT; void main(){ vT = aP*0.5+0.5; gl_Position = vec4(aP,0.0,1.0); }`;
+  const BRIGHT = `precision highp float; varying vec2 vT; uniform sampler2D uTex; uniform float uThresh;
+    void main(){ vec3 c = texture2D(uTex, vT).rgb; float l = max(c.r, max(c.g, c.b));
+      gl_FragColor = vec4(c * max(0.0, l - uThresh) / max(l, 1e-4), 1.0); }`;
+  const BLUR = `precision highp float; varying vec2 vT; uniform sampler2D uTex; uniform vec2 uDir;
+    void main(){ vec3 s = texture2D(uTex,vT).rgb*0.227027;
+      s += (texture2D(uTex,vT+uDir*1.3846).rgb + texture2D(uTex,vT-uDir*1.3846).rgb)*0.316216;
+      s += (texture2D(uTex,vT+uDir*3.2308).rgb + texture2D(uTex,vT-uDir*3.2308).rgb)*0.070270;
+      gl_FragColor = vec4(s,1.0); }`;
+  const COMP = `precision highp float; varying vec2 vT; uniform sampler2D uScene, uBloom;
+    uniform float uExposure, uBloomAmt, uSat;
+    vec3 aces(vec3 x){ return clamp((x*(2.51*x+0.03))/(x*(2.43*x+0.59)+0.14), 0.0, 1.0); }
+    void main(){
+      vec3 c = texture2D(uScene, vT).rgb + texture2D(uBloom, vT).rgb * uBloomAmt;
+      c = aces(c * uExposure);
+      float l = dot(c, vec3(0.299,0.587,0.114));
+      c = mix(vec3(l), c, uSat);
+      gl_FragColor = vec4(c, 1.0);
+    }`;
+  const mk = fs => { const p = gl.createProgram(); gl.attachShader(p, shader(gl.VERTEX_SHADER, VS));
+    gl.attachShader(p, shader(gl.FRAGMENT_SHADER, fs)); gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; };
+  hdrFX.bright = mk(BRIGHT); hdrFX.blur = mk(BLUR); hdrFX.comp = mk(COMP);
+  hdrFX.uB = { tex: gl.getUniformLocation(hdrFX.bright,"uTex"), thr: gl.getUniformLocation(hdrFX.bright,"uThresh") };
+  hdrFX.uBl = { tex: gl.getUniformLocation(hdrFX.blur,"uTex"), dir: gl.getUniformLocation(hdrFX.blur,"uDir") };
+  hdrFX.uC = { scene: gl.getUniformLocation(hdrFX.comp,"uScene"), bloom: gl.getUniformLocation(hdrFX.comp,"uBloom"),
+    exp: gl.getUniformLocation(hdrFX.comp,"uExposure"), amt: gl.getUniformLocation(hdrFX.comp,"uBloomAmt"), sat: gl.getUniformLocation(hdrFX.comp,"uSat") };
+  hdrFX.quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, hdrFX.quad);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 3,-1, -1,3]), gl.STATIC_DRAW);
+  hdrFX.ok = true;
+})();
+function hdrTarget(w, h, depth) {
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, w, h, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  let dz = null;
+  if (depth) { dz = gl.createRenderbuffer(); gl.bindRenderbuffer(gl.RENDERBUFFER, dz);
+    gl.renderbufferStorage(gl.RENDERBUFFER, gl.DEPTH_COMPONENT24, w, h);
+    gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, dz); }
+  return { tex, fbo, dz, w, h };
+}
+function resizeHDR(w, h) {
+  if (hdrFX.w === w && hdrFX.h === h && hdrFX.hdr) return;
+  const del = t => { if (!t) return; gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); if (t.dz) gl.deleteRenderbuffer(t.dz); };
+  del(hdrFX.hdr); del(hdrFX.bloomA); del(hdrFX.bloomB);
+  const bw = Math.max(1, w >> 1), bh = Math.max(1, h >> 1);
+  hdrFX.hdr = hdrTarget(w, h, true); hdrFX.bloomA = hdrTarget(bw, bh, false); hdrFX.bloomB = hdrTarget(bw, bh, false);
+  hdrFX.w = w; hdrFX.h = h; gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+function hdrTri(prog) { const l = gl.getAttribLocation(prog, "aP"); gl.bindBuffer(gl.ARRAY_BUFFER, hdrFX.quad);
+  gl.enableVertexAttribArray(l); gl.vertexAttribPointer(l, 2, gl.FLOAT, false, 0, 0); gl.drawArrays(gl.TRIANGLES, 0, 3); }
+function runHDR() {
+  gl.disable(gl.DEPTH_TEST); gl.disable(gl.BLEND); gl.depthMask(false);
+  const bw = hdrFX.bloomA.w, bh = hdrFX.bloomA.h;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFX.bloomA.fbo); gl.viewport(0, 0, bw, bh);
+  gl.useProgram(hdrFX.bright); gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, hdrFX.hdr.tex);
+  gl.uniform1i(hdrFX.uB.tex, 0); gl.uniform1f(hdrFX.uB.thr, hdrFX.threshold); hdrTri(hdrFX.bright);
+  gl.useProgram(hdrFX.blur); gl.uniform1i(hdrFX.uBl.tex, 0);
+  for (let p = 0; p < 2; p++) {
+    gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFX.bloomB.fbo); gl.viewport(0, 0, bw, bh);
+    gl.bindTexture(gl.TEXTURE_2D, hdrFX.bloomA.tex); gl.uniform2f(hdrFX.uBl.dir, 1.0/bw, 0.0); hdrTri(hdrFX.blur);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFX.bloomA.fbo); gl.viewport(0, 0, bw, bh);
+    gl.bindTexture(gl.TEXTURE_2D, hdrFX.bloomB.tex); gl.uniform2f(hdrFX.uBl.dir, 0.0, 1.0/bh); hdrTri(hdrFX.blur);
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, cv.width, cv.height);
+  gl.useProgram(hdrFX.comp);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, hdrFX.hdr.tex); gl.uniform1i(hdrFX.uC.scene, 0);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, hdrFX.bloomA.tex); gl.uniform1i(hdrFX.uC.bloom, 1);
+  gl.uniform1f(hdrFX.uC.exp, hdrFX.exposure); gl.uniform1f(hdrFX.uC.amt, hdrFX.bloomAmt); gl.uniform1f(hdrFX.uC.sat, hdrFX.sat);
+  hdrTri(hdrFX.comp); gl.activeTexture(gl.TEXTURE0);
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+}
+
 function render() {
   const w = cv.clientWidth, h = cv.clientHeight;
   const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -1303,8 +1395,7 @@ function render() {
   const dayBright = Math.max(L.sun[0], L.sun[1], L.sun[2]);
   const nightF = Math.max(0, Math.min(1, (1.0 - dayBright) / 0.45));   // 0 by day → 1 deep night: fades the car lights in
   gl.clearColor(L.fog[0], L.fog[1], L.fog[2], 1);
-  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  if (!ex) return;
+  if (!ex) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); return; }
   const fa = followActive();
   // near plane: small in follow mode (the car is right in front — a 2u near plane
   // clipped it like a solid object); larger for the overview cam's depth precision.
@@ -1346,6 +1437,15 @@ function render() {
       gl.activeTexture(gl.TEXTURE0);
     } else gl.uniform1f(tLoc.shadowOn, 0);
   };
+
+  // main render target: the HDR float buffer (then tonemapped to screen) or straight to
+  // the canvas if float buffers aren't available. Clear happens here so the shadow passes
+  // above (their own FBOs) run first.
+  const usePost = hdrFX.ok && hdrFX.enabled;
+  if (usePost) { resizeHDR(cv.width, cv.height); gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFX.hdr.fbo); }
+  else gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, cv.width, cv.height);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
   // textured scene pass (track verts are already world-space → model = identity)
   if (sceneGroups) {
@@ -1474,6 +1574,8 @@ function render() {
     bindAndDraw(bufs.cursor, 1, gl.POINTS, 10);
     gl.enable(gl.DEPTH_TEST);
   }
+
+  if (usePost) runHDR();   // HDR scene → bloom + ACES tonemap → screen (blacks black, light LIGHT)
 }
 
 /* ===================== input: orbit controls ===================== */
@@ -1671,6 +1773,11 @@ document.getElementById("btnLine").addEventListener("click", function () {
   const btn = document.getElementById("btnShadow");
   if (!shadowReady) { btn.classList.remove("on"); btn.disabled = true; btn.title = "needs WebGL2 depth textures"; return; }
   btn.addEventListener("click", function () { SHADOW_ON = !SHADOW_ON; this.classList.toggle("on", SHADOW_ON); });
+})();
+(function () {   // HDR toggle (disabled if the GPU lacks float render targets)
+  const btn = document.getElementById("btnHDR");
+  if (!hdrFX.ok) { btn.classList.remove("on"); btn.disabled = true; btn.title = "needs WebGL2 float buffers"; return; }
+  btn.addEventListener("click", function () { hdrFX.enabled = !hdrFX.enabled; this.classList.toggle("on", hdrFX.enabled); });
 })();
 function setMode(m) {
   colorMode = m;

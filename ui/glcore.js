@@ -146,12 +146,8 @@ void main(){
     float b = brakelamp(uBrakeA) + brakelamp(uBrakeB);
     col += tex.rgb * vec3(1.0, 0.05, 0.02) * (b * uBrakeInt * 4.0);
   }
-  // light grade: a touch of saturation + contrast for depth
-  float lum = dot(col, vec3(0.299, 0.587, 0.114));
-  col = mix(vec3(lum), col, 1.08);
-  col = (col - 0.5) * 1.09 + 0.5;
-  col = clamp(col, 0.0, 1.0);
-  // aerial fog for depth
+  // aerial fog for depth (blend toward the sky colour). NOTE: output is UNCLAMPED HDR —
+  // the ACES tonemap in the post pass owns the final tone; bright bits (> 1) bloom.
   float depth = gl_FragCoord.z / gl_FragCoord.w;
   float fog = clamp(exp(-uFogDensity * depth), 0.0, 1.0);
   gl_FragColor = vec4(mix(uFogColor, col, fog), uAlpha);
