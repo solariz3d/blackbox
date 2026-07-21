@@ -73,6 +73,12 @@ uniform vec3 uHeadA, uHeadB, uHeadDir; // headlight world positions + aim (cone 
 uniform float uHeadInt;         // headlight intensity (0 by day, up at night)
 uniform vec3 uBrakeA, uBrakeB, uBrakeDir; // tail-light world positions + backward aim
 uniform float uBrakeInt;        // brake-light spill intensity (rises under braking, at night)
+uniform sampler2D uShadowMap;   // car depth from the light's view (directional shadow map)
+uniform mat4 uLightVP;          // light view-projection
+uniform float uShadowOn, uShadowTexel;   // enable (0/1) + 1/mapSize for PCF
+uniform sampler2D uHeadDepth;   // scene depth from the headlight's view (beam occlusion)
+uniform mat4 uHeadVP;           // headlight view-projection
+uniform float uHeadOccOn;       // enable headlight occlusion
 // one headlight: warm cone spotlight, distance-attenuated, cosine cone falloff
 float headlamp(vec3 p){
   vec3 t = vWorld - p; float d = length(t);
@@ -85,6 +91,33 @@ float brakelamp(vec3 p){
   float back = smoothstep(-0.15, 0.7, dot(t / max(d, 1e-3), uBrakeDir)); // wide, favours behind
   return back / (1.0 + 0.35 * d + 0.14 * d * d);                         // short reach
 }
+// is this fragment blocked from the headlight by scene geometry? sample the beam depth map
+// (rendered from the headlight's view) so the track/banking actually occludes the beam.
+float headOcclusion(){
+  vec4 hp = uHeadVP * vec4(vWorld, 1.0);
+  vec3 c = hp.xyz / hp.w * 0.5 + 0.5;
+  if (c.x < 0.0 || c.x > 1.0 || c.y < 0.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
+  float stored = texture2D(uHeadDepth, c.xy).r;
+  return (c.z - 0.004 > stored) ? 0.0 : 1.0;   // something nearer the lamp blocks the beam
+}
+// directional shadow: project the fragment into light space and PCF-compare against the
+// car's depth map, so the car casts a soft shadow that swings with the sun/moon. 1 = lit.
+float shadowFactor(vec3 wp, float bias){
+  vec4 lp = uLightVP * vec4(wp, 1.0);
+  vec3 c = lp.xyz / lp.w * 0.5 + 0.5;
+  if (c.z > 1.0) return 1.0;
+  // fade the shadow out toward the map border instead of hard-cutting it — otherwise on
+  // loops/corkscrews the stretched shadow pops in and out as it crosses the box edge.
+  vec2 e = min(c.xy, 1.0 - c.xy);
+  float edge = smoothstep(0.0, 0.08, min(e.x, e.y));
+  if (edge <= 0.0) return 1.0;
+  float sh = 0.0;
+  for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) {
+    float d = texture2D(uShadowMap, c.xy + vec2(float(x), float(y)) * uShadowTexel).r;
+    sh += (c.z - bias > d) ? 0.0 : 1.0;
+  }
+  return mix(1.0, sh / 9.0, edge);
+}
 void main(){
   vec4 tex = texture2D(uTex, vUV);
   if (uAlphaTest > 0.5 && tex.a < 0.5) discard;
@@ -96,11 +129,17 @@ void main(){
   vec3 sunCol = uSunCol;
   // soft wrap on the key so shaded faces don't crush to black
   float wrap = ndl * 0.85 + 0.15 * (0.5 + 0.5 * dot(n, normalize(uSunDir)));
-  vec3 col = tex.rgb * (ambient + sunCol * (0.9 * wrap));
-  // headlights actually light the road ahead (warm cones from the two lamps)
+  // slope-scaled bias: far more at grazing angles (low sun / dusk) so the shadow stops
+  // shimmering, tighter when the surface faces the light. Then darken the key light.
+  float sbias = 0.0016 + 0.007 * (1.0 - ndl);
+  float shF = uShadowOn > 0.5 ? shadowFactor(vWorld, sbias) : 1.0;
+  vec3 col = tex.rgb * (ambient + sunCol * (0.9 * wrap) * shF);
+  // headlights actually light the road ahead (warm cones from the two lamps), and the
+  // beam is occluded by scene geometry (banking, crests) so it can't shine through solids
   if (uHeadInt > 0.001) {
+    float occ = uHeadOccOn > 0.5 ? headOcclusion() : 1.0;
     float lit = headlamp(uHeadA) + headlamp(uHeadB);
-    col += tex.rgb * vec3(1.0, 0.85, 0.60) * (lit * uHeadInt * 5.5);
+    col += tex.rgb * vec3(1.0, 0.85, 0.60) * (lit * uHeadInt * 5.5 * occ);
   }
   // brake lights spill red onto the road + surroundings behind the car (subtle)
   if (uBrakeInt > 0.001) {
@@ -144,4 +183,25 @@ const tLoc = {
   brakeB: gl.getUniformLocation(progT, "uBrakeB"),
   brakeDir: gl.getUniformLocation(progT, "uBrakeDir"),
   brakeInt: gl.getUniformLocation(progT, "uBrakeInt"),
+  shadowMap: gl.getUniformLocation(progT, "uShadowMap"),
+  lightVP: gl.getUniformLocation(progT, "uLightVP"),
+  shadowOn: gl.getUniformLocation(progT, "uShadowOn"),
+  shadowTexel: gl.getUniformLocation(progT, "uShadowTexel"),
+  headDepth: gl.getUniformLocation(progT, "uHeadDepth"),
+  headVP: gl.getUniformLocation(progT, "uHeadVP"),
+  headOccOn: gl.getUniformLocation(progT, "uHeadOccOn"),
+};
+
+/* depth-only caster: renders the car from the light's view into the shadow map */
+const progDepth = gl.createProgram();
+gl.attachShader(progDepth, shader(gl.VERTEX_SHADER,
+  "attribute vec3 aPos; uniform mat4 uLightVP, uModel;" +
+  "void main(){ gl_Position = uLightVP * uModel * vec4(aPos,1.0); }"));
+gl.attachShader(progDepth, shader(gl.FRAGMENT_SHADER,
+  "precision mediump float; void main(){ gl_FragColor = vec4(1.0); }"));
+gl.linkProgram(progDepth);
+const depthLoc = {
+  pos: gl.getAttribLocation(progDepth, "aPos"),
+  lightVP: gl.getUniformLocation(progDepth, "uLightVP"),
+  model: gl.getUniformLocation(progDepth, "uModel"),
 };

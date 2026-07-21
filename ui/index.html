@@ -293,6 +293,7 @@
   <button id="btnCar" class="on">car model</button>
   <button id="btnLine" class="on">line</button>
   <span id="timeCtl" title="Time of day" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.85"><span id="timeIcon">🌙</span><input id="timeSlider" type="range" min="0" max="1439" value="60" style="width:92px;vertical-align:middle"><span id="timeLabel" style="min-width:38px">01:00</span></span>
+  <button id="btnShadow" class="on">shadows</button>
   <button id="btnLap" class="on">lap only</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
@@ -479,7 +480,8 @@ const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
 // vector + matrix helpers (v3*, mXfPt, mRot, mT, rv*, ik2bone, rotP, scaleMat) → mathutil.js
 let showCar = true;     // render the car model on the cursor
 let showLine = true;    // render the driven-line ribbon
-let carLift = -0.36;    // vertical placement (m); recorded pos sits ~0.36 m high, so drop it onto the track
+let carLift = -0.28;    // vertical placement (m); dropped onto the track, raised a touch so banked
+                        // sections (bowl) don't clip the tyres through the surface
 let carFlip = -1;       // forward-axis sign (T-180 nose is +Z, so flip)
 let carSlipExag = 1.0;  // 1 = EXACT recorded attitude; >1 amplifies the slip toward the film crab
 let showThruster = true;
@@ -1149,7 +1151,7 @@ function setSceneLighting(L) {   // push the lit-scene program's light + atmosph
 }
 // aim the two headlight cone spotlights from the car's lamp housings (world), slightly
 // down; intensity 0 by day. Set on progT before the track + car draws so both get lit.
-function setHeadlights(cm, headInt) {
+function setHeadlights(cm, headInt, headVP) {
   if (headInt > 0.001 && cm && carLights && carLights.head.length >= 2) {
     const A = mXfPt(carLights.head[0], cm), B = mXfPt(carLights.head[1], cm);
     let dx = cm[8] + cm[4] * 0.06, dy = cm[9] + cm[5] * 0.06, dz = cm[10] + cm[6] * 0.06;   // aim slightly UP
@@ -1158,8 +1160,13 @@ function setHeadlights(cm, headInt) {
     gl.uniform3f(tLoc.headB, B[0], B[1], B[2]);
     gl.uniform3f(tLoc.headDir, dx / dl, dy / dl, dz / dl);
     gl.uniform1f(tLoc.headInt, headInt);
+    if (headVP && headReady) {   // beam occlusion depth map (track blocks the light)
+      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, headDepthTex);
+      gl.uniform1i(tLoc.headDepth, 2); gl.uniformMatrix4fv(tLoc.headVP, false, headVP);
+      gl.uniform1f(tLoc.headOccOn, 1); gl.activeTexture(gl.TEXTURE0);
+    } else gl.uniform1f(tLoc.headOccOn, 0);
   } else {
-    gl.uniform1f(tLoc.headInt, 0);
+    gl.uniform1f(tLoc.headInt, 0); gl.uniform1f(tLoc.headOccOn, 0);
   }
 }
 // red brake-light wash pointing BACKWARD from the tail lamps; intensity rises with braking.
@@ -1175,6 +1182,116 @@ function setBrakelights(cm, brakeInt) {
   } else {
     gl.uniform1f(tLoc.brakeInt, 0);
   }
+}
+
+/* ===================== directional shadow map =====================
+ * The car is rendered depth-only from the sun/moon's direction into an offscreen depth
+ * texture; the track shader projects each fragment into that light space and PCF-compares,
+ * so the car casts a soft shadow that swings + stretches with the time of day. Needs
+ * WebGL2 depth textures; falls back to the contact-blob shadow otherwise. */
+let SHADOW_SIZE = 2048;
+let SHADOW_ON = true, shadowReady = false, shadowFbo = null, shadowTex = null;
+(function initShadow() {
+  if (!isGL2) return;
+  shadowTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.NONE);
+  shadowFbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+  gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+  shadowReady = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+})();
+
+// light view-projection: an orthographic box around the car, looking along the sun/moon
+function buildLightVP(cm, dir) {
+  const c = [cm[12], cm[13], cm[14]], d = v3nrm(dir);
+  const eye = [c[0] + d[0]*30, c[1] + d[1]*30, c[2] + d[2]*30];
+  const up = Math.abs(d[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
+  const R = 20;   // half-box (m); generous so long/raked shadows on loops don't clip the border
+  return new Float32Array(mMul(mOrtho(-R, R, -R, R, 1, 90), mLookAt(eye, c, up)));
+}
+// render the shadow casters (nearby track + car) depth into the shadow map from the light's
+// view. The track participates so the banking/crests block the sun and self-shadow. No
+// front-cull (that would drop the track's top surface); slope-scaled bias in the shader
+// handles acne. Only track within the light box renders (GL clips the rest).
+function renderCarDepth(cm, lightVP) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(progDepth);
+  gl.uniformMatrix4fv(depthLoc.lightVP, false, lightVP);
+  const drawG = (groups, model) => {
+    gl.uniformMatrix4fv(depthLoc.model, false, model);
+    for (const g of groups) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
+      gl.enableVertexAttribArray(depthLoc.pos); gl.vertexAttribPointer(depthLoc.pos, 3, gl.FLOAT, false, 12, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
+      gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+    }
+  };
+  if (sceneGroups) drawG(sceneGroups, IDENT4);   // track (verts already world-space) — self-shadows
+  drawG(carGroups, cm);
+  if (carWheels) for (const w of carWheels) { const m = wheelSteerModel(cm, w.pivot, carSteerAngle, 0, 0); drawG(w.rollGroups, m); drawG(w.staticGroups, m); }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+}
+
+/* headlight beam occlusion: the scene depth from the headlight's view, so track geometry
+ * (banking, crests) blocks the beam instead of the light shining through solids. */
+let HEAD_SIZE = 1024, headReady = false, headFbo = null, headDepthTex = null;
+(function initHeadDepth() {
+  if (!isGL2) return;
+  headDepthTex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, headDepthTex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, HEAD_SIZE, HEAD_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.NONE);
+  headFbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, headFbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, headDepthTex, 0);
+  gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+  headReady = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+})();
+
+// perspective from the headlight (midpoint of the two lamps) looking down the beam
+function buildHeadVP(cm) {
+  const h0 = carLights.head[0], h1 = carLights.head[1];
+  const mid = [(h0[0]+h1[0])/2, (h0[1]+h1[1])/2, (h0[2]+h1[2])/2];
+  const eye = mXfPt(mid, cm);
+  let dx = cm[8] + cm[4]*0.06, dy = cm[9] + cm[5]*0.06, dz = cm[10] + cm[6]*0.06;
+  const dl = Math.hypot(dx, dy, dz) || 1; dx /= dl; dy /= dl; dz /= dl;
+  const look = [eye[0] + dx*10, eye[1] + dy*10, eye[2] + dz*10];
+  const up = Math.abs(dy) > 0.95 ? [0, 0, 1] : [0, 1, 0];
+  return new Float32Array(mMul(mPerspective(1.4, 1, 0.25, 40), mLookAt(eye, look, up)));
+}
+// render the scene depth (track + car) from the headlight's view
+function renderHeadlightDepth(cm, headVP) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, headFbo);
+  gl.viewport(0, 0, HEAD_SIZE, HEAD_SIZE);
+  gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(progDepth);
+  gl.uniformMatrix4fv(depthLoc.lightVP, false, headVP);
+  const drawG = (groups, model) => {
+    gl.uniformMatrix4fv(depthLoc.model, false, model);
+    for (const g of groups) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
+      gl.enableVertexAttribArray(depthLoc.pos); gl.vertexAttribPointer(depthLoc.pos, 3, gl.FLOAT, false, 12, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
+      gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+    }
+  };
+  if (sceneGroups) drawG(sceneGroups, IDENT4);   // ONLY the track occludes the beam — the car
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);       // must not occlude its own headlights (nose spar → black blob)
 }
 
 function render() {
@@ -1213,6 +1330,22 @@ function render() {
   const decelG = gforce ? gforce.brakeG - BRAKE_SCRUB * gforce.latG * gforce.latG : 0;
   const brakeF = Math.max(0, Math.min(1, (decelG - BRAKE_DEADZONE_G) / BRAKE_RANGE_G));
   const brakeInt = brakeF * nightF;           // red spill on the road behind, at night
+  // cast-shadow pass: render the car depth from the light's view, before the main passes
+  let lightVP = null;
+  if (SHADOW_ON && shadowReady && cm) { lightVP = buildLightVP(cm, L.dir); renderCarDepth(cm, lightVP); gl.viewport(0, 0, cv.width, cv.height); }
+  // headlight-occlusion pass: scene depth from the headlight's view (night only, when the beam is on)
+  let headVP = null;
+  if (headInt > 0.001 && headReady && cm && carLights && carLights.head.length >= 2) {
+    headVP = buildHeadVP(cm); renderHeadlightDepth(cm, headVP); gl.viewport(0, 0, cv.width, cv.height);
+  }
+  const setShadow = () => {
+    if (lightVP) {
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+      gl.uniform1i(tLoc.shadowMap, 1); gl.uniformMatrix4fv(tLoc.lightVP, false, lightVP);
+      gl.uniform1f(tLoc.shadowOn, 1); gl.uniform1f(tLoc.shadowTexel, 1 / SHADOW_SIZE);
+      gl.activeTexture(gl.TEXTURE0);
+    } else gl.uniform1f(tLoc.shadowOn, 0);
+  };
 
   // textured scene pass (track verts are already world-space → model = identity)
   if (sceneGroups) {
@@ -1221,8 +1354,9 @@ function render() {
     gl.uniformMatrix4fv(tLoc.model, false, IDENT4);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
-    setHeadlights(cm, headInt);                 // headlights light the track ahead
+    setHeadlights(cm, headInt, headVP);         // headlights light the track ahead (occluded by geometry)
     setBrakelights(cm, brakeInt);               // brake wash spills red behind
+    setShadow();                                // the car's cast shadow onto the track
     gl.uniform1i(tLoc.tex, 0);
     gl.activeTexture(gl.TEXTURE0);
     for (const g of sceneGroups) {
@@ -1279,13 +1413,14 @@ function render() {
   // the car model on the cursor (its meshes are local-space → uModel = carMatrix).
   // i / carShown / cm were computed up front (above the track pass) for the headlights.
   if (carShown) {
-    drawCarShadow(cm, mvp);                                    // grounding shadow on the track, under the car
+    if (!(SHADOW_ON && shadowReady)) drawCarShadow(cm, mvp);   // contact blob only when cast shadows are off
     gl.useProgram(progT);
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
-    setHeadlights(cm, headInt);
+    setHeadlights(cm, headInt, headVP);
     setBrakelights(cm, brakeInt);
+    gl.uniform1f(tLoc.shadowOn, 0);                            // the car doesn't self-shadow (avoids acne)
     gl.uniform1i(tLoc.tex, 0);
     gl.uniform1f(tLoc.alpha, 1.0);
     gl.activeTexture(gl.TEXTURE0);
@@ -1531,6 +1666,11 @@ document.getElementById("btnLine").addEventListener("click", function () {
   };
   sl.addEventListener("input", upd);
   upd();
+})();
+(function () {   // cast-shadow toggle (disabled if the GPU lacks depth-texture support)
+  const btn = document.getElementById("btnShadow");
+  if (!shadowReady) { btn.classList.remove("on"); btn.disabled = true; btn.title = "needs WebGL2 depth textures"; return; }
+  btn.addEventListener("click", function () { SHADOW_ON = !SHADOW_ON; this.classList.toggle("on", SHADOW_ON); });
 })();
 function setMode(m) {
   colorMode = m;

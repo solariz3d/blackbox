@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-07-21 — cast shadows (car + track) + headlight occlusion
+
+### Added
+- **Directional cast shadows**: the car (and nearby track) render depth-only from the
+  sun/moon direction into a 2048² depth map; the scene shader PCF-samples it, so the car
+  and the track's own banking/crests cast soft shadows that swing + stretch with the time
+  of day. Slope-scaled bias (more at grazing/dusk angles) kills shimmer; a soft map-border
+  fade stops the shadow popping on loops/corkscrews; `SHADOW_ON` toolbar toggle. Falls
+  back to the contact-blob when unsupported.
+- **Headlight beam occlusion**: scene depth rendered from the headlight's view (night only),
+  so track geometry (bowl banking, crests) blocks the beam instead of it shining through
+  solids. The car is deliberately excluded from the beam occluder (its own nose spar would
+  blot the beam centre).
+- Ride height nudged (`carLift −0.28`) so banked sections don't clip the tyres.
+
+### Notes
+- Two extra full-scene depth passes at night (shadow + beam) — a quality/tier feature.
+
 ## 2026-07-21 — turbine, backfires, gear detection, car seating
 
 ### Added

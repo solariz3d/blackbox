@@ -47,6 +47,11 @@ function rotP(axis, ang, px, py, pz) {
   return R;
 }
 function scaleMat(s) { return [s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1]; }
+// orthographic projection (column-major) — used for the directional shadow map's light camera
+function mOrtho(l, r, b, t, n, f) {
+  return [2/(r-l), 0, 0, 0,  0, 2/(t-b), 0, 0,  0, 0, -2/(f-n), 0,
+          -(r+l)/(r-l), -(t+b)/(t-b), -(f+n)/(f-n), 1];
+}
 
 /* ---- vectors + row-vector point/dir transforms ---- */
 const v3sub = (a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], v3add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], v3sc=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
@@ -112,7 +117,7 @@ function ik2bone(S, Tg, L1, L2, pole) {
 function easeK(rate, dt) { return 1 - Math.exp(-rate * Math.max(0, Math.min(0.1, dt))); }
 
 if (typeof module !== "undefined") module.exports = {
-  IDENT4, mPerspective, mLookAt, mMul, rotP, scaleMat,
+  IDENT4, mPerspective, mLookAt, mMul, rotP, scaleMat, mOrtho,
   v3sub, v3add, v3sc, v3dot, v3len, v3nrm, v3cross, mXfPt, mRot, mT,
   rvMul, rvRotAbout, rvFromTo, rvInv, rvTRS, ik2bone, easeK,
 };
