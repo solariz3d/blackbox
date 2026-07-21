@@ -23,11 +23,34 @@ struct TrackFile {
 }
 
 fn replay_dir() -> Result<PathBuf, String> {
-    let profile = std::env::var("USERPROFILE").map_err(|e| e.to_string())?;
-    Ok(Path::new(&profile)
-        .join("Documents")
-        .join("Assetto Corsa")
-        .join("replay"))
+    // Documents may be OneDrive-redirected (laptop) or plain (desktop) — the
+    // shell decides, not us. Check both roots; first one that actually holds
+    // an "Assetto Corsa\replay" wins. Zero deps, both machines honest.
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        roots.push(Path::new(&profile).join("Documents"));
+    }
+    if let Ok(onedrive) = std::env::var("OneDrive") {
+        roots.push(Path::new(&onedrive).join("Documents"));
+    }
+    let candidates: Vec<PathBuf> = roots
+        .iter()
+        .map(|r| r.join("Assetto Corsa").join("replay"))
+        .collect();
+    candidates
+        .iter()
+        .find(|p| p.is_dir())
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "Assetto Corsa replay folder not found (checked: {})",
+                candidates
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ; ")
+            )
+        })
 }
 
 #[tauri::command]
