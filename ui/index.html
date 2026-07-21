@@ -561,6 +561,14 @@ let STEER_WHEEL_RATIO = 3.0;  // cockpit wheel turns this × the road-wheel angl
 let STEER_WHEEL_AXIS = 2;     // which node axis it spins about (0=X,1=Y,2=Z); flip if it tumbles
 let STEER_WHEEL_SIGN = 1;     // flip if it turns the wrong way
 let WHEEL_ROLL_SIGN = 1;      // road-wheel roll-spin direction (flip if wheels spin backward)
+// procedural suspension: each corner travels vertically vs the body under load + bumps
+// (no suspension channel in the replay — inferred from the G-forces we do have).
+let SUSP_ON = true;
+let SUSP_LONG = 0.020;   // dive/squat travel per g of braking/accel (m)
+let SUSP_LAT = 0.018;    // roll travel per g of cornering (m)
+let SUSP_BUMP = 0.022;   // bump travel per g of vertical acceleration (m)
+let SUSP_MAX = 0.045;    // clamp total travel per wheel (m)
+let SUSP_LAT_SIGN = 1;   // flip if the car rolls the wrong way in corners
 let carDriver = null;   // { bodyGroups, headGroups } — driver model, procedurally posed
 let carSteerAngle = 0;  // front-wheel steer this frame (radians), set by carModelMatrix
 // procedural driver rig: the body is a rigid seated pose (the car's own
@@ -824,7 +832,7 @@ function drawCarGroups(groups, modelMat) {
 }
 // carMat ⊗ (rotate about model-up through the wheel centre by `steer`) — steers a
 // front wheel to point down the line. X=right, Z=nose in the car's local frame.
-function wheelSteerModel(carMat, pivot, steer, roll) {
+function wheelSteerModel(carMat, pivot, steer, roll, lift) {
   const cy = Math.cos(steer), sy = Math.sin(steer);
   const cx = Math.cos(roll || 0), sx = Math.sin(roll || 0);
   const Ry = [cy, 0, -sy, 0,  0, 1, 0, 0,  sy, 0, cy, 0,  0, 0, 0, 1];   // steer about up (model Y)
@@ -832,9 +840,39 @@ function wheelSteerModel(carMat, pivot, steer, roll) {
   const R = mMul(Ry, Rx);   // roll in the wheel's own frame, then steer that frame
   const px = pivot[0], py = pivot[1], pz = pivot[2];   // rotate about the wheel-centre pivot
   R[12] = px - (R[0]*px + R[4]*py + R[8]*pz);
-  R[13] = py - (R[1]*px + R[5]*py + R[9]*pz);
+  R[13] = py - (R[1]*px + R[5]*py + R[9]*pz) + (lift || 0);   // suspension travel along body up (model Y)
   R[14] = pz - (R[2]*px + R[6]*py + R[10]*pz);
   return new Float32Array(mMul(carMat, R));
+}
+// lateral / longitudinal / vertical g at fractional frame `fp`, from the path's local
+// acceleration — deterministic (scrub-safe) and windowed so it's smooth. Feeds the
+// procedural suspension (dive/squat, roll, bumps). Same math the driver lean reads.
+function carGForces(fp) {
+  const P = ex.pos, N = ex.N, dt = ex.dt;
+  const i = Math.max(1, Math.min(N - 2, Math.round(fp)));
+  const w = Math.max(3, Math.round(0.1 / dt));
+  const a = Math.max(0, i - w), b = Math.min(N - 1, i + w);
+  let ux = ex.nrm[i*3], uy = ex.nrm[i*3+1], uz = ex.nrm[i*3+2]; const ul = Math.hypot(ux,uy,uz)||1; ux/=ul;uy/=ul;uz/=ul;
+  let hx = P[b*3]-P[a*3], hy = P[b*3+1]-P[a*3+1], hz = P[b*3+2]-P[a*3+2];
+  const hd = hx*ux+hy*uy+hz*uz; hx-=ux*hd; hy-=uy*hd; hz-=uz*hd; const hl = Math.hypot(hx,hy,hz)||1; hx/=hl;hy/=hl;hz/=hl;
+  const rx = uy*hz-uz*hy, ry = uz*hx-ux*hz, rz = ux*hy-uy*hx;   // right = up×heading
+  const iv = 1 / (w * dt);
+  const dvx = ((P[b*3]-P[i*3]) - (P[i*3]-P[a*3])) * iv * iv;
+  const dvy = ((P[b*3+1]-P[i*3+1]) - (P[i*3+1]-P[a*3+1])) * iv * iv;
+  const dvz = ((P[b*3+2]-P[i*3+2]) - (P[i*3+2]-P[a*3+2])) * iv * iv;
+  return {
+    latG: (dvx*rx + dvy*ry + dvz*rz) / 9.81,     // + = pushed toward +right
+    longG: (dvx*hx + dvy*hy + dvz*hz) / 9.81,     // + = accelerating, − = braking
+    vertA: (dvx*ux + dvy*uy + dvz*uz) / 9.81,     // + = pushed up (bump), − = crest
+  };
+}
+// per-wheel suspension travel (m, along body up): dive/squat + roll + bump, clamped
+function wheelLift(w, g) {
+  const front = w.front, left = w.pivot[0] > 0;
+  let lift = (front ? -1 : 1) * g.longG * SUSP_LONG          // brake → front compresses, rear extends
+           + (left ? 1 : -1) * g.latG * SUSP_LAT * SUSP_LAT_SIGN  // outer corner compresses
+           + g.vertA * SUSP_BUMP;                            // bumps push all four up
+  return Math.max(-SUSP_MAX, Math.min(SUSP_MAX, lift));
 }
 // travelled distance (m) at fractional frame `fp`, interpolated — drives the wheel
 // roll-spin so it's scrub-safe (scrub back → wheels roll back, pause → they stop).
@@ -1465,10 +1503,12 @@ function render() {
     drawCarGroups(carGroups, cm);                              // body — keeps its crab
     if (carWheels) {                                           // wheels steer to the line; only the tyre rolls with travel
       const rollDist = wheelRollDistance(tCur / ex.dt);
+      const g = SUSP_ON ? carGForces(tCur / ex.dt) : null;     // dive/squat/roll/bump for procedural suspension
       for (const w of carWheels) {
         const roll = WHEEL_ROLL_SIGN * rollDist / (w.radius || 0.35);
-        drawCarGroups(w.rollGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, roll));   // tyre + rim: steer + roll
-        drawCarGroups(w.staticGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, 0));     // exo "M" cage + hub: steer only
+        const lift = g ? wheelLift(w, g) : 0;                  // whole corner travels vertically together
+        drawCarGroups(w.rollGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, roll, lift));   // tyre + rim: steer + roll + travel
+        drawCarGroups(w.staticGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, 0, lift));     // exo "M" cage + hub: steer + travel
       }
     }
     if (carSteerWheel) {                                        // cockpit wheel spins with steer

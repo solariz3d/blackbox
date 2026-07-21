@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-21 — procedural suspension
+
+### Added
+- Each wheel corner now travels vertically against the body under load and bumps.
+  The replay has no suspension channel, so it's inferred from the path's local
+  acceleration (`carGForces`): dive/squat from longitudinal g, roll from lateral g,
+  bumps from vertical g. Deterministic (scrub-safe), clamped to ±4.5 cm. Tunables:
+  `SUSP_LONG`, `SUSP_LAT`, `SUSP_BUMP`, `SUSP_MAX`, `SUSP_LAT_SIGN`, `SUSP_ON`.
+  Whole corner (tyre + exo cage) travels together via a `lift` arg on
+  `wheelSteerModel`. Still to be dialed in visually.
+
 ## 2026-07-21 — wheel roll-spin
 
 ### Added
