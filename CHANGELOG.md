@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-07-21 — follow-cam fog clamp + look-down
+
+### Changed
+- Follow-cam distance fog no longer washes out the background when zoomed in close.
+  The density was `0.35 / cam.dist`, so a small chase distance blew it up; it's now
+  clamped with a distance floor (`0.35 / max(cam.dist, 120)`), keeping the soft
+  far-fade when pulled back without the close-up haze.
+- Fully zoomed in, the follow camera now pitches ~12° downward (ramped by zoom) for
+  a "looking down with a neck" angle over the car (`FOLLOW_LOOKDOWN`).
+
 ## 2026-07-21 — driver seated on the wheel + real car colours
 
 ### Added

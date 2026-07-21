@@ -975,6 +975,7 @@ const cam = { yaw: -0.7, pitch: 0.5, dist: 2500, target: [0, 0, 0] };
  * through the road it's following. Speed opens it up on straights; curvature
  * tightens it and swings it into the corner. drag = orbit offset, wheel = zoom. */
 let FOLLOW_SWING = 1;   // sign of the into-corner swing (flip if it swings out)
+let FOLLOW_LOOKDOWN = 0.21;  // extra downward pitch (rad, ~12°) at full zoom — "look down with a neck"
 const follow = {
   on: false, yawOff: 0, distMul: 1, saved: null, prevTs: 0,
   rig: { ready: false, dist: 160, height: 60, side: 0, la: 30, up: [0, 1, 0], eye: null, look: null },
@@ -1217,6 +1218,7 @@ function followUpdate(fp, dt) {
   const kf = R.frameY * Math.tan(R.fov * 0.5);
   let beta = Math.atan2(Bf - kf * Af, Af + kf * Bf);        // pitch that puts the car at frameY
   const BMAX = 1.45; if (beta > BMAX) beta = BMAX; else if (beta < -BMAX) beta = -BMAX; // never aim backward
+  beta -= FOLLOW_LOOKDOWN * zoomN;   // tilt the view down like a neck as it zooms fully in
   const cbe = Math.cos(beta), sbe = Math.sin(beta);
   const fX = Hx * cbe + R.up[0] * sbe, fY = Hy * cbe + R.up[1] * sbe, fZ = Hz * cbe + R.up[2] * sbe;
   R.look = [R.eye[0] + fX * 60, R.eye[1] + fY * 60, R.eye[2] + fZ * 60];
@@ -1365,7 +1367,10 @@ function render() {
   const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, fa ? 0.3 : 2, 60000);
   const view = mLookAt(camEye(), fa ? follow.rig.look : cam.target, fa ? (follow.rig.viewUp || follow.rig.up) : [0, 1, 0]);
   const mvp = new Float32Array(mMul(proj, view));
-  const fogD = 0.35 / cam.dist;
+  // fog thins with chase distance (soft far-fade when pulled back), but clamp the
+  // effective distance to a floor so zooming the follow cam in close doesn't blow the
+  // density up and wash the background out — keeps the far fade without the close haze.
+  const fogD = 0.35 / Math.max(cam.dist, 120);
 
   // textured scene pass (track verts are already world-space → model = identity)
   if (sceneGroups) {
