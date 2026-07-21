@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-07-21 — turbine, backfires, gear detection, car seating
+
+### Added
+- **Turbine luminous at night**: the thruster plume now brightens with `nightF` (up to
+  ~3×). It also emits from the model's actual turbine nozzle (`Placeholder_TurbineGlow`,
+  extracted at load) at the nozzle **mouth** so the housing occludes it (depth-tested) —
+  it glows out the opening instead of through the bodywork — and is tighter so it no
+  longer clips the nozzle.
+- **Exhaust backfires on upshifts** (the "woke" bit): `detectShifts(ex)` finds upshifts
+  kinematically at load — an upshift briefly cuts torque, so acceleration dips sharply
+  toward zero mid-pull (validated ~4–8/min across tracks; false positives filtered). At
+  those frames a bright orange pop fires out the nozzle, brighter at night. Inferred (no
+  gear channel), so approximate.
+
+### Fixed
+- Car was floating: the recorded position sits ~0.36 m above the track (tyre geometry
+  bottoms out at model y≈0.006, i.e. the ground plane), so `carLift` drops it onto the
+  surface.
+
 ## 2026-07-21 — night: day/night lighting, car lights, contact shadow
 
 ### Added

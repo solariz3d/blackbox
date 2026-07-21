@@ -444,6 +444,7 @@ let sceneGroups = null; // textured visual scene draw batches
 // IDENT4 → mathutil.js
 let carGroups = null;   // uploaded car model mesh groups (LOD0)
 let carLights = null;   // { head:[[x,y,z]...], tail:[...] } emitter points from the model housings
+let carNozzle = null;   // turbine nozzle centroid (model space) — plume + backfire emit here
 let carWheels = null;   // steerable wheels {corner, pivot, front, radius, rollGroups, staticGroups}
 let carSteerWheel = null; // in-cockpit steering wheel { pivot, ax, groups }
 let STEER_WHEEL_RATIO = 3.0;  // cockpit wheel turns this × the road-wheel angle
@@ -478,7 +479,7 @@ const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
 // vector + matrix helpers (v3*, mXfPt, mRot, mT, rv*, ik2bone, rotP, scaleMat) → mathutil.js
 let showCar = true;     // render the car model on the cursor
 let showLine = true;    // render the driven-line ribbon
-let carLift = 0.0;      // vertical placement tweak (metres)
+let carLift = -0.36;    // vertical placement (m); recorded pos sits ~0.36 m high, so drop it onto the track
 let carFlip = -1;       // forward-axis sign (T-180 nose is +Z, so flip)
 let carSlipExag = 1.0;  // 1 = EXACT recorded attitude; >1 amplifies the slip toward the film crab
 let showThruster = true;
@@ -527,10 +528,13 @@ function turbineIntensity(i) {
   return Math.min(1, slipN * 0.85 + Math.min(1, acc) * 0.5);
 }
 
-// blue thruster plume from the Mach 6's rear, perspective-sized point sprites
-function drawThruster(m, inten, mvp) {
+// blue thruster plume from the Mach 6's rear, perspective-sized point sprites.
+// `lum` brightens the plume (used to crank it up at night).
+function drawThruster(m, inten, mvp, lum) {
+  lum = lum || 1;
   const eye = camEye();
-  const lx = 0, ly = 0.4, lz = -2.5;                          // rear emit point (local)
+  const nz = carNozzle || [0, 0.49, -2.1];                    // emit from the turbine nozzle geometry
+  const lx = nz[0], ly = nz[1], lz = nz[2] - 0.1;             // just aft of the nozzle mouth
   const ox = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
   const oy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
   const oz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
@@ -541,12 +545,12 @@ function drawThruster(m, inten, mvp) {
   const th = Math.tan(0.9 / 2), Hpx = cv.height;
   for (let k = 0; k < K; k++) {
     const t = k / (K - 1);
-    const px = ox + bx * t * 3.4, py = oy + by * t * 3.4, pz = oz + bz * t * 3.4;
+    const px = ox + bx * t * 2.6, py = oy + by * t * 2.6, pz = oz + bz * t * 2.6;   // shorter plume
     const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
-    const worldR = (0.5 * (1 - t * 0.55)) * inten;
+    const worldR = (0.26 * (1 - t * 0.5)) * inten;            // tighter, so it doesn't clip the nozzle
     arr[k * 5] = px; arr[k * 5 + 1] = py; arr[k * 5 + 2] = pz;
     arr[k * 5 + 3] = Math.min(500, worldR * Hpx / (dist * th));
-    arr[k * 5 + 4] = (1 - t) * inten * fl;
+    arr[k * 5 + 4] = (1 - t) * inten * fl * lum;
   }
   gl.useProgram(progThr);
   gl.uniformMatrix4fv(thrLoc.mvp, false, mvp);
@@ -557,6 +561,43 @@ function drawThruster(m, inten, mvp) {
   gl.enableVertexAttribArray(thrLoc.bright); gl.vertexAttribPointer(thrLoc.bright, 1, gl.FLOAT, false, 20, 16);
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
   gl.drawArrays(gl.POINTS, 0, K);
+  gl.depthMask(true); gl.disable(gl.BLEND);
+}
+
+// backfire intensity at fractional frame `fp`: a sharp pop right at a detected upshift,
+// decaying over ~0.16 s. Deterministic (scrub-safe). 0 when not near a shift.
+function backfireAt(fp) {
+  const sh = ex.shifts; if (!sh || !sh.length) return 0;
+  const decay = Math.max(2, Math.round(0.16 / ex.dt));
+  let lo = 0, hi = sh.length - 1, best = -1;   // largest shift frame ≤ fp
+  while (lo <= hi) { const m = (lo + hi) >> 1; if (sh[m] <= fp) { best = m; lo = m + 1; } else hi = m - 1; }
+  if (best < 0) return 0;
+  const d = fp - sh[best];
+  if (d < 0 || d > decay) return 0;
+  return Math.pow(1 - d / decay, 1.6);   // sharp attack at the shift, quick decay
+}
+// exhaust backfire: a bright orange pop out the rear on an upshift, brighter at night
+function drawBackfire(cm, mvp, th, inten, nightF) {
+  const eye = camEye(), Hpx = cv.height;
+  const nz = carNozzle || [0, 0.49, -2.1];                     // backfire out the turbine nozzle
+  const lx = nz[0], ly = nz[1], lz = nz[2] - 0.05;
+  const ox = cm[0]*lx + cm[4]*ly + cm[8]*lz + cm[12], oy = cm[1]*lx + cm[5]*ly + cm[9]*lz + cm[13], oz = cm[2]*lx + cm[6]*ly + cm[10]*lz + cm[14];
+  let bx = -cm[8], by = -cm[9], bz = -cm[10]; const bl = Math.hypot(bx, by, bz) || 1; bx /= bl; by /= bl; bz /= bl;   // backward
+  const lum = inten * (1.0 + nightF * 1.8);                    // pops brighter at night
+  const NB = 5, s = [];
+  for (let k = 0; k < NB; k++) { const t = k / (NB - 1);
+    const px = ox + bx * t * 1.7, py = oy + by * t * 1.7, pz = oz + bz * t * 1.7;
+    const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
+    s.push(px, py, pz, Math.min(500, 0.30 * (1 - t * 0.4) * Hpx / (dist * th)), (1 - t) * lum);
+  }
+  gl.useProgram(progGlow); gl.uniformMatrix4fv(glowLoc.mvp, false, mvp);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
+  gl.bindBuffer(gl.ARRAY_BUFFER, glowBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(s), gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(glowLoc.pos); gl.vertexAttribPointer(glowLoc.pos, 3, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
+  gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
+  gl.uniform3f(glowLoc.color, 1.0, 0.5, 0.15);                 // orange flame
+  gl.drawArrays(gl.POINTS, 0, NB);
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
@@ -1273,8 +1314,10 @@ function render() {
     gl.disableVertexAttribArray(tLoc.nrm); gl.disableVertexAttribArray(tLoc.uv);
     if (showThruster) {
       const inten = turbineIntensity(i);
-      if (inten > 0.03) drawThruster(cm, inten, mvp);
+      if (inten > 0.03) drawThruster(cm, inten, mvp, 1 + nightF * 2.2);   // turbine cranks luminous at night
     }
+    const bf = backfireAt(tCur / ex.dt);                                   // exhaust backfire on an upshift
+    if (bf > 0.02) { const fov = fa ? (follow.rig.fov || 0.9) : 0.9; drawBackfire(cm, mvp, Math.tan(fov / 2), bf, nightF); }
     if (carLights && nightF > 0.02) {           // tail bleed (flare on braking) + lamp glows at night
       const fov = fa ? (follow.rig.fov || 0.9) : 0.9;
       drawCarLights(cm, mvp, Math.tan(fov / 2), nightF, brakeF);
@@ -1763,7 +1806,7 @@ function resetTrackScene() {
     }
     carGroups = null;
   }
-  carLights = null;
+  carLights = null; carNozzle = null;
   if (carWheels) {
     for (const w of carWheels) for (const g of [...w.rollGroups, ...w.staticGroups]) {
       gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
@@ -1852,6 +1895,13 @@ async function loadCarModel(carId) {
       else if (/brakelightbulb/i.test(mat.name)) { const l = clusterLamps(g, 0.10); carLights.tail.push(...l); carLights.brake.push(...sideMeans(l)); }
       else if (/ledwhite/i.test(mat.name)) carLights.accentW.push(...clusterLamps(g, 0.07));
       else if (/ledred/i.test(mat.name)) carLights.accentR.push(...clusterLamps(g, 0.07));
+      else if (/turbineglow/i.test(mat.name)) {   // turbine nozzle → plume + backfire origin
+        // emit from the nozzle MOUTH (rearmost, min z), not the centroid, so the housing
+        // occludes the plume and it only glows out the opening — not through the bodywork.
+        const p = g.pos, n = p.length / 3; let cx = 0, cy = 0, minz = 1e9;
+        for (let k = 0; k < n; k++) { cx += p[k*3]; cy += p[k*3+1]; if (p[k*3+2] < minz) minz = p[k*3+2]; }
+        carNozzle = [cx/n, cy/n, minz];
+      }
     }
     // steerable wheels (front pair steers to the line; the body keeps its crab)
     carWheels = [];
@@ -2344,6 +2394,7 @@ function selectCar(i) {
     }
     ex.cumDist = cd;
   }
+  ex.shifts = detectShifts(ex);   // kinematic upshift frames → exhaust backfires
   stats = ACReplay.runStats(ex);
   buildGeometry();
   tCur = frameRange()[0] * ex.dt;

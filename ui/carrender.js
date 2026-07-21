@@ -139,6 +139,29 @@ function carGForces(fp) {
     brakeG: -longG - hy,
   };
 }
+// Kinematic upshift detection (the replay has no gear channel): an upshift briefly cuts
+// torque, so longitudinal acceleration dips sharply toward zero mid-pull. Returns the
+// frame indices of detected shifts (used to trigger exhaust backfires). Approximate.
+function detectShifts(ex) {
+  const dt = ex.dt, N = ex.N;
+  const v = new Float64Array(N);
+  for (let f = 0; f < N; f++) v[f] = (ex.speed[f] || 0) / 3.6;   // m/s
+  const W = Math.max(1, Math.round(0.045 / dt)), acc = new Float64Array(N).fill(NaN);
+  for (let f = W; f < N - W; f++) { if (ex.gap && (ex.gap[f] || ex.gap[f-W] || ex.gap[f+W])) continue; acc[f] = (v[f+W] - v[f-W]) / (2 * W * dt); }
+  const K = Math.max(2, Math.round(0.12 / dt)), minGap = Math.round(0.3 / dt), shifts = [];
+  let last = -1e9;
+  for (let f = K + W; f < N - K - W; f++) {
+    const a = acc[f]; if (!isFinite(a)) continue;
+    const aL = acc[f - K], aR = acc[f + K]; if (!isFinite(aL) || !isFinite(aR)) continue;
+    const flank = Math.min(aL, aR);
+    // accelerating on both sides, a sharp dip toward zero, a true local min, spaced out
+    if (flank > 2.0 && a < 1.2 && a < flank * 0.5 && v[f] > 12 && f - last > minGap) {
+      let lm = true; for (let k = -K; k <= K; k++) if (isFinite(acc[f + k]) && acc[f + k] < a - 0.01) { lm = false; break; }
+      if (lm) { shifts.push(f); last = f; }
+    }
+  }
+  return shifts;
+}
 // per-wheel suspension travel (m, along body up): dive/squat + roll + bump, clamped
 function wheelLift(w, g) {
   const front = w.front, left = w.pivot[0] > 0;
