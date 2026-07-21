@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-21 — refactor: extract math helpers (no behaviour change)
+
+### Changed
+- Pulled all the pure matrix/vector helpers out of the `index.html` inline script
+  into a new `mathutil.js` (loaded first, shares global scope): `mMul`,
+  `mPerspective`, `mLookAt`, `rotP`, `scaleMat`, the `v3*` vector kit, `mXfPt`,
+  `mRot`, `mT`, the row-vector `rv*` set, `ik2bone`, `easeK`, `IDENT4`. The file
+  documents the two matrix conventions (column-major camera/GL vs row-vector
+  kn5/skeleton) so they stop getting mixed up. First step of splitting the monolith
+  before adding the lighting/shadow passes; behaviour is unchanged.
+
 ## 2026-07-21 — procedural suspension
 
 ### Added
