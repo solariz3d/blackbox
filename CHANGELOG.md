@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-21 — wheel roll-spin
+
+### Added
+- The road wheels now roll on their axle with the car's travel (they used to only
+  steer). Roll angle = cumulative distance / tyre radius, read from a per-frame
+  cumulative-distance track built at load, so it's scrub-safe: scrub back and the
+  tyres roll backward, pause and they stop. Direction flips via `WHEEL_ROLL_SIGN`.
+- Tyre rolling radius is measured from the wheel mesh (furthest vertex from the
+  pivot in the plane perpendicular to the axle).
+
+### Changed
+- Each corner is now split during kn5 parse into the rolling tyre (`rollGroups`) and
+  the static exo cage / hub (`staticGroups`, the Mach6 "M" pods). Both steer with the
+  wheel, but only the tyre rolls — the exo cage no longer spins with the axle.
+
 ## 2026-07-21 — follow-cam fog clamp + look-down
 
 ### Changed

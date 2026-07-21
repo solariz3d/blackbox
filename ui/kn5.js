@@ -277,11 +277,12 @@ function extractScene(arrayBuffer, opts) {
       const t = new Float64Array(16);
       for (let i = 0; i < 16; i++) t[i] = f32();
       m = matMulRowVec(t, parentM);
-      // the whole per-corner assembly steers together: the wheel (tyre+rim) PLUS
-      // the Mach6 exo-suit — its suspension (SUSP_) and hub (HUB_), which form the
-      // "M" when the wheels turn sideways. All three sit at the same corner centre.
-      const wm = /^(?:WHEEL|SUSP|HUB)_(LF|RF|LR|RR)$/i.exec(name);
-      if (wm) childWheel = { corner: wm[1].toUpperCase(), pivot: [m[12], m[13], m[14]] };
+      // the whole per-corner assembly STEERS together: the wheel (tyre+rim) PLUS the
+      // Mach6 exo-suit — its suspension (SUSP_) and hub (HUB_), which form the "M" when
+      // the wheels turn sideways. But only the tyre (WHEEL_) also ROLLS on its axle; the
+      // exo cage/hub must not spin. Tag which part this subtree is so roll hits just the tyre.
+      const wm = /^(WHEEL|SUSP|HUB)_(LF|RF|LR|RR)$/i.exec(name);
+      if (wm) childWheel = { corner: wm[2].toUpperCase(), pivot: [m[12], m[13], m[14]], roll: /^WHEEL$/i.test(wm[1]) };
       if (/steerwheel$/i.test(name) && !childSteer) {   // the cockpit steering wheel node
         // world-matrix rows are the node's axes (row-vector); keep all three so the
         // render can spin the wheel about the right one (the column / disc normal).
@@ -310,10 +311,11 @@ function extractScene(arrayBuffer, opts) {
         } else {
           meshCount++;
           let bag = byMat;                       // body geometry by default
-          if (wheel && !isDriveshaft) {          // steerable road wheel, kept per corner
+          if (wheel && !isDriveshaft) {          // steerable corner assembly, kept per corner
             let wb = wheelByCorner.get(wheel.corner);
-            if (!wb) { wb = { pivot: wheel.pivot, byMat: new Map() }; wheelByCorner.set(wheel.corner, wb); }
-            bag = wb.byMat;
+            if (!wb) { wb = { pivot: wheel.pivot, rollByMat: new Map(), staticByMat: new Map() }; wheelByCorner.set(wheel.corner, wb); }
+            if (wheel.roll) wb.pivot = wheel.pivot;   // the tyre's own centre is the steer/roll axis
+            bag = wheel.roll ? wb.rollByMat : wb.staticByMat;  // tyre rolls; exo cage/hub only steers
           } else if (steer) {                    // the cockpit steering wheel
             bag = steerWheelByMat;
           }
@@ -381,12 +383,14 @@ function extractScene(arrayBuffer, opts) {
   let triTotal = 0;
   for (const [materialId, g] of byMat) { const bg = bakeGroup(materialId, g); triTotal += bg.triCount; groups.push(bg); }
 
-  // steerable wheels: baked groups per corner, plus the corner's centre pivot
+  // steerable wheels: per corner, split into the rolling tyre (rollGroups) and the
+  // static exo cage/hub (staticGroups) — both steer, only rollGroups spins on the axle.
   const wheels = [];
   for (const [corner, wb] of wheelByCorner) {
-    const wg = [];
-    for (const [materialId, g] of wb.byMat) { const bg = bakeGroup(materialId, g); triTotal += bg.triCount; wg.push(bg); }
-    wheels.push({ corner, pivot: wb.pivot, groups: wg });
+    const roll = [], stat = [];
+    for (const [materialId, g] of wb.rollByMat) { const bg = bakeGroup(materialId, g); triTotal += bg.triCount; roll.push(bg); }
+    for (const [materialId, g] of wb.staticByMat) { const bg = bakeGroup(materialId, g); triTotal += bg.triCount; stat.push(bg); }
+    wheels.push({ corner, pivot: wb.pivot, rollGroups: roll, staticGroups: stat });
   }
 
   // cockpit steering wheel: baked groups + its pivot & spin axes

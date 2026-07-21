@@ -555,11 +555,12 @@ const tLoc = {
 
 const IDENT4 = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
 let carGroups = null;   // uploaded car model mesh groups (LOD0)
-let carWheels = null;   // steerable wheel groups {corner, pivot, front, groups}
+let carWheels = null;   // steerable wheels {corner, pivot, front, radius, rollGroups, staticGroups}
 let carSteerWheel = null; // in-cockpit steering wheel { pivot, ax, groups }
 let STEER_WHEEL_RATIO = 3.0;  // cockpit wheel turns this × the road-wheel angle
 let STEER_WHEEL_AXIS = 2;     // which node axis it spins about (0=X,1=Y,2=Z); flip if it tumbles
 let STEER_WHEEL_SIGN = 1;     // flip if it turns the wrong way
+let WHEEL_ROLL_SIGN = 1;      // road-wheel roll-spin direction (flip if wheels spin backward)
 let carDriver = null;   // { bodyGroups, headGroups } — driver model, procedurally posed
 let carSteerAngle = 0;  // front-wheel steer this frame (radians), set by carModelMatrix
 // procedural driver rig: the body is a rigid seated pose (the car's own
@@ -823,10 +824,25 @@ function drawCarGroups(groups, modelMat) {
 }
 // carMat ⊗ (rotate about model-up through the wheel centre by `steer`) — steers a
 // front wheel to point down the line. X=right, Z=nose in the car's local frame.
-function wheelSteerModel(carMat, pivot, steer) {
-  const c = Math.cos(steer), s = Math.sin(steer), px = pivot[0], pz = pivot[2];
-  const S = [c, 0, -s, 0,  0, 1, 0, 0,  s, 0, c, 0,  px * (1 - c) - s * pz, 0, pz * (1 - c) + s * px, 1];
-  return new Float32Array(mMul(carMat, S));
+function wheelSteerModel(carMat, pivot, steer, roll) {
+  const cy = Math.cos(steer), sy = Math.sin(steer);
+  const cx = Math.cos(roll || 0), sx = Math.sin(roll || 0);
+  const Ry = [cy, 0, -sy, 0,  0, 1, 0, 0,  sy, 0, cy, 0,  0, 0, 0, 1];   // steer about up (model Y)
+  const Rx = [1, 0, 0, 0,  0, cx, sx, 0,  0, -sx, cx, 0,  0, 0, 0, 1];   // roll about the axle (model X)
+  const R = mMul(Ry, Rx);   // roll in the wheel's own frame, then steer that frame
+  const px = pivot[0], py = pivot[1], pz = pivot[2];   // rotate about the wheel-centre pivot
+  R[12] = px - (R[0]*px + R[4]*py + R[8]*pz);
+  R[13] = py - (R[1]*px + R[5]*py + R[9]*pz);
+  R[14] = pz - (R[2]*px + R[6]*py + R[10]*pz);
+  return new Float32Array(mMul(carMat, R));
+}
+// travelled distance (m) at fractional frame `fp`, interpolated — drives the wheel
+// roll-spin so it's scrub-safe (scrub back → wheels roll back, pause → they stop).
+function wheelRollDistance(fp) {
+  const cd = ex && ex.cumDist; if (!cd) return 0;
+  const i = Math.max(0, Math.min(ex.N - 1, Math.floor(fp)));
+  const j = Math.min(ex.N - 1, i + 1);
+  return cd[i] + (cd[j] - cd[i]) * (fp - i);
 }
 // carMat ⊗ (rotate `ang` about an arbitrary unit axis through a pivot) — for the
 // cockpit steering wheel spinning about its tilted column.
@@ -1447,8 +1463,13 @@ function render() {
     gl.uniform1f(tLoc.alpha, 1.0);
     gl.activeTexture(gl.TEXTURE0);
     drawCarGroups(carGroups, cm);                              // body — keeps its crab
-    if (carWheels) for (const w of carWheels) {                // all four wheels steer to the line
-      drawCarGroups(w.groups, wheelSteerModel(cm, w.pivot, carSteerAngle));
+    if (carWheels) {                                           // wheels steer to the line; only the tyre rolls with travel
+      const rollDist = wheelRollDistance(tCur / ex.dt);
+      for (const w of carWheels) {
+        const roll = WHEEL_ROLL_SIGN * rollDist / (w.radius || 0.35);
+        drawCarGroups(w.rollGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, roll));   // tyre + rim: steer + roll
+        drawCarGroups(w.staticGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, 0));     // exo "M" cage + hub: steer only
+      }
     }
     if (carSteerWheel) {                                        // cockpit wheel spins with steer
       const ang = carSteerAngle * STEER_WHEEL_RATIO * STEER_WHEEL_SIGN;
@@ -1940,7 +1961,7 @@ function resetTrackScene() {
     carGroups = null;
   }
   if (carWheels) {
-    for (const w of carWheels) for (const g of w.groups) {
+    for (const w of carWheels) for (const g of [...w.rollGroups, ...w.staticGroups]) {
       gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
       gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
       if (g.tex) gl.deleteTexture(g.tex);
@@ -2005,8 +2026,14 @@ async function loadCarModel(carId) {
     // steerable wheels (front pair steers to the line; the body keeps its crab)
     carWheels = [];
     for (const w of (scene.wheels || [])) {
-      const gpu = await uploadGroups(w.groups, scene, [150, 152, 158]);
-      carWheels.push({ corner: w.corner, pivot: w.pivot, front: /F$/.test(w.corner), groups: gpu });
+      // rolling radius = furthest TYRE vertex from the pivot in the plane ⟂ the axle (model X)
+      let r2 = 0;
+      for (const g of w.rollGroups) { const p = g.pos; for (let k = 0; k < p.length; k += 3) {
+        const dy = p[k+1] - w.pivot[1], dz = p[k+2] - w.pivot[2]; const d = dy*dy + dz*dz; if (d > r2) r2 = d; } }
+      const radius = r2 > 1e-6 ? Math.sqrt(r2) : (w.pivot[1] || 0.35);
+      const rollGpu = await uploadGroups(w.rollGroups, scene, [150, 152, 158]);
+      const staticGpu = await uploadGroups(w.staticGroups, scene, [150, 152, 158]);
+      carWheels.push({ corner: w.corner, pivot: w.pivot, front: /F$/.test(w.corner), radius, rollGroups: rollGpu, staticGroups: staticGpu });
     }
     // in-cockpit steering wheel (spins with steer)
     carSteerWheel = null;
@@ -2474,6 +2501,19 @@ if (inTauri) {
 
 function selectCar(i) {
   ex = ACReplay.extractCar(replay, i);
+  // cumulative travelled distance per frame (m), not carried across gaps — the wheel
+  // roll-spin reads this so the tyres turn exactly with the car's motion.
+  {
+    const N = ex.N, cd = new Float64Array(N); let acc = 0;
+    for (let k = 1; k < N; k++) {
+      if (!(ex.gap && ex.gap[k])) {
+        const dx = ex.pos[k*3] - ex.pos[(k-1)*3], dy = ex.pos[k*3+1] - ex.pos[(k-1)*3+1], dz = ex.pos[k*3+2] - ex.pos[(k-1)*3+2];
+        acc += Math.hypot(dx, dy, dz);
+      }
+      cd[k] = acc;
+    }
+    ex.cumDist = cd;
+  }
   stats = ACReplay.runStats(ex);
   buildGeometry();
   tCur = frameRange()[0] * ex.dt;
