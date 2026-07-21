@@ -292,6 +292,7 @@
   <button id="btnFollow">follow car</button>
   <button id="btnCar" class="on">car model</button>
   <button id="btnLine" class="on">line</button>
+  <span id="timeCtl" title="Time of day" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.85"><span id="timeIcon">🌙</span><input id="timeSlider" type="range" min="0" max="1439" value="60" style="width:92px;vertical-align:middle"><span id="timeLabel" style="min-width:38px">01:00</span></span>
   <button id="btnLap" class="on">lap only</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
@@ -442,6 +443,7 @@ let sceneGroups = null; // textured visual scene draw batches
 // second program (VST/FST textured+lit scene) + progT + tLoc → glcore.js
 // IDENT4 → mathutil.js
 let carGroups = null;   // uploaded car model mesh groups (LOD0)
+let carLights = null;   // { head:[[x,y,z]...], tail:[...] } emitter points from the model housings
 let carWheels = null;   // steerable wheels {corner, pivot, front, radius, rollGroups, staticGroups}
 let carSteerWheel = null; // in-cockpit steering wheel { pivot, ax, groups }
 let STEER_WHEEL_RATIO = 3.0;  // cockpit wheel turns this × the road-wheel angle
@@ -456,6 +458,10 @@ let SUSP_LAT = 0.018;    // roll travel per g of cornering (m)
 let SUSP_BUMP = 0.022;   // bump travel per g of vertical acceleration (m)
 let SUSP_MAX = 0.045;    // clamp total travel per wheel (m)
 let SUSP_LAT_SIGN = 1;   // flip if the car rolls the wrong way in corners
+// brake-light detection from deceleration (no brake channel in the replay):
+let BRAKE_DEADZONE_G = 0.4;  // decel below this = coasting/lift-off, not braking
+let BRAKE_RANGE_G = 0.8;     // decel above deadzone+range = full brake light
+let BRAKE_SCRUB = 0.18;      // discount cornering scrub: decel explained by lateral g isn't braking
 let carDriver = null;   // { bodyGroups, headGroups } — driver model, procedurally posed
 let carSteerAngle = 0;  // front-wheel steer this frame (radians), set by carModelMatrix
 // procedural driver rig: the body is a rigid seated pose (the car's own
@@ -551,6 +557,101 @@ function drawThruster(m, inten, mvp) {
   gl.enableVertexAttribArray(thrLoc.bright); gl.vertexAttribPointer(thrLoc.bright, 1, gl.FLOAT, false, 20, 16);
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
   gl.drawArrays(gl.POINTS, 0, K);
+  gl.depthMask(true); gl.disable(gl.BLEND);
+}
+
+// additive coloured glow sprites — the car's headlights (warm, wafting beam) and
+// tail lights (red bleed). Colour is a per-batch uniform so one program does both.
+const progGlow = gl.createProgram();
+gl.attachShader(progGlow, shader(gl.VERTEX_SHADER,
+  "attribute vec3 aPos; attribute float aSize; attribute float aBright;" +
+  "uniform mat4 uMVP; varying float vB;" +
+  "void main(){ gl_Position = uMVP*vec4(aPos,1.0); gl_PointSize = aSize; vB = aBright; }"));
+gl.attachShader(progGlow, shader(gl.FRAGMENT_SHADER,
+  "precision mediump float; varying float vB; uniform vec3 uColor;" +
+  "void main(){ float r = length(gl_PointCoord-0.5)*2.0; float a = pow(smoothstep(1.0,0.0,r),1.7)*vB;" +
+  " gl_FragColor = vec4(uColor*a, a); }"));
+gl.linkProgram(progGlow);
+const glowLoc = {
+  pos: gl.getAttribLocation(progGlow, "aPos"), size: gl.getAttribLocation(progGlow, "aSize"),
+  bright: gl.getAttribLocation(progGlow, "aBright"), mvp: gl.getUniformLocation(progGlow, "uMVP"),
+  color: gl.getUniformLocation(progGlow, "uColor"),
+};
+const glowBuf = gl.createBuffer();
+
+// glow layer: red tail lights (flare on braking) + the body's white & red LED accent
+// arrays. Headlights are the shader cone spotlight, not here. All fade in at night.
+function drawCarLights(cm, mvp, th, nightF, brakeF) {
+  if (!carLights) return;
+  const eye = camEye(), Hpx = cv.height;
+  const push = (arr, p, r, b) => { const dist = Math.hypot(p[0]-eye[0], p[1]-eye[1], p[2]-eye[2]) || 1;
+    arr.push(p[0], p[1], p[2], Math.min(500, r * Hpx / (dist * th)), b); };
+  // warm headlamp glow — each of the 3 lamps per side gets a CRISP bulb; only the top
+  // lamp keeps a soft halo, so the lower two don't leak light onto the body.
+  const warm = [];
+  { const hl = carLights.headLamps || [], sL = [], sR = [];
+    for (const a of hl) (a[0] > 0 ? sL : sR).push(a);
+    for (const arr of [sL, sR]) arr.slice().sort((p, q) => q[1] - p[1]).forEach((a, idx) => {
+      const P = mXfPt(a, cm);
+      push(warm, P, 0.05, 0.95 * nightF);                    // crisp bulb only
+      if (idx === 0) push(warm, P, 0.17, 0.28 * nightF);     // top lamp gets the soft halo
+    });
+  }
+  // tail lights: red running glow → wider/hotter flare under braking (3 lamps/side).
+  // Keep the silhouette (sizes) but toned-down luminosity.
+  const red = [], base = 0.45 + 0.45 * brakeF, spread = 1.0 + 0.7 * brakeF;
+  for (const t of (carLights.tail || [])) { const T = mXfPt(t, cm);
+    push(red, T, 0.11 * spread, base * nightF); push(red, T, 0.28 * spread, 0.42 * base * nightF); }
+  // red LED accents on the body — small crisp glows + a soft halo
+  for (const a of (carLights.accentR || [])) { const P = mXfPt(a, cm); push(red, P, 0.06, 0.9 * nightF); push(red, P, 0.16, 0.30 * nightF); }
+  // white LED accents
+  const white = [];
+  for (const a of (carLights.accentW || [])) { const P = mXfPt(a, cm); push(white, P, 0.06, 0.9 * nightF); push(white, P, 0.16, 0.30 * nightF); }
+
+  gl.useProgram(progGlow); gl.uniformMatrix4fv(glowLoc.mvp, false, mvp);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
+  const batch = (arr, col) => { const n = arr.length / 5; if (!n) return;
+    gl.bindBuffer(gl.ARRAY_BUFFER, glowBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(glowLoc.pos); gl.vertexAttribPointer(glowLoc.pos, 3, gl.FLOAT, false, 20, 0);
+    gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
+    gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
+    gl.uniform3f(glowLoc.color, col[0], col[1], col[2]); gl.drawArrays(gl.POINTS, 0, n); };
+  batch(warm, [1.0, 0.92, 0.72]);                  // warm headlamp glow (3 lamps/side)
+  batch(red, [1.0, 0.06 + 0.13 * brakeF, 0.03]);   // tail + red accents (hotter when braking)
+  batch(white, [0.85, 0.93, 1.0]);                 // cool-white LED accents
+  gl.depthMask(true); gl.disable(gl.BLEND);
+}
+
+// contact shadow: a soft dark oval decal laid flat on the track under the car so it
+// reads as grounded (not floating). Cheap stand-in until real cast shadows land.
+const progShadow = gl.createProgram();
+gl.attachShader(progShadow, shader(gl.VERTEX_SHADER,
+  "attribute vec3 aPos; attribute vec2 aUV; uniform mat4 uMVP; varying vec2 vUV;" +
+  "void main(){ gl_Position = uMVP*vec4(aPos,1.0); vUV = aUV; }"));
+gl.attachShader(progShadow, shader(gl.FRAGMENT_SHADER,
+  "precision mediump float; varying vec2 vUV; uniform float uStr;" +
+  "void main(){ float r = length(vUV-0.5)*2.0; float a = (1.0 - smoothstep(0.35, 1.0, r)) * uStr;" +
+  " gl_FragColor = vec4(0.0, 0.0, 0.0, a); }"));
+gl.linkProgram(progShadow);
+const shadLoc = { pos: gl.getAttribLocation(progShadow, "aPos"), uv: gl.getAttribLocation(progShadow, "aUV"),
+  mvp: gl.getUniformLocation(progShadow, "uMVP"), str: gl.getUniformLocation(progShadow, "uStr") };
+const shadBuf = gl.createBuffer(), shadowVerts = new Float32Array(20);
+
+function drawCarShadow(cm, mvp) {
+  let ux = cm[4], uy = cm[5], uz = cm[6]; const ul = Math.hypot(ux,uy,uz)||1; ux/=ul;uy/=ul;uz/=ul;   // road up
+  let fx = cm[8], fy = cm[9], fz = cm[10]; const fl = Math.hypot(fx,fy,fz)||1; fx/=fl;fy/=fl;fz/=fl;   // forward
+  let rx = cm[0], ry = cm[1], rz = cm[2]; const rl = Math.hypot(rx,ry,rz)||1; rx/=rl;ry/=rl;rz/=rl;    // right
+  const cx = cm[12] + ux*0.04, cy = cm[13] + uy*0.04, cz = cm[14] + uz*0.04;   // just above the road
+  const HW = 1.55, HL = 2.95, V = shadowVerts;
+  const set = (sx, sl, u, v, o) => { V[o]=cx+rx*sx*HW+fx*sl*HL; V[o+1]=cy+ry*sx*HW+fy*sl*HL; V[o+2]=cz+rz*sx*HW+fz*sl*HL; V[o+3]=u; V[o+4]=v; };
+  set(-1,-1,0,0,0); set(1,-1,1,0,5); set(-1,1,0,1,10); set(1,1,1,1,15);
+  gl.useProgram(progShadow);
+  gl.uniformMatrix4fv(shadLoc.mvp, false, mvp); gl.uniform1f(shadLoc.str, 0.5);
+  gl.bindBuffer(gl.ARRAY_BUFFER, shadBuf); gl.bufferData(gl.ARRAY_BUFFER, V, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(shadLoc.pos); gl.vertexAttribPointer(shadLoc.pos, 3, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(shadLoc.uv); gl.vertexAttribPointer(shadLoc.uv, 2, gl.FLOAT, false, 20, 12);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
@@ -974,12 +1075,76 @@ function bindAndDraw(buf, n, mode, ptSize) {
   gl.drawArrays(mode, 0, n);
 }
 
+/* ===================== time-of-day lighting =====================
+ * One `timeOfDay` (hours, 0..24) drives a single key light that arcs across the sky and
+ * crossfades sun→moon, plus the atmosphere (sky/ground ambient + fog colour). Keyframed
+ * at midnight / dawn / noon / dusk and interpolated. The sun/moon is one continuous light:
+ * the moon is just "the sun, low, cool and dim". Feeds progT's uSun and uAmb uniforms
+ * plus the clear/fog colour. Default is night (his hotlaps). Shadows come next. */
+let timeOfDay = 1.0;   // 24h clock; 1:00 = deep night
+const LIGHT_KEYS = [
+  // t   dir (toward light, unnormalised)  key colour+intensity   ambSky            ambGround         fog/sky
+  { t: 0,  dir: [0.25, 0.72, 0.34], sun: [0.26, 0.32, 0.48], ambSky: [0.06, 0.09, 0.17], ambGround: [0.02, 0.03, 0.06], fog: [0.02, 0.03, 0.07] },
+  { t: 6,  dir: [0.92, 0.20, 0.34], sun: [1.00, 0.60, 0.40], ambSky: [0.36, 0.35, 0.44], ambGround: [0.16, 0.12, 0.12], fog: [0.52, 0.40, 0.42] },
+  { t: 12, dir: [0.18, 0.95, 0.20], sun: [1.00, 0.97, 0.90], ambSky: [0.50, 0.60, 0.75], ambGround: [0.28, 0.28, 0.26], fog: [0.55, 0.63, 0.74] },
+  { t: 18, dir: [-0.92, 0.20, 0.34], sun: [1.00, 0.48, 0.28], ambSky: [0.42, 0.32, 0.44], ambGround: [0.18, 0.12, 0.14], fog: [0.52, 0.32, 0.32] },
+  { t: 24, dir: [0.25, 0.72, 0.34], sun: [0.26, 0.32, 0.48], ambSky: [0.06, 0.09, 0.17], ambGround: [0.02, 0.03, 0.06], fog: [0.02, 0.03, 0.07] },
+];
+function lightingFor(t) {
+  t = ((t % 24) + 24) % 24;
+  let i = 0; while (i < LIGHT_KEYS.length - 1 && LIGHT_KEYS[i + 1].t <= t) i++;
+  const a = LIGHT_KEYS[i], b = LIGHT_KEYS[Math.min(i + 1, LIGHT_KEYS.length - 1)];
+  const f = Math.max(0, Math.min(1, (t - a.t) / ((b.t - a.t) || 1)));
+  const lp = (u, v) => [u[0] + (v[0] - u[0]) * f, u[1] + (v[1] - u[1]) * f, u[2] + (v[2] - u[2]) * f];
+  const d = lp(a.dir, b.dir), dl = Math.hypot(d[0], d[1], d[2]) || 1;
+  return { dir: [d[0]/dl, d[1]/dl, d[2]/dl], sun: lp(a.sun, b.sun), ambSky: lp(a.ambSky, b.ambSky), ambGround: lp(a.ambGround, b.ambGround), fog: lp(a.fog, b.fog) };
+}
+function setSceneLighting(L) {   // push the lit-scene program's light + atmosphere uniforms
+  gl.uniform3f(tLoc.fogC, L.fog[0], L.fog[1], L.fog[2]);
+  gl.uniform3f(tLoc.sun, L.dir[0], L.dir[1], L.dir[2]);
+  gl.uniform3f(tLoc.sunCol, L.sun[0], L.sun[1], L.sun[2]);
+  gl.uniform3f(tLoc.ambSky, L.ambSky[0], L.ambSky[1], L.ambSky[2]);
+  gl.uniform3f(tLoc.ambGround, L.ambGround[0], L.ambGround[1], L.ambGround[2]);
+}
+// aim the two headlight cone spotlights from the car's lamp housings (world), slightly
+// down; intensity 0 by day. Set on progT before the track + car draws so both get lit.
+function setHeadlights(cm, headInt) {
+  if (headInt > 0.001 && cm && carLights && carLights.head.length >= 2) {
+    const A = mXfPt(carLights.head[0], cm), B = mXfPt(carLights.head[1], cm);
+    let dx = cm[8] + cm[4] * 0.06, dy = cm[9] + cm[5] * 0.06, dz = cm[10] + cm[6] * 0.06;   // aim slightly UP
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    gl.uniform3f(tLoc.headA, A[0], A[1], A[2]);
+    gl.uniform3f(tLoc.headB, B[0], B[1], B[2]);
+    gl.uniform3f(tLoc.headDir, dx / dl, dy / dl, dz / dl);
+    gl.uniform1f(tLoc.headInt, headInt);
+  } else {
+    gl.uniform1f(tLoc.headInt, 0);
+  }
+}
+// red brake-light wash pointing BACKWARD from the tail lamps; intensity rises with braking.
+function setBrakelights(cm, brakeInt) {
+  if (brakeInt > 0.001 && cm && carLights && carLights.brake.length >= 2) {
+    const A = mXfPt(carLights.brake[0], cm), B = mXfPt(carLights.brake[1], cm);
+    let dx = -cm[8], dy = -cm[9], dz = -cm[10];   // backward = −nose
+    const dl = Math.hypot(dx, dy, dz) || 1;
+    gl.uniform3f(tLoc.brakeA, A[0], A[1], A[2]);
+    gl.uniform3f(tLoc.brakeB, B[0], B[1], B[2]);
+    gl.uniform3f(tLoc.brakeDir, dx / dl, dy / dl, dz / dl);
+    gl.uniform1f(tLoc.brakeInt, brakeInt);
+  } else {
+    gl.uniform1f(tLoc.brakeInt, 0);
+  }
+}
+
 function render() {
   const w = cv.clientWidth, h = cv.clientHeight;
   const dpr = Math.min(devicePixelRatio || 1, 2);
   if (cv.width !== w * dpr || cv.height !== h * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
   gl.viewport(0, 0, cv.width, cv.height);
-  gl.clearColor(0.039, 0.051, 0.075, 1);
+  const L = lightingFor(timeOfDay);           // sun/moon + atmosphere for this time of day
+  const dayBright = Math.max(L.sun[0], L.sun[1], L.sun[2]);
+  const nightF = Math.max(0, Math.min(1, (1.0 - dayBright) / 0.45));   // 0 by day → 1 deep night: fades the car lights in
+  gl.clearColor(L.fog[0], L.fog[1], L.fog[2], 1);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
   if (!ex) return;
   const fa = followActive();
@@ -993,14 +1158,30 @@ function render() {
   // density up and wash the background out — keeps the far fade without the close haze.
   const fogD = 0.35 / Math.max(cam.dist, 120);
 
+  // car matrix computed up front so its headlights can light the TRACK too (not just
+  // the car). carModelMatrix also sets carSteerAngle, so call it exactly once.
+  const i = Math.max(0, Math.min(ex.N - 1, Math.floor(tCur / ex.dt)));
+  const carShown = carGroups && showCar && !ex.gap[i];
+  const cm = carShown ? carModelMatrix(tCur / ex.dt) : null;
+  const headInt = (carShown && carLights && carLights.head.length >= 2) ? nightF : 0;
+  // brake detection (no brake channel in these replays — verified by probing the frame
+  // bytes): infer it, but physically. Start from gravity-corrected deceleration (so loops
+  // and banking don't count), subtract cornering scrub (tyres bleeding speed in a turn is
+  // not braking), then a deadzone for coasting/drag. Only real braking survives.
+  const gforce = carShown ? carGForces(tCur / ex.dt) : null;
+  const decelG = gforce ? gforce.brakeG - BRAKE_SCRUB * gforce.latG * gforce.latG : 0;
+  const brakeF = Math.max(0, Math.min(1, (decelG - BRAKE_DEADZONE_G) / BRAKE_RANGE_G));
+  const brakeInt = brakeF * nightF;           // red spill on the road behind, at night
+
   // textured scene pass (track verts are already world-space → model = identity)
   if (sceneGroups) {
     gl.useProgram(progT);
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniformMatrix4fv(tLoc.model, false, IDENT4);
     gl.uniform1f(tLoc.fogD, fogD);
-    gl.uniform3f(tLoc.fogC, 0.039, 0.051, 0.075);
-    gl.uniform3f(tLoc.sun, 0.32, 0.82, 0.47);
+    setSceneLighting(L);
+    setHeadlights(cm, headInt);                 // headlights light the track ahead
+    setBrakelights(cm, brakeInt);               // brake wash spills red behind
     gl.uniform1i(tLoc.tex, 0);
     gl.activeTexture(gl.TEXTURE0);
     for (const g of sceneGroups) {
@@ -1037,6 +1218,7 @@ function render() {
   gl.useProgram(prog);
   gl.uniformMatrix4fv(locMVP, false, mvp);
   gl.uniform1f(locFogD, fogD);
+  gl.uniform3f(locFogC, L.fog[0], L.fog[1], L.fog[2]);   // line/ribbon fog matches the sky
 
   if (!sceneGroups) bindAndDraw(bufs.grid, bufs.gridN, gl.LINES);
   if (!sceneGroups && bufs.trackIdxN) {
@@ -1053,17 +1235,16 @@ function render() {
     bindAndDraw(bufs.line, bufs.lineN, gl.LINES);
   }
 
-  const i = Math.max(0, Math.min(ex.N - 1, Math.floor(tCur / ex.dt)));
-
-  // the car model on the cursor (its meshes are local-space → uModel = carMatrix)
-  const carShown = carGroups && showCar && !ex.gap[i];
+  // the car model on the cursor (its meshes are local-space → uModel = carMatrix).
+  // i / carShown / cm were computed up front (above the track pass) for the headlights.
   if (carShown) {
-    const cm = carModelMatrix(tCur / ex.dt);
+    drawCarShadow(cm, mvp);                                    // grounding shadow on the track, under the car
     gl.useProgram(progT);
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniform1f(tLoc.fogD, fogD);
-    gl.uniform3f(tLoc.fogC, 0.039, 0.051, 0.075);
-    gl.uniform3f(tLoc.sun, 0.32, 0.82, 0.47);
+    setSceneLighting(L);
+    setHeadlights(cm, headInt);
+    setBrakelights(cm, brakeInt);
     gl.uniform1i(tLoc.tex, 0);
     gl.uniform1f(tLoc.alpha, 1.0);
     gl.activeTexture(gl.TEXTURE0);
@@ -1093,6 +1274,10 @@ function render() {
     if (showThruster) {
       const inten = turbineIntensity(i);
       if (inten > 0.03) drawThruster(cm, inten, mvp);
+    }
+    if (carLights && nightF > 0.02) {           // tail bleed (flare on braking) + lamp glows at night
+      const fov = fa ? (follow.rig.fov || 0.9) : 0.9;
+      drawCarLights(cm, mvp, Math.tan(fov / 2), nightF, brakeF);
     }
     gl.useProgram(prog);
   }
@@ -1293,6 +1478,17 @@ document.getElementById("btnLine").addEventListener("click", function () {
   showLine = !showLine;
   this.classList.toggle("on", showLine);
 });
+(function () {   // time-of-day slider → timeOfDay (hours); updates the ☀/🌙 icon + HH:MM label
+  const sl = document.getElementById("timeSlider"), ic = document.getElementById("timeIcon"), lb = document.getElementById("timeLabel");
+  const upd = () => {
+    timeOfDay = (+sl.value) / 60;
+    const hh = Math.floor(timeOfDay), mm = Math.round((timeOfDay - hh) * 60);
+    lb.textContent = String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
+    ic.textContent = (timeOfDay >= 6 && timeOfDay < 18) ? "☀" : "🌙";
+  };
+  sl.addEventListener("input", upd);
+  upd();
+})();
 function setMode(m) {
   colorMode = m;
   document.getElementById("modeSpeed").classList.toggle("on", m === "speed");
@@ -1567,6 +1763,7 @@ function resetTrackScene() {
     }
     carGroups = null;
   }
+  carLights = null;
   if (carWheels) {
     for (const w of carWheels) for (const g of [...w.rollGroups, ...w.staticGroups]) {
       gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
@@ -1630,6 +1827,32 @@ async function loadCarModel(carId) {
     const ab = await tinvoke("read_file", { path: files[0].path });
     const scene = KN5.extractScene(ab, { lod0Only: true });
     carGroups = await uploadSceneGroups(scene, [150, 152, 158]);
+    // light emitters from the model's own housings (model space): headlight/brakelight
+    // bulbs as one centroid per side, and the LED arrays (white + red) clustered per lamp.
+    // head = per-side beam origins (2); headLamps/tail = the individual 3-per-side lamps
+    // that visibly glow; accentW/R = the body's LED arrays.
+    carLights = { head: [], headLamps: [], tail: [], brake: [], accentW: [], accentR: [] };
+    const clusterLamps = (g, th) => {   // greedy-cluster verts into individual lamps
+      const p = g.pos, t2 = th * th, cl = [];
+      for (let i = 0; i < p.length / 3; i++) { const x = p[i*3], y = p[i*3+1], z = p[i*3+2];
+        let best = -1, bd = t2;
+        for (let c = 0; c < cl.length; c++) { const q = cl[c]; const d = (q.x/q.c - x)**2 + (q.y/q.c - y)**2 + (q.z/q.c - z)**2; if (d < bd) { bd = d; best = c; } }
+        if (best < 0) cl.push({ x, y, z, c: 1 }); else { const q = cl[best]; q.x += x; q.y += y; q.z += z; q.c++; } }
+      return cl.filter(q => q.c > 8).map(q => [q.x/q.c, q.y/q.c, q.z/q.c]);
+    };
+    const sideMeans = lamps => {   // average the lamps on each side → 2 beam origins
+      const L = [0,0,0,0], R = [0,0,0,0], out = [];
+      for (const p of lamps) { const s = p[0] > 0 ? L : R; s[0] += p[0]; s[1] += p[1]; s[2] += p[2]; s[3]++; }
+      for (const c of [L, R]) if (c[3]) out.push([c[0]/c[3], c[1]/c[3], c[2]/c[3]]);
+      return out;
+    };
+    for (const g of scene.groups) {
+      const mat = scene.materials[g.materialId]; if (!mat) continue;
+      if (/headlightbulb/i.test(mat.name)) { const l = clusterLamps(g, 0.10); carLights.headLamps.push(...l); carLights.head.push(...sideMeans(l)); }
+      else if (/brakelightbulb/i.test(mat.name)) { const l = clusterLamps(g, 0.10); carLights.tail.push(...l); carLights.brake.push(...sideMeans(l)); }
+      else if (/ledwhite/i.test(mat.name)) carLights.accentW.push(...clusterLamps(g, 0.07));
+      else if (/ledred/i.test(mat.name)) carLights.accentR.push(...clusterLamps(g, 0.07));
+    }
     // steerable wheels (front pair steers to the line; the body keeps its crab)
     carWheels = [];
     for (const w of (scene.wheels || [])) {

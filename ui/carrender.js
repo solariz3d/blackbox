@@ -128,10 +128,15 @@ function carGForces(fp) {
   const dvx = ((P[b*3]-P[i*3]) - (P[i*3]-P[a*3])) * iv * iv;
   const dvy = ((P[b*3+1]-P[i*3+1]) - (P[i*3+1]-P[a*3+1])) * iv * iv;
   const dvz = ((P[b*3+2]-P[i*3+2]) - (P[i*3+2]-P[a*3+2])) * iv * iv;
+  const longG = (dvx*hx + dvy*hy + dvz*hz) / 9.81;
   return {
     latG: (dvx*rx + dvy*ry + dvz*rz) / 9.81,     // + = pushed toward +right
-    longG: (dvx*hx + dvy*hy + dvz*hz) / 9.81,     // + = accelerating, − = braking
+    longG,                                        // + = accelerating, − = braking (raw)
     vertA: (dvx*ux + dvy*uy + dvz*uz) / 9.81,     // + = pushed up (bump), − = crest
+    // gravity-corrected braking: heading is flattened to the road plane, so gravity's
+    // along-track pull is just its vertical component (hy). Subtracting it means climbing
+    // a loop/banking no longer reads as braking. + = real braking-direction contact force.
+    brakeG: -longG - hy,
   };
 }
 // per-wheel suspension travel (m, along body up): dive/squat + roll + bump, clamped

@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-07-21 — night: day/night lighting, car lights, contact shadow
+
+### Added
+- **Time-of-day lighting**: one `timeOfDay` (0–24h) drives a single key light arcing
+  across the sky and crossfading sun→moon, plus the atmosphere (hemisphere ambient +
+  sky/fog colour), keyframed at midnight/dawn/noon/dusk. A toolbar slider (🌙/☀ +
+  clock) scrubs it; opens at night. Scene shader (glcore FST) takes the sun dir/colour
+  and ambient sky/ground as uniforms.
+- **Car lights** (emitted from the model's own housings, clustered per lamp): headlights
+  are a warm **cone spotlight in the shader** that lights the road ahead; the 3 lamps
+  per side glow as crisp bulbs (only the top keeps a halo, so the lower two don't leak).
+  Tail lights bleed red and **flare + wash red behind the car under braking** (a wide
+  backward cone). White + red LED accent arrays on the body glow too. All fade in at
+  night (`nightF`).
+- **Contact shadow**: a soft dark oval decal on the track under the car so it reads as
+  grounded, not hovering. Stand-in until real cast shadows.
+
+### Fixed
+- Brake-light triggering: the replay has **no brake channel** (verified by probing the
+  full 284-byte frame as float/int and by correlation — online autosaves store only
+  visual state). So braking is inferred *physically*: gravity-corrected deceleration
+  (`brakeG = −longG − hy`, so loops/banking don't count) minus cornering scrub
+  (`BRAKE_SCRUB·latG²`), then a deadzone (`BRAKE_DEADZONE_G`). Only real braking lights up.
+
 ## 2026-07-21 — refactor: extract car/driver rendering (no behaviour change)
 
 ### Changed

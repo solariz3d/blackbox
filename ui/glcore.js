@@ -51,34 +51,62 @@ const extS3TC = gl.getExtension("WEBGL_compressed_texture_s3tc");
 const VST = `
 attribute vec3 aPos; attribute vec3 aNrm; attribute vec2 aUV;
 uniform mat4 uMVP; uniform mat4 uModel;
-varying vec3 vNrm; varying vec2 vUV;
+varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld;
 void main(){
   vec4 wp = uModel * vec4(aPos,1.0);
   gl_Position = uMVP * wp;
   vNrm = mat3(uModel) * aNrm;
   vUV = aUV;
+  vWorld = wp.xyz;
 }`;
 const FST = `
 precision mediump float;
-varying vec3 vNrm; varying vec2 vUV;
+varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld;
 uniform sampler2D uTex;
 uniform float uAlphaTest;
 uniform float uAlpha;
 uniform float uFogDensity; uniform vec3 uFogColor;
-uniform vec3 uSunDir;
+uniform vec3 uSunDir;            // direction TO the sun/moon (time-of-day driven)
+uniform vec3 uSunCol;           // key-light colour + intensity (dim/cool at night)
+uniform vec3 uAmbSky, uAmbGround; // hemisphere ambient: sky above, ground below
+uniform vec3 uHeadA, uHeadB, uHeadDir; // headlight world positions + aim (cone spotlights)
+uniform float uHeadInt;         // headlight intensity (0 by day, up at night)
+uniform vec3 uBrakeA, uBrakeB, uBrakeDir; // tail-light world positions + backward aim
+uniform float uBrakeInt;        // brake-light spill intensity (rises under braking, at night)
+// one headlight: warm cone spotlight, distance-attenuated, cosine cone falloff
+float headlamp(vec3 p){
+  vec3 t = vWorld - p; float d = length(t);
+  float cone = smoothstep(0.85, 0.97, dot(t / max(d, 1e-3), uHeadDir));  // wider cone
+  return cone / (1.0 + 0.15 * d + 0.035 * d * d);                        // reaches further
+}
+// brake light: a wide, soft red wash spilling behind the car (not a focused beam)
+float brakelamp(vec3 p){
+  vec3 t = vWorld - p; float d = length(t);
+  float back = smoothstep(-0.15, 0.7, dot(t / max(d, 1e-3), uBrakeDir)); // wide, favours behind
+  return back / (1.0 + 0.35 * d + 0.14 * d * d);                         // short reach
+}
 void main(){
   vec4 tex = texture2D(uTex, vUV);
   if (uAlphaTest > 0.5 && tex.a < 0.5) discard;
   vec3 n = normalize(vNrm);
-  // directional key light (warm) + hemisphere ambient: cool sky from above grading
-  // to a dark warm ground below — gives terrain & banking real form without shadow maps
+  // directional key light + hemisphere ambient, all driven by the time of day
   float ndl = max(dot(n, normalize(uSunDir)), 0.0);
   float sky = 0.5 + 0.5 * n.y;
-  vec3 ambient = mix(vec3(0.22, 0.23, 0.28), vec3(0.55, 0.63, 0.76), sky);
-  vec3 sunCol = vec3(1.0, 0.95, 0.86);
+  vec3 ambient = mix(uAmbGround, uAmbSky, sky);
+  vec3 sunCol = uSunCol;
   // soft wrap on the key so shaded faces don't crush to black
   float wrap = ndl * 0.85 + 0.15 * (0.5 + 0.5 * dot(n, normalize(uSunDir)));
   vec3 col = tex.rgb * (ambient + sunCol * (0.9 * wrap));
+  // headlights actually light the road ahead (warm cones from the two lamps)
+  if (uHeadInt > 0.001) {
+    float lit = headlamp(uHeadA) + headlamp(uHeadB);
+    col += tex.rgb * vec3(1.0, 0.85, 0.60) * (lit * uHeadInt * 5.5);
+  }
+  // brake lights spill red onto the road + surroundings behind the car (subtle)
+  if (uBrakeInt > 0.001) {
+    float b = brakelamp(uBrakeA) + brakelamp(uBrakeB);
+    col += tex.rgb * vec3(1.0, 0.05, 0.02) * (b * uBrakeInt * 4.0);
+  }
   // light grade: a touch of saturation + contrast for depth
   float lum = dot(col, vec3(0.299, 0.587, 0.114));
   col = mix(vec3(lum), col, 1.08);
@@ -105,4 +133,15 @@ const tLoc = {
   fogD: gl.getUniformLocation(progT, "uFogDensity"),
   fogC: gl.getUniformLocation(progT, "uFogColor"),
   sun: gl.getUniformLocation(progT, "uSunDir"),
+  sunCol: gl.getUniformLocation(progT, "uSunCol"),
+  ambSky: gl.getUniformLocation(progT, "uAmbSky"),
+  ambGround: gl.getUniformLocation(progT, "uAmbGround"),
+  headA: gl.getUniformLocation(progT, "uHeadA"),
+  headB: gl.getUniformLocation(progT, "uHeadB"),
+  headDir: gl.getUniformLocation(progT, "uHeadDir"),
+  headInt: gl.getUniformLocation(progT, "uHeadInt"),
+  brakeA: gl.getUniformLocation(progT, "uBrakeA"),
+  brakeB: gl.getUniformLocation(progT, "uBrakeB"),
+  brakeDir: gl.getUniformLocation(progT, "uBrakeDir"),
+  brakeInt: gl.getUniformLocation(progT, "uBrakeInt"),
 };
