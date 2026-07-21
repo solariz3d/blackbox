@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-07-21 — refactor: extract car/driver rendering (no behaviour change)
+
+### Changed
+- Moved the whole car/driver/wheel render layer out of the `index.html` monolith into
+  `carrender.js` (loaded before the main script): `carModelMatrix` (+ slip),
+  `drawCarGroups`, `wheelSteerModel` (steer + roll + suspension lift), `axisSpinModel`,
+  `carGForces`/`wheelLift`, and the driver system (`driverPose`, `driverSkinUpload`,
+  `driverSeatedSkin` IK). App state + tunables stay in `index.html`; behaviour unchanged.
+  `index.html` is now render loop + UI + asset loading (~2,660 → ~2,180 lines). Final
+  step of splitting the monolith before the lighting/shadow work.
+
 ## 2026-07-21 — refactor: extract math helpers (no behaviour change)
 
 ### Changed
