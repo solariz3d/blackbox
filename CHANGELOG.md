@@ -1,5 +1,35 @@
 # Changelog
 
+## 2026-07-21 — driver seated on the wheel + real car colours
+
+### Added
+- Driver hands are now genuinely on the wheel. Instead of guessing a grip target
+  and fighting inverse kinematics against it, the driver's skeleton is posed with
+  the car's own authored seated pose (`driver_base_pos.knh`), which repositions the
+  shared driver so the hands grip *this* car's wheel exactly. New
+  `parseDriverPose` (knh node-tree parser) in kn5.js; `find_driver` now also
+  returns the car's `driver_base_pos.knh`. Rigid head/helmet meshes are corrected
+  onto the seated head by their nearest posed ancestor bone (RIG_Head), so the head
+  sits on the neck instead of floating at the model's bind position.
+- Hands orbit with the steering: each grip point rotates about the wheel's spin
+  axis by the steer angle and the elbow re-solves (2-bone IK), then the whole
+  arm→hand→finger subtree swings so nothing tears. Steer=0 reproduces the seated
+  pose exactly. Orbit is capped (`DRIVER_GRIP_SPIN_MAX`) because the rigged arm is
+  nearly straight at rest and can't reach up-and-over past ~40° without a real
+  hand-cross; beyond the cap the wheel spins under a held grip.
+
+### Fixed
+- 24-bit uncompressed DDS textures now decode (kn5tex.js). AC paints each car
+  component with a tiny `color_*.dds` swatch, and the T-180's are all 24bpp RGB —
+  the decoder only accepted 32bpp, so every painted part (wheels, red suspension,
+  carbon, tyres, copper, metal, LEDs) fell back to flat white. The body livery was
+  DXT5 and always worked, which is why only the body had colour. Now the whole car
+  is coloured as authored.
+
+### Changed
+- Driver body is a rigid seated pose in car space (no more scale/offset fudge
+  factors); only the head turns into corners, capped at a realistic neck range.
+
 ## 2026-07-20 — steered wheels + driver model (WIP), camera refinements
 
 ### Added

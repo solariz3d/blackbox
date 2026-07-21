@@ -99,6 +99,7 @@ function parseDDS(u8) {
   var dataOff = 128;
   var format = null;   // "dxt1"|"dxt3"|"dxt5"|"rgba8"
   var blockBytes = 0;  // 0 = uncompressed
+  var srcBpp = 4;      // source bytes/pixel for uncompressed (3 = 24-bit RGB, 4 = 32-bit)
 
   if (pfFlags & DDPF_FOURCC) {
     if (fourCC === "DX10") {
@@ -112,9 +113,14 @@ function parseDDS(u8) {
     else if (fourCC === "DXT5") { format = "dxt5"; blockBytes = 16; }
     else throw texError("unsupported DDS fourCC '" + fourCC + "'");
   } else if (pfFlags & DDPF_RGB) {
-    if (bitCount !== 32)
+    // both convert to RGBA below; 24-bit (D3DFMT_R8G8B8) drops the missing alpha.
+    // AC's per-component "color_*.dds" swatches are 24-bit RGB — without this every
+    // painted part (wheels, suspension, carbon, tyres) falls back to flat white.
+    if (bitCount === 32) srcBpp = 4;
+    else if (bitCount === 24) srcBpp = 3;
+    else
       throw texError("unsupported uncompressed DDS bit count " + bitCount +
-                     " (only 32-bit RGB/RGBA handled)");
+                     " (only 24- and 32-bit RGB/RGBA handled)");
     format = "rgba8";
   } else {
     throw texError("unsupported DDS pixel format (flags 0x" +
@@ -139,27 +145,29 @@ function parseDDS(u8) {
   var mips = [];
   var w = width, h = height;
   for (var m = 0; m < nMips; m++) {
-    var size = blockBytes
+    var srcSize = blockBytes
       ? Math.max(1, Math.ceil(w / 4)) * Math.max(1, Math.ceil(h / 4)) * blockBytes
-      : w * h * 4;
-    if (dataOff + size > u8.length)
-      throw texError("DDS truncated: mip " + m + " needs " + size +
+      : w * h * srcBpp;
+    if (dataOff + srcSize > u8.length)
+      throw texError("DDS truncated: mip " + m + " needs " + srcSize +
                      " bytes at " + dataOff + ", file has " + u8.length);
     var data;
     if (blockBytes) {
-      data = u8.subarray(dataOff, dataOff + size); // view, no copy
+      data = u8.subarray(dataOff, dataOff + srcSize); // view, no copy
     } else {
-      // convert masked 32-bit texels to RGBA byte order
-      data = new Uint8Array(size);
-      for (var p = 0; p < size; p += 4) {
-        data[p]     = u8[dataOff + p + ri];
-        data[p + 1] = u8[dataOff + p + gi];
-        data[p + 2] = u8[dataOff + p + bi];
-        data[p + 3] = ai >= 0 ? u8[dataOff + p + ai] : 255;
+      // convert masked 24-/32-bit texels to RGBA byte order (dest is always 4 bpp)
+      var px = w * h;
+      data = new Uint8Array(px * 4);
+      for (var q = 0; q < px; q++) {
+        var so = dataOff + q * srcBpp, d = q * 4;
+        data[d]     = u8[so + ri];
+        data[d + 1] = u8[so + gi];
+        data[d + 2] = u8[so + bi];
+        data[d + 3] = ai >= 0 ? u8[so + ai] : 255;
       }
     }
     mips.push({ width: w, height: h, data: data });
-    dataOff += size;
+    dataOff += srcSize;
     w = Math.max(1, w >> 1);
     h = Math.max(1, h >> 1);
   }

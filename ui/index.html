@@ -324,7 +324,7 @@
     <div class="chip" id="chipLaps"></div>
     <div class="chip" id="chipTrack" style="color:var(--accent)">NO TRACK LOADED — the ribbon is your driven line, not the road. Click "load track kn5…" to render the real track.</div>
   </div>
-  <div id="help" class="hidden">drag orbit · wheel zoom · right-drag pan</div>
+  <div id="help" class="hidden">drag look · WASD fly · Shift/Ctrl up/down · Space pause · wheel zoom</div>
   <div id="transport" class="hidden">
     <canvas id="scrub" height="34" aria-label="Timeline scrubber"></canvas>
     <div id="timelabel"></div>
@@ -556,8 +556,94 @@ const tLoc = {
 const IDENT4 = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
 let carGroups = null;   // uploaded car model mesh groups (LOD0)
 let carWheels = null;   // steerable wheel groups {corner, pivot, front, groups}
-let carDriver = null;   // { groups, skel, anim } — driver model (bind pose for now)
+let carSteerWheel = null; // in-cockpit steering wheel { pivot, ax, groups }
+let STEER_WHEEL_RATIO = 3.0;  // cockpit wheel turns this × the road-wheel angle
+let STEER_WHEEL_AXIS = 2;     // which node axis it spins about (0=X,1=Y,2=Z); flip if it tumbles
+let STEER_WHEEL_SIGN = 1;     // flip if it turns the wrong way
+let carDriver = null;   // { bodyGroups, headGroups } — driver model, procedurally posed
 let carSteerAngle = 0;  // front-wheel steer this frame (radians), set by carModelMatrix
+// procedural driver rig: the body is a rigid seated pose (the car's own
+// driver_base_pos.knh) and only the head turns into corners — smoothed so it
+// settles slowly. Tunables up top for easy feel work.
+let DRIVER_HEAD_YAW_MAX = 0.85;   // neck isn't a swivel — cap the head turn (~49°)
+let DRIVER_HEAD_SIGN = 1;         // flip if the head turns the wrong way
+// hands orbit the rim with the wheel spin. The driver's arm is nearly straight at
+// rest, so the hand going up-and-over can't reach far — cap the orbit where both
+// hands stay on the rim (beyond it, the wheel keeps spinning under a held grip).
+let DRIVER_GRIP_SPIN_MAX = 0.7;   // max hand orbit (rad, ~40°)
+let DRIVER_GRIP_SPIN_SIGN = 1;    // flip if the hands orbit opposite the wheel
+const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
+// ---- small vector/matrix kit for the arm IK (row-vector, row-major — kn5 convention) ----
+const v3sub = (a,b)=>[a[0]-b[0],a[1]-b[1],a[2]-b[2]], v3add=(a,b)=>[a[0]+b[0],a[1]+b[1],a[2]+b[2]], v3sc=(a,s)=>[a[0]*s,a[1]*s,a[2]*s];
+const v3dot = (a,b)=>a[0]*b[0]+a[1]*b[1]+a[2]*b[2], v3len=a=>Math.hypot(a[0],a[1],a[2]), v3nrm=a=>{const l=v3len(a)||1;return[a[0]/l,a[1]/l,a[2]/l];};
+const v3cross = (a,b)=>[a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
+const mXfPt = (v,M)=>[v[0]*M[0]+v[1]*M[4]+v[2]*M[8]+M[12], v[0]*M[1]+v[1]*M[5]+v[2]*M[9]+M[13], v[0]*M[2]+v[1]*M[6]+v[2]*M[10]+M[14]];
+const mRot = (v,M)=>[v[0]*M[0]+v[1]*M[4]+v[2]*M[8], v[0]*M[1]+v[1]*M[5]+v[2]*M[9], v[0]*M[2]+v[1]*M[6]+v[2]*M[10]];
+const mT = p=>new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,p[0],p[1],p[2],1]);
+function rvFromTo(u, v) {   // row-vector rotation taking unit u→v (shortest arc)
+  u = v3nrm(u); v = v3nrm(v); let c = v3dot(u, v), ax = v3cross(u, v), s = v3len(ax);
+  if (s < 1e-6) { if (c > 0) return new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1]); const p = Math.abs(u[0]) < 0.9 ? [1,0,0] : [0,1,0]; ax = v3nrm(v3cross(u, p)); s = 0; c = -1; } else ax = v3sc(ax, 1/s);
+  const x = ax[0], y = ax[1], z = ax[2], C = 1 - c;
+  return new Float32Array([c+x*x*C, x*y*C+z*s, x*z*C-y*s, 0,  x*y*C-z*s, c+y*y*C, y*z*C+x*s, 0,  x*z*C+y*s, y*z*C-x*s, c+z*z*C, 0,  0,0,0,1]);
+}
+const rvRotAbout = (M, R, piv) => rvMul(M, rvMul(rvMul(mT(v3sc(piv,-1)), R), mT(piv)));
+function rvInv(m) {   // general 4x4 inverse (row-major)
+  const i = new Float32Array(16);
+  i[0]=m[5]*m[10]*m[15]-m[5]*m[11]*m[14]-m[9]*m[6]*m[15]+m[9]*m[7]*m[14]+m[13]*m[6]*m[11]-m[13]*m[7]*m[10];
+  i[4]=-m[4]*m[10]*m[15]+m[4]*m[11]*m[14]+m[8]*m[6]*m[15]-m[8]*m[7]*m[14]-m[12]*m[6]*m[11]+m[12]*m[7]*m[10];
+  i[8]=m[4]*m[9]*m[15]-m[4]*m[11]*m[13]-m[8]*m[5]*m[15]+m[8]*m[7]*m[13]+m[12]*m[5]*m[11]-m[12]*m[7]*m[9];
+  i[12]=-m[4]*m[9]*m[14]+m[4]*m[10]*m[13]+m[8]*m[5]*m[14]-m[8]*m[6]*m[13]-m[12]*m[5]*m[10]+m[12]*m[6]*m[9];
+  i[1]=-m[1]*m[10]*m[15]+m[1]*m[11]*m[14]+m[9]*m[2]*m[15]-m[9]*m[3]*m[14]-m[13]*m[2]*m[11]+m[13]*m[3]*m[10];
+  i[5]=m[0]*m[10]*m[15]-m[0]*m[11]*m[14]-m[8]*m[2]*m[15]+m[8]*m[3]*m[14]+m[12]*m[2]*m[11]-m[12]*m[3]*m[10];
+  i[9]=-m[0]*m[9]*m[15]+m[0]*m[11]*m[13]+m[8]*m[1]*m[15]-m[8]*m[3]*m[13]-m[12]*m[1]*m[11]+m[12]*m[3]*m[9];
+  i[13]=m[0]*m[9]*m[14]-m[0]*m[10]*m[13]-m[8]*m[1]*m[14]+m[8]*m[2]*m[13]+m[12]*m[1]*m[10]-m[12]*m[2]*m[9];
+  i[2]=m[1]*m[6]*m[15]-m[1]*m[7]*m[14]-m[5]*m[2]*m[15]+m[5]*m[3]*m[14]+m[13]*m[2]*m[7]-m[13]*m[3]*m[6];
+  i[6]=-m[0]*m[6]*m[15]+m[0]*m[7]*m[14]+m[4]*m[2]*m[15]-m[4]*m[3]*m[14]-m[12]*m[2]*m[7]+m[12]*m[3]*m[6];
+  i[10]=m[0]*m[5]*m[15]-m[0]*m[7]*m[13]-m[4]*m[1]*m[15]+m[4]*m[3]*m[13]+m[12]*m[1]*m[7]-m[12]*m[3]*m[5];
+  i[14]=-m[0]*m[5]*m[14]+m[0]*m[6]*m[13]+m[4]*m[1]*m[14]-m[4]*m[2]*m[13]-m[12]*m[1]*m[6]+m[12]*m[2]*m[5];
+  i[3]=-m[1]*m[6]*m[11]+m[1]*m[7]*m[10]+m[5]*m[2]*m[11]-m[5]*m[3]*m[10]-m[9]*m[2]*m[7]+m[9]*m[3]*m[6];
+  i[7]=m[0]*m[6]*m[11]-m[0]*m[7]*m[10]-m[4]*m[2]*m[11]+m[4]*m[3]*m[10]+m[8]*m[2]*m[7]-m[8]*m[3]*m[6];
+  i[11]=-m[0]*m[5]*m[11]+m[0]*m[7]*m[9]+m[4]*m[1]*m[11]-m[4]*m[3]*m[9]-m[8]*m[1]*m[7]+m[8]*m[3]*m[5];
+  i[15]=m[0]*m[5]*m[10]-m[0]*m[6]*m[9]-m[4]*m[1]*m[10]+m[4]*m[2]*m[9]+m[8]*m[1]*m[6]-m[8]*m[2]*m[5];
+  let d = m[0]*i[0]+m[1]*i[4]+m[2]*i[8]+m[3]*i[12]; d = 1/d;
+  const o = new Float32Array(16); for (let k = 0; k < 16; k++) o[k] = i[k]*d; return o;
+}
+function ik2bone(S, Tg, L1, L2, pole) {   // 2-bone IK: elbow position for wrist at Tg
+  let dv = v3sub(Tg, S), D = v3len(dv); const reach = L1 + L2;
+  if (D > reach * 0.999) { D = reach * 0.999; Tg = v3add(S, v3sc(v3nrm(dv), D)); dv = v3sub(Tg, S); }
+  const dir = v3nrm(dv);
+  const a = (L1*L1 - L2*L2 + D*D) / (2*D), h = Math.sqrt(Math.max(0, L1*L1 - a*a));
+  let pp = v3sub(pole, v3sc(dir, v3dot(pole, dir))); if (v3len(pp) < 1e-4) pp = [0,1,0]; pp = v3nrm(pp);
+  return { E: v3add(v3add(S, v3sc(dir, a)), v3sc(pp, h)), W: Tg };
+}
+// row-vector (v'=v·M, row-major) matrix helpers — the kn5/driver-skeleton convention
+function rvMul(a, b) { const o = new Float32Array(16); for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) o[r*4+c] = a[r*4]*b[c] + a[r*4+1]*b[4+c] + a[r*4+2]*b[8+c] + a[r*4+3]*b[12+c]; return o; }
+function rvTRS(p, q, s) {   // q as (w,x,y,z); TRS = scale·rotate with translation in row 3
+  const w = q[0], x = q[1], y = q[2], z = q[3]; const n = Math.hypot(x, y, z, w) || 1;
+  const X = x/n, Y = y/n, Z = z/n, W = w/n;
+  const xx=X*X, yy=Y*Y, zz=Z*Z, xy=X*Y, xz=X*Z, yz=Y*Z, wx=W*X, wy=W*Y, wz=W*Z;
+  const sx = s[0], sy = s[1], sz = s[2];
+  return new Float32Array([
+    sx*(1-2*(yy+zz)), sx*(2*(xy+wz)),   sx*(2*(xz-wy)),   0,
+    sy*(2*(xy-wz)),   sy*(1-2*(xx+zz)), sy*(2*(yz+wx)),   0,
+    sz*(2*(xz+wy)),   sz*(2*(yz-wx)),   sz*(1-2*(xx+yy)), 0,
+    p[0], p[1], p[2], 1,
+  ]);
+}
+// column-major rotation of `ang` about world-ish axis (0=X,1=Y,2=Z) through a
+// driver-space pivot — so the lean pivots at the hips / the head at the neck.
+function rotP(axis, ang, px, py, pz) {
+  const c = Math.cos(ang), s = Math.sin(ang);
+  let R;
+  if (axis === 0) R = [1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1];
+  else if (axis === 1) R = [c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1];
+  else R = [c,s,0,0, -s,c,0,0, 0,0,1,0, 0,0,0,1];
+  // translation = pivot - R*pivot (column-vector R)
+  const rpx = R[0]*px + R[4]*py + R[8]*pz, rpy = R[1]*px + R[5]*py + R[9]*pz, rpz = R[2]*px + R[6]*py + R[10]*pz;
+  R[12] = px - rpx; R[13] = py - rpy; R[14] = pz - rpz;
+  return R;
+}
+function scaleMat(s) { return [s,0,0,0, 0,s,0,0, 0,0,s,0, 0,0,0,1]; }
 let showCar = true;     // render the car model on the cursor
 let showLine = true;    // render the driven-line ribbon
 let carLift = 0.0;      // vertical placement tweak (metres)
@@ -656,9 +742,14 @@ function carModelMatrix(fpos) {
   // up
   let ux = lp(NM, 0), uy = lp(NM, 1), uz = lp(NM, 2);
   const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
-  // real body heading (wheels); velocity as sign-reference + fallback
+  // real body heading (wheels); velocity as sign-reference + fallback. The velocity
+  // window is INTERPOLATED across the sub-frame (i0→i1 by f) so the steer angle — and
+  // thus the wheels + exo — is smooth at any refresh, not stepped at the 66 Hz frames.
   const a = Math.max(0, i0 - 3), b = Math.min(N - 1, i0 + 4);
-  const vx = P[b * 3] - P[a * 3], vy = P[b * 3 + 1] - P[a * 3 + 1], vz = P[b * 3 + 2] - P[a * 3 + 2];
+  const a1 = Math.max(0, i1 - 3), b1 = Math.min(N - 1, i1 + 4);
+  const vx = (P[b*3]-P[a*3]) + ((P[b1*3]-P[a1*3]) - (P[b*3]-P[a*3])) * f;
+  const vy = (P[b*3+1]-P[a*3+1]) + ((P[b1*3+1]-P[a1*3+1]) - (P[b*3+1]-P[a*3+1])) * f;
+  const vz = (P[b*3+2]-P[a*3+2]) + ((P[b1*3+2]-P[a1*3+2]) - (P[b*3+2]-P[a*3+2])) * f;
   let hx = lp(FW, 0), hy = lp(FW, 1), hz = lp(FW, 2);
   if (Math.hypot(hx, hy, hz) < 1e-4) { hx = vx; hy = vy; hz = vz; }  // fallback to velocity
   let hl = Math.hypot(hx, hy, hz) || 1; hx /= hl; hy /= hl; hz /= hl;
@@ -736,6 +827,112 @@ function wheelSteerModel(carMat, pivot, steer) {
   const c = Math.cos(steer), s = Math.sin(steer), px = pivot[0], pz = pivot[2];
   const S = [c, 0, -s, 0,  0, 1, 0, 0,  s, 0, c, 0,  px * (1 - c) - s * pz, 0, pz * (1 - c) + s * px, 1];
   return new Float32Array(mMul(carMat, S));
+}
+// carMat ⊗ (rotate `ang` about an arbitrary unit axis through a pivot) — for the
+// cockpit steering wheel spinning about its tilted column.
+function axisSpinModel(carMat, ax, ang, piv) {
+  let x = ax[0], y = ax[1], z = ax[2]; const l = Math.hypot(x, y, z) || 1; x/=l; y/=l; z/=l;
+  const c = Math.cos(ang), s = Math.sin(ang), t = 1 - c;
+  const R = [
+    t*x*x+c,   t*x*y+s*z, t*x*z-s*y, 0,
+    t*x*y-s*z, t*y*y+c,   t*y*z+s*x, 0,
+    t*x*z+s*y, t*y*z-s*x, t*z*z+c,   0,
+    0, 0, 0, 1,
+  ];
+  const px = piv[0], py = piv[1], pz = piv[2];
+  R[12] = px - (R[0]*px+R[4]*py+R[8]*pz); R[13] = py - (R[1]*px+R[5]*py+R[9]*pz); R[14] = pz - (R[2]*px+R[6]*py+R[10]*pz);
+  return new Float32Array(mMul(carMat, R));
+}
+
+// Procedural driver pose: read lateral/longitudinal G from the telemetry and lean
+// the body + turn the head into the corner. Returns {body, head} model matrices
+// (⊗ carMat), smoothed so the motion is slow and weighty.
+function driverPose(fp, carMat) {
+  const P = ex.pos, N = ex.N, dt = ex.dt;
+  const i = Math.max(1, Math.min(N - 2, Math.round(fp)));
+  const w = Math.max(3, Math.round(0.1 / dt));
+  const a = Math.max(0, i - w), b = Math.min(N - 1, i + w);
+  let ux = ex.nrm[i*3], uy = ex.nrm[i*3+1], uz = ex.nrm[i*3+2]; const ul = Math.hypot(ux,uy,uz)||1; ux/=ul;uy/=ul;uz/=ul;
+  let hx = P[b*3]-P[a*3], hy = P[b*3+1]-P[a*3+1], hz = P[b*3+2]-P[a*3+2];
+  const hd = hx*ux+hy*uy+hz*uz; hx-=ux*hd; hy-=uy*hd; hz-=uz*hd; const hl = Math.hypot(hx,hy,hz)||1; hx/=hl;hy/=hl;hz/=hl;
+  const rx = uy*hz-uz*hy, ry = uz*hx-ux*hz, rz = ux*hy-uy*hx;   // right = up×heading
+  const inv = 1 / (w * dt);
+  const v1x = (P[i*3]-P[a*3])*inv, v1y = (P[i*3+1]-P[a*3+1])*inv, v1z = (P[i*3+2]-P[a*3+2])*inv;
+  const v2x = (P[b*3]-P[i*3])*inv, v2y = (P[b*3+1]-P[i*3+1])*inv, v2z = (P[b*3+2]-P[i*3+2])*inv;
+  const dvx = (v2x-v1x)*inv, dvy = (v2y-v1y)*inv, dvz = (v2z-v1z)*inv;   // ≈ acceleration (m/s²)
+  const latG = (dvx*rx + dvy*ry + dvz*rz) / 9.81;    // + = pushed toward +right
+  const clamp = (v, m) => Math.max(-m, Math.min(m, v));
+  // head faces THE LINE, like the wheels: yaw by the slip angle so the driver
+  // looks where the car is going — but capped at a realistic neck range (~49°).
+  const yawT = clamp(carSteerAngle * DRIVER_HEAD_SIGN, DRIVER_HEAD_YAW_MAX);
+  const hrollT = clamp(-latG * 0.05, 0.10);          // a little head tilt with the G
+  const k = 1 - Math.exp(-3.0 / 60);                 // slow settle (~3/s)
+  driverRig.headYaw += (yawT - driverRig.headYaw) * k;
+  driverRig.headRoll += (hrollT - driverRig.headRoll) * k;
+  // The body is a RIGID seated pose (the car's own driver_base_pos.knh, in car
+  // space) — hands already on the wheel. Only the head moves, pivoting about the
+  // real neck joint (also in car space), then everything rides carMat to world.
+  const pv = (carDriver && carDriver.neckPivot) || [0, 1.08, 0.09];
+  const headExtra = mMul(rotP(1, driverRig.headYaw, pv[0], pv[1], pv[2]), rotP(2, driverRig.headRoll, pv[0], pv[1], pv[2]));
+  return {
+    body: new Float32Array(carMat),
+    head: new Float32Array(mMul(carMat, headExtra)),
+  };
+}
+
+// upload the driver's skinned meshes for a given posed skeleton `world` (array of mat4)
+function driverSkinUpload(world) {
+  for (const sm of carDriver.skinned) {
+    const bm = sm.boneNodeIdx.map((ni, b) => ni < 0 ? null : rvMul(sm.invBind[b], world[ni]));
+    const bp = sm.bindPos, bn = sm.bindNrm, bw = sm.bw, bi = sm.bi, op = sm.skinPos, on = sm.skinNrm, nv = bp.length / 3;
+    for (let v = 0; v < nv; v++) {
+      const x = bp[v*3], y = bp[v*3+1], z = bp[v*3+2], nx = bn[v*3], ny = bn[v*3+1], nz = bn[v*3+2];
+      let ox=0,oy=0,oz=0,onx=0,ony=0,onz=0;
+      for (let k = 0; k < 4; k++) {
+        const wt = bw[v*4+k]; if (wt <= 0) continue; const M = bm[bi[v*4+k]]; if (!M) continue;
+        ox += wt*(x*M[0]+y*M[4]+z*M[8]+M[12]); oy += wt*(x*M[1]+y*M[5]+z*M[9]+M[13]); oz += wt*(x*M[2]+y*M[6]+z*M[10]+M[14]);
+        onx += wt*(nx*M[0]+ny*M[4]+nz*M[8]); ony += wt*(nx*M[1]+ny*M[5]+nz*M[9]); onz += wt*(nx*M[2]+ny*M[6]+nz*M[10]);
+      }
+      op[v*3]=ox;op[v*3+1]=oy;op[v*3+2]=oz; on[v*3]=onx;on[v*3+1]=ony;on[v*3+2]=onz;
+    }
+    gl.bindBuffer(gl.ARRAY_BUFFER, sm.grp.posBuf); gl.bufferData(gl.ARRAY_BUFFER, op, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, sm.grp.nrmBuf); gl.bufferData(gl.ARRAY_BUFFER, on, gl.DYNAMIC_DRAW);
+  }
+}
+
+// Skin the driver's body into this car's authored seated pose (driver_base_pos.knh),
+// which places the skeleton — and therefore the hands — onto THIS car's wheel. Each
+// bone's world matrix comes straight from the knh (car space); bones absent from it
+// fall back to the model's bind pose. `spin` (rad) orbits both hands with the wheel:
+// per arm the grip point rotates about the wheel axis and the elbow re-solves (2-bone
+// IK), then the whole arm→hand→finger subtree rotates so nothing tears. spin=0
+// reproduces the seated pose exactly. Rigid body otherwise, so only the arms move.
+function driverSeatedSkin(spin) {
+  const D = carDriver;
+  if (!D || !D.poseWorld) return;
+  const skel = D.skel, N = skel.count;
+  const world = new Array(N);
+  for (let i = 0; i < N; i++) world[i] = D.poseWorld[skel.name[i]] || skel.bindWorld[i];
+  if (spin && D.arms && D.wheelAxis) {
+    const C = D.wheelC, ax = D.wheelAxis;
+    const cs = Math.cos(spin), sn = Math.sin(spin), one = 1 - cs;
+    const orbit = p => {   // Rodrigues: rotate point p about axis `ax` through C by spin
+      const v = v3sub(p, C), d = v3dot(ax, v), cx = v3cross(ax, v);
+      return [C[0] + v[0]*cs + cx[0]*sn + ax[0]*d*one,
+              C[1] + v[1]*cs + cx[1]*sn + ax[1]*d*one,
+              C[2] + v[2]*cs + cx[2]*sn + ax[2]*d*one];
+    };
+    for (const arm of D.arms) {
+      const S = arm.S0, W = orbit(arm.W0);
+      const { E } = ik2bone(S, W, arm.L1, arm.L2, arm.pole);      // elbow for the orbited grip
+      const Rup = rvFromTo(v3sub(arm.E0, S), v3sub(E, S));        // upper arm swings about S
+      const W1 = v3add(S, mRot(v3sub(arm.W0, S), Rup));          // wrist after only Rup
+      const Rfore = rvFromTo(v3sub(W1, E), v3sub(W, E));          // forearm swings about E
+      for (const b of arm.armSub)  world[b] = rvRotAbout(world[b], Rup, S);
+      for (const b of arm.foreSub) world[b] = rvRotAbout(world[b], Rfore, E);
+    }
+  }
+  driverSkinUpload(world);
 }
 
 function makeFallbackTexture(rgb) {
@@ -1248,7 +1445,17 @@ function render() {
     if (carWheels) for (const w of carWheels) {                // all four wheels steer to the line
       drawCarGroups(w.groups, wheelSteerModel(cm, w.pivot, carSteerAngle));
     }
-    if (carDriver) drawCarGroups(carDriver.groups, cm);        // driver (bind pose for now)
+    if (carSteerWheel) {                                        // cockpit wheel spins with steer
+      const ang = carSteerAngle * STEER_WHEEL_RATIO * STEER_WHEEL_SIGN;
+      drawCarGroups(carSteerWheel.groups, axisSpinModel(cm, carSteerWheel.ax[STEER_WHEEL_AXIS], ang, carSteerWheel.pivot));
+    }
+    if (carDriver) {                                           // driver: seated on the wheel (knh pose), hands orbit with the steer, head turns to the line
+      const dp = driverPose(tCur / ex.dt, cm);
+      const raw = carSteerAngle * STEER_WHEEL_RATIO * STEER_WHEEL_SIGN * DRIVER_GRIP_SPIN_SIGN;
+      driverSeatedSkin(Math.max(-DRIVER_GRIP_SPIN_MAX, Math.min(DRIVER_GRIP_SPIN_MAX, raw)));
+      for (const sm of carDriver.skinned) drawCarGroups([sm.grp], dp.body);
+      drawCarGroups(carDriver.headGroups, dp.head);
+    }
     gl.disableVertexAttribArray(tLoc.nrm); gl.disableVertexAttribArray(tLoc.uv);
     if (showThruster) {
       const inten = turbineIntensity(i);
@@ -1284,9 +1491,19 @@ addEventListener("mousemove", e => {
   dragging.x = e.clientX; dragging.y = e.clientY;
   if (Math.abs(dx) + Math.abs(dy) > 1) dragging.moved = true;
   if (dragging.btn === 0) {
-    if (follow.on) follow.yawOff += dx * 0.005;
-    else cam.yaw += dx * 0.005;
-    cam.pitch = Math.max(-1.5, Math.min(1.55, cam.pitch + dy * 0.005));
+    if (follow.on) {
+      follow.yawOff += dx * 0.005;
+      cam.pitch = Math.max(-1.5, Math.min(1.55, cam.pitch + dy * 0.005));
+    } else {
+      // first-person look: rotate the view about the FIXED eye (not orbit a point)
+      const eye = camEye();
+      cam.yaw += dx * 0.005;
+      cam.pitch = Math.max(-1.5, Math.min(1.55, cam.pitch + dy * 0.005));
+      const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+      cam.target[0] = eye[0] - cam.dist * cp * Math.cos(cam.yaw);
+      cam.target[1] = eye[1] - cam.dist * sp;
+      cam.target[2] = eye[2] - cam.dist * cp * Math.sin(cam.yaw);
+    }
   } else {
     // pan in camera plane
     const eye = camEye();
@@ -1306,9 +1523,39 @@ cv.addEventListener("wheel", e => {
   if (follow.on) {
     follow.distMul = Math.max(0.42, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
   } else {
-    cam.dist = Math.max(50, Math.min(50000, cam.dist * (e.deltaY > 0 ? 1.12 : 0.89)));
+    cam.dist = Math.max(3, Math.min(50000, cam.dist * (e.deltaY > 0 ? 1.12 : 0.89)));
   }
 }, { passive: false });
+
+/* free-fly cam: WASD flies through 3D toward where you're looking (incl. up/down),
+   Shift/Ctrl raise/lower, Space pauses, drag looks, wheel zooms. (Disabled while
+   following.) */
+const flyKeys = new Set();
+const FLY = new Set(["w", "a", "s", "d", "shift", "control"]);
+addEventListener("keydown", e => {
+  const t = e.target;
+  if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
+  if (e.key === " ") { togglePlay(); e.preventDefault(); return; }
+  const k = e.key.toLowerCase();
+  if (FLY.has(k)) { flyKeys.add(k); e.preventDefault(); }
+});
+addEventListener("keyup", e => flyKeys.delete(e.key.toLowerCase()));
+addEventListener("blur", () => flyKeys.clear());
+// advance the free-fly cam one frame (dtSec seconds)
+function flyStep(dtSec) {
+  if (follow.on || !ex || !flyKeys.size) return;
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  // full 3D forward (along the actual look direction incl. pitch) + horizontal strafe
+  const fwd = [-cp * cy, -sp, -cp * sy], right = [sy, 0, -cy];
+  const v = Math.max(0.1, cam.dist * 0.15) * dtSec; // speed scales with zoom; slow when close for precision
+  const T = cam.target;
+  if (flyKeys.has("w")) { T[0] += fwd[0]*v; T[1] += fwd[1]*v; T[2] += fwd[2]*v; }
+  if (flyKeys.has("s")) { T[0] -= fwd[0]*v; T[1] -= fwd[1]*v; T[2] -= fwd[2]*v; }
+  if (flyKeys.has("d")) { T[0] += right[0]*v; T[2] += right[2]*v; }
+  if (flyKeys.has("a")) { T[0] -= right[0]*v; T[2] -= right[2]*v; }
+  if (flyKeys.has("shift")) T[1] += v;
+  if (flyKeys.has("control")) T[1] -= v;
+}
 
 /* ===================== transport ===================== */
 const scrub = document.getElementById("scrub");
@@ -1376,10 +1623,11 @@ addEventListener("mouseup", () => { scrubbing = false; });
   tp.addEventListener("mouseleave", poke);
 })();
 
-document.getElementById("btnPlay").addEventListener("click", function () {
+function togglePlay() {
   playing = !playing;
-  this.textContent = playing ? "pause" : "play";
-});
+  document.getElementById("btnPlay").textContent = playing ? "pause" : "play";
+}
+document.getElementById("btnPlay").addEventListener("click", togglePlay);
 document.getElementById("rate").addEventListener("change", function () { rate = +this.value; });
 document.getElementById("modeSpeed").addEventListener("click", () => setMode("speed"));
 document.getElementById("modeBank").addEventListener("click", () => setMode("bank"));
@@ -1694,8 +1942,16 @@ function resetTrackScene() {
     }
     carWheels = null;
   }
+  if (carSteerWheel) {
+    for (const g of carSteerWheel.groups) {
+      gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
+      gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
+      if (g.tex) gl.deleteTexture(g.tex);
+    }
+    carSteerWheel = null;
+  }
   if (carDriver) {
-    for (const g of carDriver.groups) {
+    for (const g of [...carDriver.headGroups, ...carDriver.skinned.map(s => s.grp)]) {
       gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
       gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
       if (g.tex) gl.deleteTexture(g.tex);
@@ -1747,14 +2003,91 @@ async function loadCarModel(carId) {
       const gpu = await uploadGroups(w.groups, scene, [150, 152, 158]);
       carWheels.push({ corner: w.corner, pivot: w.pivot, front: /F$/.test(w.corner), groups: gpu });
     }
-    // driver: the shared AC driver model at its bind (seated, hands-on-wheel) pose
+    // in-cockpit steering wheel (spins with steer)
+    carSteerWheel = null;
+    if (scene.steerWheel) {
+      const sg = await uploadGroups(scene.steerWheel.groups, scene, [40, 42, 48]);
+      carSteerWheel = { pivot: scene.steerWheel.pivot, ax: scene.steerWheel.ax, groups: sg };
+    }
+    // driver: the shared AC model, seated onto THIS car's wheel via its authored
+    // driver_base_pos.knh (which repositions the skeleton so the hands grip the rim).
     try {
       const df = await tinvoke("find_driver", { carId });
-      if (df && df.length) {
-        const dab = await tinvoke("read_file", { path: df[0].path });
+      const driverFile = df && df.find(f => f.name === "driver");
+      if (driverFile) {
+        const poseFile = df.find(f => f.name === "pose");
+        const dab = await tinvoke("read_file", { path: driverFile.path });
         const dscene = KN5.parseDriver(dab);
-        const dgroups = await uploadGroups(dscene.meshes, dscene, [170, 172, 178]);
-        carDriver = { groups: dgroups };
+        const skel = { parent: dscene.nodes.map(n => n.parent), localBind: dscene.nodes.map(n => n.local),
+                       bindWorld: dscene.nodes.map(n => n.world), name: dscene.nodes.map(n => n.name),
+                       nameIndex: dscene.nameIndex, count: dscene.nodes.length };
+        // this car's seated pose: name -> car-space bone matrix (row-vector)
+        let poseWorld = null, neckPivot = [0, 1.08, 0.09];
+        if (poseFile) {
+          try {
+            const pab = await tinvoke("read_file", { path: poseFile.path });
+            poseWorld = KN5.parseDriverPose(pab).world;
+            const nk = poseWorld["DRIVER:RIG_Nek"]; if (nk) neckPivot = [nk[12], nk[13], nk[14]];
+            // reposition each RIGID (head/helmet) mesh from bind to the seated pose.
+            // The helmet/face hang off non-bone nodes, so walk up to the nearest
+            // ancestor the seated pose defines (RIG_Head) and apply that bone's rigid
+            // bind→seated delta: seatedVert = bindVert · inv(A.bindWorld) · knhWorld[A].
+            for (const m of dscene.meshes) {
+              if (m.skinned || m.ownerName == null) continue;
+              let ai = dscene.nameIndex[m.ownerName];
+              while (ai != null && ai >= 0 && !poseWorld[dscene.nodes[ai].name]) ai = dscene.nodes[ai].parent;
+              if (ai == null || ai < 0) continue;
+              const A = dscene.nodes[ai];
+              const C = rvMul(rvInv(A.world), poseWorld[A.name]), p = m.pos, n = m.nrm;
+              for (let v = 0; v < p.length / 3; v++) {
+                const x = p[v*3], y = p[v*3+1], z = p[v*3+2];
+                p[v*3]   = x*C[0]+y*C[4]+z*C[8]+C[12];
+                p[v*3+1] = x*C[1]+y*C[5]+z*C[9]+C[13];
+                p[v*3+2] = x*C[2]+y*C[6]+z*C[10]+C[14];
+                const nx = n[v*3], ny = n[v*3+1], nz = n[v*3+2];
+                const rx = nx*C[0]+ny*C[4]+nz*C[8], ry = nx*C[1]+ny*C[5]+nz*C[9], rz = nx*C[2]+ny*C[6]+nz*C[10];
+                const l = Math.hypot(rx, ry, rz) || 1; n[v*3] = rx/l; n[v*3+1] = ry/l; n[v*3+2] = rz/l;
+              }
+            }
+          } catch (e) { console.warn("driver pose load failed:", e); poseWorld = null; }
+        }
+        const headGroups = await uploadGroups(dscene.meshes.filter(m => !m.skinned), dscene, [170, 172, 178]);
+        // skinned meshes get DYNAMIC pos/nrm buffers (skinned to the seated pose)
+        const skinned = [];
+        for (const m of dscene.meshes.filter(x => x.skinned)) {
+          const grp = (await uploadGroups([m], dscene, [170, 172, 178]))[0];
+          gl.bindBuffer(gl.ARRAY_BUFFER, grp.posBuf); gl.bufferData(gl.ARRAY_BUFFER, m.pos, gl.DYNAMIC_DRAW);
+          gl.bindBuffer(gl.ARRAY_BUFFER, grp.nrmBuf); gl.bufferData(gl.ARRAY_BUFFER, m.nrm, gl.DYNAMIC_DRAW);
+          skinned.push({
+            grp, bindPos: m.pos, bindNrm: m.nrm, bw: m.bw, bi: m.bi, invBind: m.invBind,
+            boneNodeIdx: m.boneNames.map(bn => dscene.nameIndex[bn] != null ? dscene.nameIndex[bn] : -1),
+            skinPos: new Float32Array(m.pos.length), skinNrm: new Float32Array(m.nrm.length),
+          });
+        }
+        // arm-orbit rig: fixed shoulder + neutral elbow/hand (from the seated pose) +
+        // each arm's descendant node set, so driverSeatedSkin can swing the hands with
+        // the wheel. Needs the cockpit wheel (centre + spin axis) to orbit the grip.
+        let arms = null, wheelC = null, wheelAxis = null;
+        if (poseWorld && carSteerWheel) {
+          wheelC = carSteerWheel.pivot;
+          wheelAxis = v3nrm(carSteerWheel.ax[STEER_WHEEL_AXIS]);
+          const originOf = nm => { const M = poseWorld[nm]; return M ? [M[12], M[13], M[14]] : null; };
+          const subtreeOf = rootName => {   // node indices whose ancestor chain hits root
+            const r = dscene.nameIndex[rootName]; const out = [];
+            if (r == null) return out;
+            for (let i = 0; i < dscene.nodes.length; i++) { let a = i; while (a >= 0 && a !== r) a = dscene.nodes[a].parent; if (a === r) out.push(i); }
+            return out;
+          };
+          arms = [];
+          for (const s of ["L", "R"]) {
+            const S0 = originOf("DRIVER:RIG_Arm_"+s), E0 = originOf("DRIVER:RIG_ForeArm_"+s), W0 = originOf("DRIVER:RIG_HAND_"+s);
+            if (!S0 || !E0 || !W0) continue;
+            arms.push({ S0, E0, W0, L1: v3len(v3sub(E0, S0)), L2: v3len(v3sub(W0, E0)), pole: v3sub(E0, S0),
+                        armSub: subtreeOf("DRIVER:RIG_Arm_"+s), foreSub: subtreeOf("DRIVER:RIG_ForeArm_"+s) });
+          }
+        }
+        carDriver = { skinned, headGroups, skel, poseWorld, neckPivot, arms, wheelC, wheelAxis };
+        driverSeatedSkin(0);   // seat the body onto the wheel (neutral)
       }
     } catch (e) { console.warn("driver load failed:", e); carDriver = null; }
   } catch (e) { console.warn("car model load failed:", e); carGroups = null; carWheels = null; carDriver = null; }
@@ -2173,6 +2506,8 @@ function loop(ts) {
     if (follow.on) {
       const camDt = follow.prevTs ? (ts - follow.prevTs) / 1000 : 0.016;
       followUpdate(tCur / ex.dt, camDt);
+    } else {
+      flyStep(follow.prevTs ? Math.min(0.05, (ts - follow.prevTs) / 1000) : 0.016);
     }
     follow.prevTs = ts;
     const sp = ex.speed[i], tl = ex.tilt[i];

@@ -237,6 +237,18 @@ fn find_driver(car_id: String) -> Result<Vec<TrackFile>, String> {
                     path: anim.to_string_lossy().to_string(),
                 });
             }
+            // this car's authored seated pose (repositions the shared driver's
+            // skeleton so the hands land on THIS car's wheel). Named "pose".
+            let pose = base
+                .join("cars")
+                .join(&car_id)
+                .join("driver_base_pos.knh");
+            if pose.exists() {
+                out.push(TrackFile {
+                    name: "pose".to_string(),
+                    path: pose.to_string_lossy().to_string(),
+                });
+            }
             return Ok(out);
         }
     }

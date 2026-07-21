@@ -257,22 +257,37 @@ function extractScene(arrayBuffer, opts) {
   // wheels split out by corner (LF/RF/LR/RR) so they can be steered independently of
   // the body. corner -> { pivot:[x,y,z] (wheel centre, model-local), byMat: Map }
   const wheelByCorner = new Map();
+  const steerWheelByMat = new Map();   // the in-cockpit steering wheel (spins with steer)
+  let steerWheelData = null;
   let meshCount = 0, skippedTransparent = 0, lodSkipped = 0;
 
-  function readNode(parentM, wheel) {
+  function readNode(parentM, wheel, steer) {
     const cls = i32();
     const name = str();
     const children = i32();
     u8(); // active
     let m = parentM;
     let childWheel = wheel;
+    let childSteer = steer;
+    // the driveshaft flexes at CV joints in reality; steering it rigidly swings it
+    // out the back like a stick, so keep it in the body (never in a wheel group).
+    const isDriveshaft = /driveshaft/i.test(name);
 
     if (cls === 1) {
       const t = new Float64Array(16);
       for (let i = 0; i < 16; i++) t[i] = f32();
       m = matMulRowVec(t, parentM);
-      const wm = /^WHEEL_(LF|RF|LR|RR)$/i.exec(name);   // a wheel hub → tag its subtree
+      // the whole per-corner assembly steers together: the wheel (tyre+rim) PLUS
+      // the Mach6 exo-suit — its suspension (SUSP_) and hub (HUB_), which form the
+      // "M" when the wheels turn sideways. All three sit at the same corner centre.
+      const wm = /^(?:WHEEL|SUSP|HUB)_(LF|RF|LR|RR)$/i.exec(name);
       if (wm) childWheel = { corner: wm[1].toUpperCase(), pivot: [m[12], m[13], m[14]] };
+      if (/steerwheel$/i.test(name) && !childSteer) {   // the cockpit steering wheel node
+        // world-matrix rows are the node's axes (row-vector); keep all three so the
+        // render can spin the wheel about the right one (the column / disc normal).
+        childSteer = { pivot: [m[12], m[13], m[14]], ax: [[m[0],m[1],m[2]], [m[4],m[5],m[6]], [m[8],m[9],m[10]]] };
+        steerWheelData = childSteer;
+      }
     } else if (cls === 2) {
       u8(); u8(); u8(); // castShadows, isVisible, isTransparent
       const nv = i32();
@@ -295,10 +310,12 @@ function extractScene(arrayBuffer, opts) {
         } else {
           meshCount++;
           let bag = byMat;                       // body geometry by default
-          if (wheel) {                           // steerable wheel geometry, kept per corner
+          if (wheel && !isDriveshaft) {          // steerable road wheel, kept per corner
             let wb = wheelByCorner.get(wheel.corner);
             if (!wb) { wb = { pivot: wheel.pivot, byMat: new Map() }; wheelByCorner.set(wheel.corner, wb); }
             bag = wb.byMat;
+          } else if (steer) {                    // the cockpit steering wheel
+            bag = steerWheelByMat;
           }
           let g = bag.get(materialId);
           if (!g) { g = { nv: 0, ni: 0, meshes: [] }; bag.set(materialId, g); }
@@ -321,10 +338,10 @@ function extractScene(arrayBuffer, opts) {
       throw kn5ParseError("unknown node class " + cls, off - 4);
     }
 
-    for (let c = 0; c < children; c++) readNode(m, childWheel);
+    for (let c = 0; c < children; c++) readNode(m, isDriveshaft ? null : childWheel, childSteer);
   }
 
-  readNode(IDENT, null);
+  readNode(IDENT, null, null);
   if (off > total) throw kn5ParseError("overran file (" + off + " > " + total + ")");
 
   // pass 2: bake a material group's meshes into flat, node-transformed arrays
@@ -372,8 +389,16 @@ function extractScene(arrayBuffer, opts) {
     wheels.push({ corner, pivot: wb.pivot, groups: wg });
   }
 
+  // cockpit steering wheel: baked groups + its pivot & spin axes
+  let steerWheel = null;
+  if (steerWheelData && steerWheelByMat.size) {
+    const sg = [];
+    for (const [materialId, g] of steerWheelByMat) { const bg = bakeGroup(materialId, g); triTotal += bg.triCount; sg.push(bg); }
+    steerWheel = { pivot: steerWheelData.pivot, ax: steerWheelData.ax, groups: sg };
+  }
+
   return {
-    textures, materials, groups, wheels,
+    textures, materials, groups, wheels, steerWheel,
     stats: { meshCount, triCount: triTotal, skippedTransparent, lodSkipped },
   };
 }
@@ -406,16 +431,36 @@ function parseDriver(arrayBuffer) {
     for (let q = 0; q < maps; q++) { const sampler = str(); i32(); const texName = str(); if (sampler === "txDiffuse") txDiffuse = texName; }
     materials.push({ name, shader, blendMode, alphaTested, txDiffuse });
   }
+  const IDENT = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  const rowMul = (a, b) => { const o = new Float32Array(16); for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) o[r*4+c] = a[r*4]*b[c] + a[r*4+1]*b[4+c] + a[r*4+2]*b[8+c] + a[r*4+3]*b[12+c]; return o; };
   const nodes = [], nameIndex = {}, meshes = [];
-  function walk(parent) {
+  function walk(parent, parentWorld) {
     const cls = i32(); const name = str(); const children = i32(); u8();
     const my = nodes.length;
     let local = null;
     if (cls === 1) local = mat16();
-    nodes.push({ name, parent, local: local || new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]) });
+    const world = cls === 1 ? rowMul(local, parentWorld) : parentWorld;  // class 2/3 have no own matrix
+    nodes.push({ name, parent, local: local || IDENT, world });
     nameIndex[name] = my;
     if (cls === 2) {
-      u8(); u8(); u8(); const nv = i32(); off += nv * 44; const ni = i32(); off += ni * 2; i32(); u32(); f32(); f32(); off += 16; u8();
+      u8(); u8(); u8(); const nv = i32();
+      // STATIC mesh (head, helmet, face) — bake into bind-world position so it
+      // renders in place. Not skinned; for animation it rides its parent bone.
+      const M = world, pos = new Float32Array(nv * 3), nrm = new Float32Array(nv * 3), uv = new Float32Array(nv * 2);
+      for (let v = 0; v < nv; v++) {
+        const x = f32(), y = f32(), z = f32(), nx = f32(), ny = f32(), nz = f32();
+        pos[v*3] = x*M[0]+y*M[4]+z*M[8]+M[12]; pos[v*3+1] = x*M[1]+y*M[5]+z*M[9]+M[13]; pos[v*3+2] = x*M[2]+y*M[6]+z*M[10]+M[14];
+        let rx = nx*M[0]+ny*M[4]+nz*M[8], ry = nx*M[1]+ny*M[5]+nz*M[9], rz = nx*M[2]+ny*M[6]+nz*M[10];
+        const l = Math.hypot(rx, ry, rz) || 1; nrm[v*3] = rx/l; nrm[v*3+1] = ry/l; nrm[v*3+2] = rz/l;
+        uv[v*2] = f32(); uv[v*2+1] = f32(); off += 12; // tangent
+      }
+      const ni = i32(); const idx = new Uint32Array(ni);
+      for (let i = 0; i < ni; i++) idx[i] = dv.getUint16(off + i*2, true); off += ni * 2;
+      const materialId = i32(); u32(); f32(); f32(); off += 16; u8();
+      // ownerName/bakeWorld let a re-pose (driver_base_pos.knh) reposition this
+      // rigid mesh: seated = bindVert · inv(bakeWorld) · knhWorld[ownerName].
+      const ownerName = parent >= 0 ? nodes[parent].name : name;
+      meshes.push({ materialId, pos, nrm, uv, idx, skinned: false, ownerName, bakeWorld: M });
     } else if (cls === 3) {
       u8(); u8(); u8();
       const bones = i32(); const boneNames = [], invBind = [];
@@ -433,13 +478,13 @@ function parseDriver(arrayBuffer) {
       const ni = i32(); const idx = new Uint32Array(ni);
       for (let i = 0; i < ni; i++) idx[i] = dv.getUint16(off + i * 2, true); off += ni * 2;
       const materialId = i32(); u32(); off += 8;
-      meshes.push({ materialId, pos, nrm, uv, bw, bi, idx, boneNames, invBind });
+      meshes.push({ materialId, pos, nrm, uv, bw, bi, idx, boneNames, invBind, skinned: true });
     } else if (cls !== 1) {
       throw kn5ParseError("unknown node class " + cls, off - 4);
     }
-    for (let c = 0; c < children; c++) walk(my);
+    for (let c = 0; c < children; c++) walk(my, world);
   }
-  walk(-1);
+  walk(-1, IDENT);
   return { textures, materials, nodes, nameIndex, meshes };
 }
 
@@ -467,5 +512,34 @@ function parseKsanim(arrayBuffer) {
   return { version, frameCount, nodes };
 }
 
-if (typeof module !== "undefined") module.exports = { extractRoadMesh, extractScene, parseDriver, parseKsanim };
-if (typeof window !== "undefined") window.KN5 = { extractRoadMesh, extractScene, parseDriver, parseKsanim };
+// Parse a car's driver_base_pos.knh — the authored seated pose that repositions
+// the shared driver's skeleton so the hands land on THIS car's wheel. It is a
+// node tree: [i32 nameLen][name][16 f32 matrix (row-vector, row-major)][i32
+// childCount][children...]. Returns { world, local }: name -> car-space matrices.
+function parseDriverPose(arrayBuffer) {
+  const dv = new DataView(arrayBuffer);
+  let off = 0;
+  const i32 = () => { const v = dv.getInt32(off, true); off += 4; return v; };
+  const f32 = () => { const v = dv.getFloat32(off, true); off += 4; return v; };
+  const str = () => { const l = i32(); let s = ""; for (let i = 0; i < l; i++) s += String.fromCharCode(dv.getUint8(off + i)); off += l; return s; };
+  const IDENT = new Float64Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+  const mul = (a, b) => { const o = new Float64Array(16);
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++)
+      o[r*4+c] = a[r*4]*b[c] + a[r*4+1]*b[4+c] + a[r*4+2]*b[8+c] + a[r*4+3]*b[12+c];
+    return o; };
+  const world = Object.create(null), local = Object.create(null);
+  function walk(parentM) {
+    const name = str();
+    const t = new Float64Array(16);
+    for (let i = 0; i < 16; i++) t[i] = f32();
+    const w = mul(t, parentM);
+    world[name] = w; local[name] = t;
+    const nc = i32();
+    for (let i = 0; i < nc; i++) walk(w);
+  }
+  walk(IDENT);
+  return { world, local };
+}
+
+if (typeof module !== "undefined") module.exports = { extractRoadMesh, extractScene, parseDriver, parseKsanim, parseDriverPose };
+if (typeof window !== "undefined") window.KN5 = { extractRoadMesh, extractScene, parseDriver, parseKsanim, parseDriverPose };
