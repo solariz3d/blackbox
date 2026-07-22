@@ -129,14 +129,21 @@ function carGForces(fp) {
   const dvy = ((P[b*3+1]-P[i*3+1]) - (P[i*3+1]-P[a*3+1])) * iv * iv;
   const dvz = ((P[b*3+2]-P[i*3+2]) - (P[i*3+2]-P[a*3+2])) * iv * iv;
   const longG = (dvx*hx + dvy*hy + dvz*hz) / 9.81;
+  const latG = (dvx*rx + dvy*ry + dvz*rz) / 9.81;
   return {
-    latG: (dvx*rx + dvy*ry + dvz*rz) / 9.81,     // + = pushed toward +right
+    latG,                                         // + = pushed toward +right (raw, includes banking gravity)
     longG,                                        // + = accelerating, − = braking (raw)
     vertA: (dvx*ux + dvy*uy + dvz*uz) / 9.81,     // + = pushed up (bump), − = crest
     // gravity-corrected braking: heading is flattened to the road plane, so gravity's
     // along-track pull is just its vertical component (hy). Subtracting it means climbing
     // a loop/banking no longer reads as braking. + = real braking-direction contact force.
     brakeG: -longG - hy,
+    // gravity-corrected lateral (same trick on the right axis): the "right" vector tilts
+    // with banking, so gravity projects onto it (its y-component, ry). Subtracting that
+    // leaves only the tyre's GENUINE lateral demand — near zero when the banking carries
+    // the car, large only when actually cornering harder than the bank supports. This is
+    // what should lay rubber, so banked laps stop over-marking.
+    latGcorr: latG + ry,
   };
 }
 // Kinematic upshift detection (the replay has no gear channel): an upshift briefly cuts
@@ -178,6 +185,125 @@ function wheelRollDistance(fp) {
   const j = Math.min(ex.N - 1, i + 1);
   return cd[i] + (cd[j] - cd[i]) * (fp - i);
 }
+// recorded wheel-centre WORLD position at fractional frame `fp` for wheel k (0=FL,1=FR,
+// 2=RL,3=RR). This is the real per-wheel position from the replay — placing each wheel
+// here makes it track the actual banked/bumpy surface (real suspension), no floating.
+// Returns null when the frame's wheel quad is invalid (gap / unsupported replay).
+function wheelWorldAt(fp, k) {
+  const W = ex && ex.wheels, ok = ex && ex.wheelsOk; if (!W) return null;
+  const N = ex.N;
+  const i0 = Math.max(0, Math.min(N - 1, Math.floor(fp)));
+  const i1 = Math.min(N - 1, i0 + 1);
+  if (!ok[i0] || !ok[i1]) return null;
+  const f = ex.gap[i1] ? 0 : Math.max(0, Math.min(1, fp - i0));   // snap across a discontinuity, like the body
+  const at = (i, o) => W[i * 12 + k * 3 + o];
+  const lin = o => at(i0, o) + (at(i1, o) - at(i0, o)) * f;
+  // Catmull-Rom through the recorded centres when a clean 4-frame stencil exists
+  // (no ends, no gap spanning it). Smooths sharp single-frame suspension events
+  // (curb strikes) that plain lerp would ramp linearly; identical to lerp otherwise.
+  const im1 = i0 - 1, ip2 = i1 + 1;
+  const clean = im1 >= 0 && ip2 < N && ok[im1] && ok[ip2]
+    && !ex.gap[i0] && !ex.gap[i1] && !ex.gap[ip2];
+  if (!clean) return [lin(0), lin(1), lin(2)];
+  const f2 = f * f, f3 = f2 * f;
+  const cr = o => {
+    const p0 = at(im1, o), p1 = at(i0, o), p2 = at(i1, o), p3 = at(ip2, o);
+    return 0.5 * (2*p1 + (-p0 + p2)*f + (2*p0 - 5*p1 + 4*p2 - p3)*f2 + (-p0 + 3*p1 - 3*p2 + p3)*f3);
+  };
+  return [cr(0), cr(1), cr(2)];
+}
+
+// ---- tyre slip signal → skid marks + smoke ---------------------------------
+// The REAL signal, from recorded wheel data: the SLIP ANGLE — the angle between where
+// the car points (body heading from front axle − rear axle, `ex.fwd`) and where it's
+// actually travelling (velocity). A gripping tyre points where it goes (slip ≈ 0°, even
+// at huge banked-corner G); a sliding/scrubbing tyre doesn't. This is what actually lays
+// rubber and makes smoke — unlike lateral G, which is tyre LOAD (high while gripping too).
+// Units are DEGREES. Validated: a gripping centrifuge lap reads ~0-3°, real slides read high.
+const SKID_ON = 9;        // deg of slip below this lays NO rubber (grip); above → marks
+const SKID_RANGE = 16;    // deg span above the deadzone that ramps 0→full intensity
+function skidIntensity(s) { return Math.max(0, Math.min(1, (s - SKID_ON) / SKID_RANGE)); }
+const SMOKE_ON = 9;       // deg of slip below this makes NO smoke
+const SMOKE_RANGE = 14;
+function smokeIntensity(s) { return Math.max(0, Math.min(1, (s - SMOKE_ON) / SMOKE_RANGE)); }
+// Fills two signals per wheel [frame*4 + k], k = 0:FL 1:FR 2:RL 3:RR, both in degrees:
+//   slip      — slip angle × outer-wheel weight (marks: outer tyres scrub more)
+//   smokeSlip — the car-wide slip angle (smoke; rear bias is applied at emit time)
+// Returns { slip, smokeSlip }; callers apply skidIntensity()/smokeIntensity().
+function computeWheelSlip(ex) {
+  const N = ex.N, P = ex.pos, F = ex.fwd, NM = ex.nrm, dt = ex.dt, gap = ex.gap;
+  const slip = new Float32Array(N * 4), smokeSlip = new Float32Array(N * 4);
+  for (let i = 1; i < N - 1; i++) {
+    if (gap[i] || gap[i - 1] || gap[i + 1]) continue;              // need both neighbours for velocity
+    let hx = F[i*3], hy = F[i*3+1], hz = F[i*3+2]; const hn = Math.hypot(hx, hy, hz);
+    if (hn < 1e-6) continue; hx /= hn; hy /= hn; hz /= hn;         // body heading (unit)
+    const vx = (P[(i+1)*3] - P[(i-1)*3]) / (2*dt), vy = (P[(i+1)*3+1] - P[(i-1)*3+1]) / (2*dt), vz = (P[(i+1)*3+2] - P[(i-1)*3+2]) / (2*dt);
+    const sp = Math.hypot(vx, vy, vz); if (sp < 5) continue;       // below ~18 km/h slip angle is just noise
+    let ux = NM[i*3], uy = NM[i*3+1], uz = NM[i*3+2]; const un = Math.hypot(ux, uy, uz) || 1; ux /= un; uy /= un; uz /= un;
+    let rx = uy*hz - uz*hy, ry = uz*hx - ux*hz, rz = ux*hy - uy*hx; const rn = Math.hypot(rx, ry, rz) || 1; rx /= rn; ry /= rn; rz /= rn;
+    const latV = vx*rx + vy*ry + vz*rz, alongV = vx*hx + vy*hy + vz*hz;
+    const slipDeg = Math.abs(Math.atan2(latV, alongV)) * 180 / Math.PI;   // sideways-slide angle
+    const outerRight = latV > 0;                                   // the side sliding outward scrubs more
+    for (let k = 0; k < 4; k++) {
+      const right = (k === 1 || k === 3);
+      slip[i*4 + k] = slipDeg * (right === outerRight ? 1.0 : 0.6); // marks: outer wheels weighted
+      smokeSlip[i*4 + k] = slipDeg;                                // smoke: car-wide (rear bias at emit)
+    }
+  }
+  return { slip, smokeSlip };
+}
+// Prebuild the whole skid-mark ribbon mesh once (interleaved: pos3, frame, lap,
+// intensity, cross, run — 8 floats/vertex). Centreline is the real recorded contact
+// patch; width is across the travel direction, lifted just off the surface. `cross`
+// is -1..1 across the width and `run` is metres along the path — the shader uses them
+// to draw tread striations + grain. Only laid where the tyre is actually sliding.
+function buildTireMarkMesh(ex) {
+  const N = ex.N, W = ex.wheels, ok = ex.wheelsOk, NM = ex.nrm, slip = ex.slip;
+  if (!W || !ok || !slip) return new Float32Array(0);
+  const HALF = 0.14, LIFT = 0.03;              // tyre half-width (m), lift off the surface (m)
+  // per-wheel radius (0:FL 1:FR 2:RL 3:RR): drop the recorded wheel CENTRE to the CONTACT
+  // PATCH on the track, else marks float ~a radius (≈ a foot) above the surface.
+  const R = [0.33, 0.33, 0.33, 0.33];
+  if (typeof carWheels !== "undefined" && carWheels)
+    for (const w of carWheels) R[(/F$/i.test(w.corner) ? 0 : 2) + (/^L/i.test(w.corner) ? 0 : 1)] = w.radius || 0.33;
+  const lapOf = new Int32Array(N);             // lap bucket per frame (crossings passed)
+  { const L = ex.laps || []; let li = 0;
+    for (let f = 0; f < N; f++) { while (li < L.length && L[li].frame <= f) li++; lapOf[f] = li; } }
+  const out = [];
+  const push = (p, fr, lp, it, cr, rn) => { out.push(p[0], p[1], p[2], fr, lp, it, cr, rn); };
+  // surface normal forced toward the sky (ex.nrm sign is unreliable), normalised
+  const upAt = (f) => {
+    let ux = NM[f*3], uy = NM[f*3+1], uz = NM[f*3+2]; const l = Math.hypot(ux, uy, uz) || 1; ux/=l; uy/=l; uz/=l;
+    if (uy < 0) { ux = -ux; uy = -uy; uz = -uz; } return [ux, uy, uz];
+  };
+  const contact = (f, k, up) => { const a = f*12+k*3, r = R[k]; return [W[a]-up[0]*r, W[a+1]-up[1]*r, W[a+2]-up[2]*r]; };
+  // ribbon edge: width across travel (right = up × travel), lifted just off the surface
+  const edge = (ca, cb, up, sgn) => {
+    const tx = cb[0]-ca[0], ty = cb[1]-ca[1], tz = cb[2]-ca[2];
+    let rx = up[1]*tz - up[2]*ty, ry = up[2]*tx - up[0]*tz, rz = up[0]*ty - up[1]*tx;
+    const rl = Math.hypot(rx, ry, rz) || 1; rx/=rl; ry/=rl; rz/=rl;
+    return [ca[0] + up[0]*LIFT + rx*HALF*sgn, ca[1] + up[1]*LIFT + ry*HALF*sgn, ca[2] + up[2]*LIFT + rz*HALF*sgn];
+  };
+  for (let k = 0; k < 4; k++) {
+    let run = 0;                               // metres along this wheel's path (resets across breaks)
+    for (let f = 0; f + 1 < N; f++) {
+      if (ex.gap[f] || ex.gap[f+1] || !ok[f] || !ok[f+1]) { run = 0; continue; }
+      const up0 = upAt(f), up1 = upAt(f+1);
+      const c0 = contact(f, k, up0), c1 = contact(f+1, k, up1);
+      const run0 = run, run1 = run + Math.hypot(c1[0]-c0[0], c1[1]-c0[1], c1[2]-c0[2]);
+      run = run1;                              // advance even when not marking, so the grain stays continuous
+      const s0 = skidIntensity(slip[f*4+k]), s1 = skidIntensity(slip[(f+1)*4+k]);
+      if (s0 <= 0.01 && s1 <= 0.01) continue;
+      const Lo0 = edge(c0, c1, up0, -1), Ro0 = edge(c0, c1, up0, 1);
+      const Lo1 = edge(c1, c0, up1, 1), Ro1 = edge(c1, c0, up1, -1);   // c0→c1 flipped for the far end
+      const fr0 = f, fr1 = f+1, lp0 = lapOf[f], lp1 = lapOf[f+1];
+      push(Lo0, fr0, lp0, s0, -1, run0); push(Ro0, fr0, lp0, s0, 1, run0); push(Lo1, fr1, lp1, s1, -1, run1);
+      push(Ro0, fr0, lp0, s0, 1, run0); push(Ro1, fr1, lp1, s1, 1, run1); push(Lo1, fr1, lp1, s1, -1, run1);
+    }
+  }
+  return new Float32Array(out);
+}
+
 // carMat ⊗ (rotate `ang` about an arbitrary unit axis through a pivot) — for the
 // cockpit steering wheel spinning about its tilted column.
 function axisSpinModel(carMat, ax, ang, piv) {

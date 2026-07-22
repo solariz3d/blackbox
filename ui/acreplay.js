@@ -145,6 +145,8 @@ function extractCar(replay, carIndex) {
   const nrm = new Float32Array(N * 3); // road surface normal (unit), world-up fallback
   for (let i = 0; i < N; i++) nrm[i * 3 + 1] = 1;
   const fwd = new Float32Array(N * 3); // REAL body heading from the wheels (front axle − rear axle)
+  const wheels = new Float32Array(N * 12);   // recorded wheel-centre world positions (FL,FR,RL,RR) — real suspension
+  const wheelsOk = new Uint8Array(N);        // 1 = this frame's wheel quad is valid
   const lapMs = new Uint32Array(N);
   for (let i = 0; i < N; i++) {
     const b = P + i * S;
@@ -165,6 +167,8 @@ function extractCar(replay, carIndex) {
       w.push([wx, wy, wz]);
     }
     if (wOk) {
+      wheelsOk[i] = 1;
+      for (let k = 0; k < 4; k++) { wheels[i*12 + k*3] = w[k][0]; wheels[i*12 + k*3 + 1] = w[k][1]; wheels[i*12 + k*3 + 2] = w[k][2]; }
       const a = [w[1][0] - w[0][0], w[1][1] - w[0][1], w[1][2] - w[0][2]];
       const bb = [w[2][0] - w[0][0], w[2][1] - w[0][1], w[2][2] - w[0][2]];
       let nx = a[1] * bb[2] - a[2] * bb[1];
@@ -302,7 +306,7 @@ function extractCar(replay, carIndex) {
     }
   }
 
-  return { car, dt, N, pos, tilt, nrm, fwd, speed: spS, gap, odo, lapMs, laps };
+  return { car, dt, N, pos, tilt, nrm, fwd, wheels, wheelsOk, speed: spS, gap, odo, lapMs, laps };
 }
 
 /* stats helper */

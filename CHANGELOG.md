@@ -1,5 +1,95 @@
 # Changelog
 
+## 2026-07-22 — Interactive smoke physics, density merge, collision, light fixes — PARTLY UNTESTED
+
+### Added
+- **Sparse "air" velocity field** (`AIR`, docs/SMOKE_PHYSICS.md) — cars stir a shared, world-
+  anchored velocity grid (per-wheel swirl injection, flattened to the surface plane); smoke
+  advects through it. Foundation for multi-car / multi-replay interaction (body wake off by
+  default until a 2nd car exists).
+- **Real slip-angle signal** (`computeWheelSlip`) — smoke + marks now key off the ANGLE between
+  body heading and travel (from recorded wheel data), not lateral G. A gripping banked lap reads
+  ~0° → no smoke; genuine slides read high. Validated offline against bowl/centrifuge replays.
+- **Velocity inheritance + tyre-precise spawn** — fresh smoke inherits the wheel's velocity (stays
+  around the tyre, then trails), spawns at the true sub-frame CONTACT PATCH (wheel centre − radius),
+  speed-gated (T-180 curve: 100 km/h ≈ 10%, 200 ≈ 50%, 400+ full).
+- **Seamless density merge** (`progSmokeComp` + half-res accumulation buffer) — particles splat
+  additively; one composite ramps the summed density so overlapping puffs fuse into one field.
+  Plus **world-anchored noise erosion** (reconstructed from depth) that frays it into wisps.
+- **Per-frame smoke↔track collision** — dedicated FINE-celled collider built from the ROAD MESH
+  ONLY (`smokeColl`, not the environment) so per-particle queries stay cheap on asset-heavy tracks;
+  segment test bends smoke off surfaces, plus a per-frame down-ray floor to the actual surface.
+- **Skid marks dropped to the contact patch** (were floating a wheel-radius above the track).
+
+### Changed / Fixed
+- **Light housings no longer leak** — head/brake cones no longer light the car's own body; glow
+  halos tightened to the apertures (HDR bloom does the spread); brake bulbs flare brighter (not
+  bigger) on braking; turbine glow recessed inside the nozzle.
+- **Turbine plume** dot-spacing now scales with turbine power; **backfire moved off the turbine to
+  the two dual exhausts** that flank it (`EXH_*` offsets, tune to model).
+
+### Notes
+- Much of this is still being visually dialled in. Collision uses the road mesh only (won't collide
+  with off-track props — intended). Real telemetry (RPM/gear/throttle) is NOT in autosave replays;
+  backfire/turbine are kinematic inferences — see the single-file append-telemetry experiment.
+
+## 2026-07-22 — Smoke rework: soft particles, curl motion, build-up — VISUALLY UNTESTED
+
+Full rework of tyre smoke after research (three agents: billboard texture, motion/build-up,
+volumetric-vs-particle). Verdict: well-lit soft particles, not raymarching.
+
+### Added
+- **Baked domain-warped fbm noise texture** (`bakeSmokeNoise`, CPU, 256² R8, no assets) —
+  sampled per-billboard with two rotated/scrolling UV layers that evolve over the particle's
+  life, so each puff has internal wispy churn and a noise-carved soft edge instead of a flat disc.
+- **Particle shading** (`progSmoke` rewrite) — half-Lambert against the sun + hemisphere sky/
+  ground ambient + vertical self-shadow, output linear into the HDR buffer so ACES+bloom light
+  the sunlit rims. Premultiplied alpha (`ONE, ONE_MINUS_SRC_ALPHA`) kills dark fringes.
+- **Soft-particle depth fade** — scene depth is blitted from the HDR fbo's depth renderbuffer
+  into a sampleable depth texture (`depthTexTarget`) each frame; the smoke fades where it meets
+  ground/car instead of cutting a hard line. HDR path only; degrades gracefully without it.
+- **Curl-noise motion** (`bakeCurl`/`sampleCurl`, Bridson 2007) — a baked 24³ divergence-free
+  velocity grid, trilinearly sampled per particle and relaxed into velocity → organic swirl
+  instead of radial puffs. Plus a gentle ambient wind (`SMOKE_WIND`).
+- **Build-up over time** — per-wheel slide accumulator (`SLIDE_GAIN/TAU/MAX`): smoke thickens
+  the longer/harder a wheel slides (emission rate + start size scale with it), decays fast on
+  grip. Two particle classes: rising **puffs** + long-lived ground-hugging **haze** (the
+  lingering trail), haze fraction rising with build-up.
+
+### Notes
+- **Built this session — compiles + launches, NOT visually verified.** Dials: `smoke.cap`,
+  the `11` emission-rate + `baseA` per class (smokeStep), `SLIDE_*`, `CURL_FREQ/STR`,
+  `SMOKE_WIND`, the `fadeDist` 0.6 (soft-particle softness), and the noise UV scroll speeds
+  in the smoke FS.
+
+## 2026-07-22 — Tyre marks + smoke, Catmull-Rom suspension — VISUALLY UNTESTED
+
+### Added
+- **Tyre skid marks.** A dark ribbon laid along each wheel's real recorded contact
+  patch (`ex.wheels`), gated by a slip signal inferred from the stable G-forces
+  (`computeWheelSlip` — cornering loads the outer pair, braking loads the front).
+  The whole mesh is prebuilt once per car (`buildTireMarkMesh`), each vertex tagged
+  with the frame + lap it was laid at; a shader (`progMark`) reveals it up to the
+  current frame, so marks draw on as the car drives and scrub correctly — near-zero
+  runtime cost. New `tyres` toolbar button cycles **lap** (reset each lap, default) →
+  **keep** (accumulate + slow fade) → **off**.
+- **Tyre smoke.** Live camera-facing billboard particles (`progSmoke`, JS pool) emitted
+  off the same slip signal, into the HDR buffer so it fogs + tonemaps with the scene.
+  Playback-time driven: pause freezes it, a scrub/jump clears it, forward play ages +
+  emits. Grey dims at night so it doesn't glow.
+
+### Changed
+- **Wheel suspension interpolation is now Catmull-Rom** (`wheelWorldAt`) through the
+  recorded wheel centres, with a clean 4-frame stencil (falls back to linear at the
+  ends / across gaps). Smooths sharp single-frame events (curb strikes) that plain
+  lerp ramped in straight segments. Identical to lerp for normal banking/bumps.
+
+### Notes
+- **Built this session — compiles + launches, NOT yet visually verified.** Tuning
+  knobs: `SKID_ON`/`SKID_RANGE` (slip deadzone/ramp, carrender.js), `MARK_COLOR`/
+  `MARK_ALPHA`/`MARK_FADE_FRAMES`, and the smoke pool constants in `smokeStep`
+  (life, buoyancy, size, `smoke.cap`) + the grey in `smokeStepAndDraw`.
+
 ## 2026-07-21 — HDR pipeline (blacks black, light LIGHT) — VISUALLY UNTESTED
 
 ### Added

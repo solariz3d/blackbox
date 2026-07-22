@@ -294,6 +294,7 @@
   <button id="btnLine" class="on">line</button>
   <span id="timeCtl" title="Time of day" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.85"><span id="timeIcon">🌙</span><input id="timeSlider" type="range" min="0" max="1439" value="60" style="width:92px;vertical-align:middle"><span id="timeLabel" style="min-width:38px">01:00</span></span>
   <button id="btnShadow" class="on">shadows</button>
+  <button id="btnTyres" class="on" title="skid marks + smoke — click to cycle: lap · keep · off">tyres · lap</button>
   <button id="btnHDR" class="on">HDR</button>
   <button id="btnLap" class="on">lap only</button>
   <button id="btnPlay">pause</button>
@@ -439,7 +440,9 @@ const bufs = { ribbon: null, ribbonN: 0, line: null, lineN: 0, grid: null, gridN
                trackPos: null, trackIdx: null, trackIdxN: 0 };
 // extUint / extS3TC → glcore.js
 let edgeIndex = null;   // RoadEdge index once a kn5 is loaded
-let worldColl = null;   // full-world collider grid for the drone follow-cam
+let worldColl = null;   // full-world collider grid for the drone follow-cam (coarse cells)
+let smokeColl = null;   // fine-celled collider for per-frame smoke-vs-track collision (many cheap queries)
+let trackAABB = null;   // track world bounds { cx,cy,cz, radius } — sizes the static shadow bake
 let sceneGroups = null; // textured visual scene draw batches
 
 // second program (VST/FST textured+lit scene) + progT + tLoc → glcore.js
@@ -481,8 +484,8 @@ const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
 // vector + matrix helpers (v3*, mXfPt, mRot, mT, rv*, ik2bone, rotP, scaleMat) → mathutil.js
 let showCar = true;     // render the car model on the cursor
 let showLine = true;    // render the driven-line ribbon
-let carLift = -0.28;    // vertical placement (m); dropped onto the track, raised a touch so banked
-                        // sections (bowl) don't clip the tyres through the surface
+let carLift = -0.34;    // body height (m). Wheels now sit at their recorded positions (data-driven),
+                        // so this only sets the BODY — aligned to the real wheel mounts (~0.395 − 0.05).
 let carFlip = -1;       // forward-axis sign (T-180 nose is +Z, so flip)
 let carSlipExag = 1.0;  // 1 = EXACT recorded attitude; >1 amplifies the slip toward the film crab
 let showThruster = true;
@@ -531,13 +534,13 @@ function turbineIntensity(i) {
   return Math.min(1, slipN * 0.85 + Math.min(1, acc) * 0.5);
 }
 
-// blue thruster plume from the Mach 6's rear, perspective-sized point sprites.
-// `lum` brightens the plume (used to crank it up at night).
+// blue thruster plume from the Mach 6's rear, perspective-sized point sprites — a straight
+// jet out the nozzle. `lum` brightens it (cranked at night).
 function drawThruster(m, inten, mvp, lum) {
   lum = lum || 1;
   const eye = camEye();
   const nz = carNozzle || [0, 0.49, -2.1];                    // emit from the turbine nozzle geometry
-  const lx = nz[0], ly = nz[1], lz = nz[2] - 0.1;             // just aft of the nozzle mouth
+  const lx = nz[0], ly = nz[1], lz = nz[2] + 0.05;            // recessed inside the mouth → glow reads as INSIDE the housing, exits the nozzle
   const ox = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
   const oy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
   const oz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
@@ -546,11 +549,12 @@ function drawThruster(m, inten, mvp, lum) {
   const t0 = performance.now();
   const fl = 0.8 + 0.2 * Math.sin(t0 * 0.045) + 0.07 * Math.sin(t0 * 0.13);
   const th = Math.tan(0.9 / 2), Hpx = cv.height;
+  const len = 0.7 + inten * 2.6;                              // plume length scales with turbine power (dots spread as it spools up)
   for (let k = 0; k < K; k++) {
     const t = k / (K - 1);
-    const px = ox + bx * t * 2.6, py = oy + by * t * 2.6, pz = oz + bz * t * 2.6;   // shorter plume
+    const px = ox + bx * t * len, py = oy + by * t * len, pz = oz + bz * t * len;   // straight plume aft
     const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
-    const worldR = (0.26 * (1 - t * 0.5)) * inten;            // tighter, so it doesn't clip the nozzle
+    const worldR = (0.15 * (1 - t * 0.5)) * inten;            // tight to the nozzle so it doesn't leak past the housing
     arr[k * 5] = px; arr[k * 5 + 1] = py; arr[k * 5 + 2] = pz;
     arr[k * 5 + 3] = Math.min(500, worldR * Hpx / (dist * th));
     arr[k * 5 + 4] = (1 - t) * inten * fl * lum;
@@ -579,19 +583,23 @@ function backfireAt(fp) {
   if (d < 0 || d > decay) return 0;
   return Math.pow(1 - d / decay, 1.6);   // sharp attack at the shift, quick decay
 }
-// exhaust backfire: a bright orange pop out the rear on an upshift, brighter at night
+// exhaust backfire: bright orange pops on an upshift — from the TWO DUAL EXHAUSTS that flank
+// the turbine (NOT the turbine itself), brighter at night.
+const EXH_X = 0.5, EXH_Y = -0.08, EXH_Z = 0.05;               // dual-exhaust offset from the turbine nozzle (tune to model)
 function drawBackfire(cm, mvp, th, inten, nightF) {
   const eye = camEye(), Hpx = cv.height;
-  const nz = carNozzle || [0, 0.49, -2.1];                     // backfire out the turbine nozzle
-  const lx = nz[0], ly = nz[1], lz = nz[2] - 0.05;
-  const ox = cm[0]*lx + cm[4]*ly + cm[8]*lz + cm[12], oy = cm[1]*lx + cm[5]*ly + cm[9]*lz + cm[13], oz = cm[2]*lx + cm[6]*ly + cm[10]*lz + cm[14];
+  const nz = carNozzle || [0, 0.49, -2.1];
+  const outlets = [[nz[0] + EXH_X, nz[1] + EXH_Y, nz[2] + EXH_Z], [nz[0] - EXH_X, nz[1] + EXH_Y, nz[2] + EXH_Z]];
   let bx = -cm[8], by = -cm[9], bz = -cm[10]; const bl = Math.hypot(bx, by, bz) || 1; bx /= bl; by /= bl; bz /= bl;   // backward
   const lum = inten * (1.0 + nightF * 1.8);                    // pops brighter at night
   const NB = 5, s = [];
-  for (let k = 0; k < NB; k++) { const t = k / (NB - 1);
-    const px = ox + bx * t * 1.7, py = oy + by * t * 1.7, pz = oz + bz * t * 1.7;
-    const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
-    s.push(px, py, pz, Math.min(500, 0.30 * (1 - t * 0.4) * Hpx / (dist * th)), (1 - t) * lum);
+  for (const L of outlets) {
+    const ox = cm[0]*L[0] + cm[4]*L[1] + cm[8]*L[2] + cm[12], oy = cm[1]*L[0] + cm[5]*L[1] + cm[9]*L[2] + cm[13], oz = cm[2]*L[0] + cm[6]*L[1] + cm[10]*L[2] + cm[14];
+    for (let k = 0; k < NB; k++) { const t = k / (NB - 1);
+      const px = ox + bx * t * 1.2, py = oy + by * t * 1.2, pz = oz + bz * t * 1.2;   // shorter dual pops
+      const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
+      s.push(px, py, pz, Math.min(500, 0.20 * (1 - t * 0.4) * Hpx / (dist * th)), (1 - t) * lum);
+    }
   }
   gl.useProgram(progGlow); gl.uniformMatrix4fv(glowLoc.mvp, false, mvp);
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
@@ -600,7 +608,7 @@ function drawBackfire(cm, mvp, th, inten, nightF) {
   gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
   gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
   gl.uniform3f(glowLoc.color, 1.3 * HDR_EMIT, 0.55 * HDR_EMIT, 0.14 * HDR_EMIT);   // orange flame (HDR → blooms)
-  gl.drawArrays(gl.POINTS, 0, NB);
+  gl.drawArrays(gl.POINTS, 0, NB * 2);                         // two exhaust outlets
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
@@ -637,20 +645,20 @@ function drawCarLights(cm, mvp, th, nightF, brakeF) {
     for (const a of hl) (a[0] > 0 ? sL : sR).push(a);
     for (const arr of [sL, sR]) arr.slice().sort((p, q) => q[1] - p[1]).forEach((a, idx) => {
       const P = mXfPt(a, cm);
-      push(warm, P, 0.05, 0.95 * nightF);                    // crisp bulb only
-      if (idx === 0) push(warm, P, 0.17, 0.28 * nightF);     // top lamp gets the soft halo
+      push(warm, P, 0.05, 0.55 * nightF);                    // crisp bulb, dimmer so bloom doesn't smear the body
+      if (idx === 0) push(warm, P, 0.085, 0.12 * nightF);    // top lamp: small tight halo
     });
   }
   // tail lights: red running glow → wider/hotter flare under braking (3 lamps/side).
   // Keep the silhouette (sizes) but toned-down luminosity.
-  const red = [], base = 0.45 + 0.45 * brakeF, spread = 1.0 + 0.7 * brakeF;
+  const red = [], base = 0.4 + 0.85 * brakeF, spread = 1.0 + 0.25 * brakeF;   // MUCH brighter on braking, barely bigger
   for (const t of (carLights.tail || [])) { const T = mXfPt(t, cm);
-    push(red, T, 0.11 * spread, base * nightF); push(red, T, 0.28 * spread, 0.42 * base * nightF); }
-  // red LED accents on the body — small crisp glows + a soft halo
-  for (const a of (carLights.accentR || [])) { const P = mXfPt(a, cm); push(red, P, 0.06, 0.9 * nightF); push(red, P, 0.16, 0.30 * nightF); }
+    push(red, T, 0.08 * spread, base * nightF); push(red, T, 0.11 * spread, 0.42 * base * nightF); }
+  // red LED accents on the body — small crisp glows + a tight halo (bloom spreads them)
+  for (const a of (carLights.accentR || [])) { const P = mXfPt(a, cm); push(red, P, 0.055, 0.9 * nightF); push(red, P, 0.09, 0.30 * nightF); }
   // white LED accents
   const white = [];
-  for (const a of (carLights.accentW || [])) { const P = mXfPt(a, cm); push(white, P, 0.06, 0.9 * nightF); push(white, P, 0.16, 0.30 * nightF); }
+  for (const a of (carLights.accentW || [])) { const P = mXfPt(a, cm); push(white, P, 0.055, 0.9 * nightF); push(white, P, 0.09, 0.30 * nightF); }
 
   gl.useProgram(progGlow); gl.uniformMatrix4fv(glowLoc.mvp, false, mvp);
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
@@ -765,7 +773,7 @@ function camEye() {
 // come between it and the car, for unbroken flow with no clipping. Triangles
 // whose XZ footprint spans too many cells (huge terrain quads) go into a small
 // overflow list tested every query, so the grid stays memory-bounded. ----
-function buildWorldCollider(verts, tris) {
+function buildWorldCollider(verts, tris, cellOverride, bigCapOverride) {
   const nt = tris.length / 3;
   if (!nt) return null;
   let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
@@ -775,11 +783,14 @@ function buildWorldCollider(verts, tris) {
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
   const spanX = Math.max(1, maxX - minX), spanZ = Math.max(1, maxZ - minZ);
-  const cell = Math.max(6, Math.min(48, Math.max(spanX, spanZ) / 96));
+  // small cells → few tris per cell → cheap per-particle queries (the smoke collider passes
+  // an override; the camera collider uses the coarse default tuned for a few queries/frame).
+  const cell = cellOverride || Math.max(6, Math.min(48, Math.max(spanX, spanZ) / 96));
   const nx = Math.max(1, Math.ceil(spanX / cell)), nz = Math.max(1, Math.ceil(spanZ / cell));
+  if (nx * nz > 8000000) return buildWorldCollider(verts, tris);   // guard: too many cells → fall back to coarse
   const cells = new Array(nx * nz);
   const bigTris = [];              // triangles too large to bucket sanely
-  const BIGCAP = 48;               // max cells a triangle may occupy
+  const BIGCAP = bigCapOverride || 48;   // max cells a triangle may occupy before it's an always-tested "big" tri
   for (let t = 0; t < nt; t++) {
     const i0 = tris[t * 3], i1 = tris[t * 3 + 1], i2 = tris[t * 3 + 2];
     const ax = verts[i0 * 3], az = verts[i0 * 3 + 2];
@@ -833,8 +844,43 @@ function collideSegment(C, p0, p1) {
   for (let n = 0; n < bigTris.length; n++) test(bigTris[n]);
   return best;
 }
+// like collideSegment but also returns the hit triangle's geometric normal, so smoke can
+// slide ALONG the track surface (bend) instead of clipping through it. Scalar args (no
+// per-particle array allocation). Returns a shared mutated object or null.
+const _smkHit = { t: 0, nx: 0, ny: 0, nz: 0 };
+function collideSmokeSeg(C, x0, y0, z0, x1, y1, z1) {
+  const { verts, tris, minX, minZ, cell, nx, nz, cells, bigTris, stamp } = C;
+  const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+  const cur = ++C.stampCur;
+  let best = -1, bnx = 0, bny = 0, bnz = 0;
+  const test = (ti) => {
+    if (stamp[ti] === cur) return; stamp[ti] = cur;
+    const i0 = tris[ti*3], i1 = tris[ti*3+1], i2 = tris[ti*3+2];
+    const ax = verts[i0*3], ay = verts[i0*3+1], az = verts[i0*3+2];
+    const e1x = verts[i1*3]-ax, e1y = verts[i1*3+1]-ay, e1z = verts[i1*3+2]-az;
+    const e2x = verts[i2*3]-ax, e2y = verts[i2*3+1]-ay, e2z = verts[i2*3+2]-az;
+    const px = dy*e2z-dz*e2y, py = dz*e2x-dx*e2z, pz = dx*e2y-dy*e2x;
+    const det = e1x*px+e1y*py+e1z*pz; if (det > -1e-7 && det < 1e-7) return;
+    const inv = 1/det;
+    const tx = x0-ax, ty = y0-ay, tz = z0-az;
+    const u = (tx*px+ty*py+tz*pz)*inv; if (u < 0 || u > 1) return;
+    const qx = ty*e1z-tz*e1y, qy = tz*e1x-tx*e1z, qz = tx*e1y-ty*e1x;
+    const vv = (dx*qx+dy*qy+dz*qz)*inv; if (vv < 0 || u+vv > 1) return;
+    const tt = (e2x*qx+e2y*qy+e2z*qz)*inv;
+    if (tt > 1e-4 && tt <= 1 && (best < 0 || tt < best)) { best = tt; bnx = e1y*e2z-e1z*e2y; bny = e1z*e2x-e1x*e2z; bnz = e1x*e2y-e1y*e2x; }
+  };
+  const c0 = Math.max(0, Math.floor((Math.min(x0,x1)-minX)/cell)), c1 = Math.min(nx-1, Math.floor((Math.max(x0,x1)-minX)/cell));
+  const r0 = Math.max(0, Math.floor((Math.min(z0,z1)-minZ)/cell)), r1 = Math.min(nz-1, Math.floor((Math.max(z0,z1)-minZ)/cell));
+  for (let cz = r0; cz <= r1; cz++) for (let cx = c0; cx <= c1; cx++) { const list = cells[cz*nx+cx]; if (!list) continue; for (let n = 0; n < list.length; n++) test(list[n]); }
+  for (let n = 0; n < bigTris.length; n++) test(bigTris[n]);
+  if (best < 0) return null;
+  const nl = Math.hypot(bnx, bny, bnz) || 1;
+  _smkHit.t = best; _smkHit.nx = bnx/nl; _smkHit.ny = bny/nl; _smkHit.nz = bnz/nl;
+  return _smkHit;
+}
+
 // merge non-translucent scene groups' world-space geometry into one collider.
-function buildWorldColliderFromGroups(groups) {
+function buildWorldColliderFromGroups(groups, cellOverride, bigCapOverride) {
   let nv = 0, nt = 0;
   for (const g of groups) { nv += g.pos.length; nt += g.idx.length; }
   if (!nt) return null;
@@ -846,7 +892,7 @@ function buildWorldColliderFromGroups(groups) {
     for (let i = 0; i < id.length; i++) tris[to + i] = id[i] + base;
     base += g.pos.length / 3; vo += g.pos.length; to += id.length;
   }
-  return buildWorldCollider(verts, tris);
+  return buildWorldCollider(verts, tris, cellOverride, bigCapOverride);
 }
 
 // Drive the follow rig one step. fp = fractional frame, dt = seconds since last.
@@ -1186,49 +1232,71 @@ function setBrakelights(cm, brakeInt) {
   }
 }
 
-/* ===================== directional shadow map =====================
- * The car is rendered depth-only from the sun/moon's direction into an offscreen depth
- * texture; the track shader projects each fragment into that light space and PCF-compares,
- * so the car casts a soft shadow that swings + stretches with the time of day. Needs
- * WebGL2 depth textures; falls back to the contact-blob shadow otherwise. */
-let SHADOW_SIZE = 2048;
-let SHADOW_ON = true, shadowReady = false, shadowFbo = null, shadowTex = null;
+/* ===================== cascaded shadow maps =====================
+ * The car + track render depth-only from the sun/moon direction into TWO cascades — a
+ * tight near box (sharp shadow under/around the car) and a wide far box (distant track
+ * geometry, ~1 km of coverage). The shader picks the near cascade when the fragment is in
+ * it, else the far one, so we get both sharpness up close and long render distance for a
+ * cinematic look. Needs WebGL2 depth textures; falls back to the contact-blob otherwise. */
+let SHADOW_ON = true, shadowReady = false, shadowsRendered = false, staticBakeTime = null;
+
+/* tyre marks + smoke — both fed by the same recorded-slip signal (carrender.js).
+ * TYRE_MODE: 0 = off, 1 = reset each lap (default), 2 = accumulate + slow fade. */
+let TYRE_MODE = 1;
+let markVBO = null, markCount = 0;                    // prebuilt skid-mark ribbon (per loaded car)
+const MARK_COLOR = [0.02, 0.02, 0.025], MARK_ALPHA = 0.55, MARK_FADE_FRAMES = 900;  // ~fade over 900 frames in mode 2
+const smoke = { pool: [], cap: 420, vbo: null, arr: null,
+  noiseTex: null, curl: null, accum: new Float32Array(4) };   // baked noise, curl field, per-wheel slide build-up
+const SMOKE_MERGE_LO = 0.10, SMOKE_MERGE_HI = 0.65;    // summed-density ramp: fuses overlapping puffs into one field
+let SMOKE_ERODE = 0.6;                                  // composite noise erosion: frays the merged field into wisps
+let SMOKE_COLLIDE = true;                              // per-frame smoke↔track collision (uses the fine smokeColl grid)
+let smokePrevT = null;                                 // last playback time (for emission gating + scrub detect)
+const CURL_G = 24, CURL_FREQ = 0.35, CURL_STR = 1.7;   // curl velocity grid (now a turbulence overlay only)
+const SMOKE_WIND = [0.25, 0, 0.10];                    // gentle ambient drift (world x,z)
+// sparse "air" velocity field — the shared medium cars stir and smoke rides. Cells exist
+// ONLY near cars/smoke (a tube along the track, not the whole map). See docs/SMOKE_PHYSICS.md.
+const AIR = { H: 1.5, inv: 1 / 1.5, cells: new Map() };  // cell size (m); Map<packedKey,{vx,vy,vz,ttl}>
+const AIR_TAU = 0.6, AIR_TTL = 1.2;                    // velocity dissipation τ (s); cell lifetime after last inject (s)
+// Injection is mostly SWIRL (rotates in place → smoke stays put and trails behind) with
+// almost no forward drag (drag would carry the smoke along with the car — no trail).
+const WHEEL_DRAG_K = 0.04, WHEEL_SWIRL_K = 0.15, BODY_WAKE_K = 0.0, AIR_TURB = 0.35;  // wake off (0) — it only matters for shredding OTHER cars' smoke; with one car it disturbs its own trail
+const SLIDE_GAIN = 3.0, SLIDE_TAU = 0.5, SLIDE_MAX = 2.5;   // per-wheel slide accumulator: grow / decay-τ / cap
+const SHADOW_CASCADES = [
+  { R: 90, size: 4096, dyn: true },    // NEAR: dynamic, re-rendered every frame around the car
+  { size: 4096, dyn: false },          // FAR: STATIC whole-track bake (R/centre from trackAABB)
+];
 (function initShadow() {
   if (!isGL2) return;
-  shadowTex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D, shadowTex);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, SHADOW_SIZE, SHADOW_SIZE, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.NONE);
-  shadowFbo = gl.createFramebuffer();
-  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
-  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
-  gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
-  shadowReady = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  let ok = true;
+  for (const c of SHADOW_CASCADES) {
+    c.vp = new Float32Array(IDENT4);   // never null (safe to bind before first bake)
+    c.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, c.tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, c.size, c.size, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.NONE);
+    c.fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, c.fbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, c.tex, 0);
+    gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+    gl.clear(gl.DEPTH_BUFFER_BIT);   // start "all lit" so an unbaked far map casts nothing
+    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) ok = false;
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); shadowReady = ok;
 })();
 
-// light view-projection: an orthographic box around the car, looking along the sun/moon
-function buildLightVP(cm, dir) {
-  const c = [cm[12], cm[13], cm[14]], d = v3nrm(dir);
-  const eye = [c[0] + d[0]*30, c[1] + d[1]*30, c[2] + d[2]*30];
+// orthographic light box of half-extent R centred on `center`, looking along the sun/moon
+function buildLightVP(dir, R, center) {
+  const c = center, d = v3nrm(dir), back = R * 1.8;   // eye far enough back that the box is in frustum
+  const eye = [c[0] + d[0]*back, c[1] + d[1]*back, c[2] + d[2]*back];
   const up = Math.abs(d[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
-  const R = 20;   // half-box (m); generous so long/raked shadows on loops don't clip the border
-  return new Float32Array(mMul(mOrtho(-R, R, -R, R, 1, 90), mLookAt(eye, c, up)));
+  return new Float32Array(mMul(mOrtho(-R, R, -R, R, 1, R * 4), mLookAt(eye, c, up)));
 }
-// render the shadow casters (nearby track + car) depth into the shadow map from the light's
-// view. The track participates so the banking/crests block the sun and self-shadow. No
-// front-cull (that would drop the track's top surface); slope-scaled bias in the shader
-// handles acne. Only track within the light box renders (GL clips the rest).
-function renderCarDepth(cm, lightVP) {
-  gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
-  gl.viewport(0, 0, SHADOW_SIZE, SHADOW_SIZE);
-  gl.clear(gl.DEPTH_BUFFER_BIT);
+// Shadow casters. NEAR cascade: dynamic every frame (track + car around the car, sharp).
+// FAR cascade: the WHOLE track baked once — only re-rendered when the sun moved (time
+// changed), covering the full track bounds. Track participates (banking blocks the sun);
+// no front-cull (would drop the track top); slope-scaled bias in the shader handles acne.
+function renderCarDepth(cm, dir, timeChanged) {
   gl.useProgram(progDepth);
-  gl.uniformMatrix4fv(depthLoc.lightVP, false, lightVP);
   const drawG = (groups, model) => {
     gl.uniformMatrix4fv(depthLoc.model, false, model);
     for (const g of groups) {
@@ -1238,10 +1306,23 @@ function renderCarDepth(cm, lightVP) {
       gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
     }
   };
-  if (sceneGroups) drawG(sceneGroups, IDENT4);   // track (verts already world-space) — self-shadows
+  // NEAR — dynamic, every frame (track + car)
+  const near = SHADOW_CASCADES[0];
+  near.vp = buildLightVP(dir, near.R, [cm[12], cm[13], cm[14]]);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, near.fbo); gl.viewport(0, 0, near.size, near.size); gl.clear(gl.DEPTH_BUFFER_BIT);
+  gl.uniformMatrix4fv(depthLoc.lightVP, false, near.vp);
+  if (sceneGroups) drawG(sceneGroups, IDENT4);
   drawG(carGroups, cm);
   if (carWheels) for (const w of carWheels) { const m = wheelSteerModel(cm, w.pivot, carSteerAngle, 0, 0); drawG(w.rollGroups, m); drawG(w.staticGroups, m); }
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  // FAR — static whole-track bake, only when the sun moved (or first time this track)
+  const far = SHADOW_CASCADES[1];
+  if (trackAABB && (timeChanged || staticBakeTime === null)) {
+    far.vp = buildLightVP(dir, trackAABB.radius + 120, [trackAABB.cx, trackAABB.cy, trackAABB.cz]);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, far.fbo); gl.viewport(0, 0, far.size, far.size); gl.clear(gl.DEPTH_BUFFER_BIT);
+    gl.uniformMatrix4fv(depthLoc.lightVP, false, far.vp);
+    if (sceneGroups) drawG(sceneGroups, IDENT4);   // track only — the car is in the near cascade
+  }
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null); shadowsRendered = true;
 }
 
 /* headlight beam occlusion: the scene depth from the headlight's view, so track geometry
@@ -1304,7 +1385,7 @@ function renderHeadlightDepth(cm, headVP) {
 const hdrFX = {
   ok: false, enabled: true, w: 0, h: 0, hdr: null, bloomA: null, bloomB: null, quad: null,
   bright: null, blur: null, comp: null,
-  exposure: 1.05, threshold: 1.0, bloomAmt: 0.75, sat: 1.12,
+  exposure: 1.02, threshold: 1.35, bloomAmt: 0.75, sat: 1.32,
 };
 let HDR_EMIT = 2.7;   // how hard the car lamps/backfire emit into HDR (>1 so they bloom)
 (function initHDR() {
@@ -1354,12 +1435,26 @@ function hdrTarget(w, h, depth) {
     gl.framebufferRenderbuffer(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.RENDERBUFFER, dz); }
   return { tex, fbo, dz, w, h };
 }
+// depth as a sampleable TEXTURE (the HDR fbo's own depth is a renderbuffer). We blit the
+// scene depth into this each frame so the smoke pass can read it for soft-particle fade
+// without a feedback loop (can't sample the depth attachment you're testing against).
+function depthTexTarget(w, h) {
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, w, h, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const fbo = gl.createFramebuffer(); gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, tex, 0);
+  return { tex, fbo, w, h };
+}
 function resizeHDR(w, h) {
   if (hdrFX.w === w && hdrFX.h === h && hdrFX.hdr) return;
   const del = t => { if (!t) return; gl.deleteTexture(t.tex); gl.deleteFramebuffer(t.fbo); if (t.dz) gl.deleteRenderbuffer(t.dz); };
-  del(hdrFX.hdr); del(hdrFX.bloomA); del(hdrFX.bloomB);
+  del(hdrFX.hdr); del(hdrFX.bloomA); del(hdrFX.bloomB); del(hdrFX.depthCopy); del(hdrFX.smokeDens);
   const bw = Math.max(1, w >> 1), bh = Math.max(1, h >> 1);
   hdrFX.hdr = hdrTarget(w, h, true); hdrFX.bloomA = hdrTarget(bw, bh, false); hdrFX.bloomB = hdrTarget(bw, bh, false);
+  hdrFX.depthCopy = depthTexTarget(w, h); smoke.depthTex = hdrFX.depthCopy.tex;
+  hdrFX.smokeDens = hdrTarget(bw, bh, false);           // half-res density accumulation for the seamless merge
   hdrFX.w = w; hdrFX.h = h; gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 }
 function hdrTri(prog) { const l = gl.getAttribLocation(prog, "aP"); gl.bindBuffer(gl.ARRAY_BUFFER, hdrFX.quad);
@@ -1386,6 +1481,408 @@ function runHDR() {
   gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
 }
 
+// ---- smoke assets: baked domain-warped noise texture + curl velocity field --------
+// Built once (CPU), no external files. The noise gives each billboard internal wispy
+// structure; the curl field gives organic divergence-free swirl motion (Bridson 2007).
+function _h2(ix, iy, P) { ix = ((ix % P) + P) % P; iy = ((iy % P) + P) % P; const n = Math.sin(ix * 127.1 + iy * 311.7) * 43758.5453; return n - Math.floor(n); }
+function _vn2(x, y, P) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = _h2(xi, yi, P), b = _h2(xi + 1, yi, P), c = _h2(xi, yi + 1, P), d = _h2(xi + 1, yi + 1, P);
+  const p = a + (b - a) * u; return p + ((c + (d - c) * u) - p) * v;
+}
+function _fbm2(x, y) { let t = 0, amp = 0.5, fr = 4; for (let o = 0; o < 3; o++) { t += amp * _vn2(x * fr, y * fr, fr); fr *= 2; amp *= 0.5; } return t; }
+function _warp2(x, y) { const qx = _fbm2(x, y), qy = _fbm2(x + 0.53, y + 0.13); return _fbm2(x + 0.8 * qx, y + 0.8 * qy); }   // domain warp → turbulence
+function bakeSmokeNoise() {
+  const S = 256, data = new Uint8Array(S * S);
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) data[y * S + x] = Math.max(0, Math.min(255, Math.round(_warp2(x / S, y / S) * 255)));
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, S, S, 0, gl.RED, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  smoke.noiseTex = tex;
+}
+function _h3(ix, iy, iz) { const n = Math.sin(ix * 127.1 + iy * 311.7 + iz * 74.7) * 43758.5453; return n - Math.floor(n); }
+function _vn3(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z), xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+  const c = (dx, dy, dz) => _h3(xi + dx, yi + dy, zi + dz);
+  const x00 = c(0,0,0)+(c(1,0,0)-c(0,0,0))*u, x10 = c(0,1,0)+(c(1,1,0)-c(0,1,0))*u,
+        x01 = c(0,0,1)+(c(1,0,1)-c(0,0,1))*u, x11 = c(0,1,1)+(c(1,1,1)-c(0,1,1))*u;
+  const y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
+  return y0 + (y1 - y0) * w;
+}
+function bakeCurl() {
+  const G = CURL_G, e = 0.01, inv = 1 / (2 * e), field = new Float32Array(G * G * G * 3);
+  const psi = (x, y, z, s) => _vn3(x + s * 17.3, y + s * 7.1, z + s * 23.9);   // 3 independent potentials
+  for (let zi = 0; zi < G; zi++) for (let yi = 0; yi < G; yi++) for (let xi = 0; xi < G; xi++) {
+    const x = xi / G * 4, y = yi / G * 4, z = zi / G * 4;
+    const vx = ((psi(x,y+e,z,2) - psi(x,y-e,z,2)) - (psi(x,y,z+e,1) - psi(x,y,z-e,1))) * inv;
+    const vy = ((psi(x,y,z+e,0) - psi(x,y,z-e,0)) - (psi(x+e,y,z,2) - psi(x-e,y,z,2))) * inv;
+    const vz = ((psi(x+e,y,z,1) - psi(x-e,y,z,1)) - (psi(x,y+e,z,0) - psi(x,y-e,z,0))) * inv;
+    const idx = (zi * G * G + yi * G + xi) * 3; field[idx] = vx; field[idx + 1] = vy; field[idx + 2] = vz;
+  }
+  smoke.curl = field;
+}
+function sampleCurl(wx, wy, wz) {
+  const G = CURL_G, f = smoke.curl; if (!f) return [0, 0, 0];
+  let gx = (((wx * CURL_FREQ) % G) + G) % G, gy = (((wy * CURL_FREQ) % G) + G) % G, gz = (((wz * CURL_FREQ) % G) + G) % G;
+  const x0 = Math.floor(gx), y0 = Math.floor(gy), z0 = Math.floor(gz), xf = gx - x0, yf = gy - y0, zf = gz - z0;
+  const x1 = (x0 + 1) % G, y1 = (y0 + 1) % G, z1 = (z0 + 1) % G;
+  const at = (xi, yi, zi, c) => f[(zi * G * G + yi * G + xi) * 3 + c];
+  const L = (a, b, t) => a + (b - a) * t, out = [0, 0, 0];
+  for (let c = 0; c < 3; c++) {
+    const a = L(L(at(x0,y0,z0,c), at(x1,y0,z0,c), xf), L(at(x0,y1,z0,c), at(x1,y1,z0,c), xf), yf);
+    const b = L(L(at(x0,y0,z1,c), at(x1,y0,z1,c), xf), L(at(x0,y1,z1,c), at(x1,y1,z1,c), xf), yf);
+    out[c] = L(a, b, zf);
+  }
+  return out;
+}
+function ensureSmokeAssets() { if (!smoke.noiseTex) bakeSmokeNoise(); if (!smoke.curl) bakeCurl(); }
+
+// ---- sparse air-velocity field: the shared medium cars stir and smoke rides -------
+// Cells are a fixed world lattice but stored sparsely (only where cars/smoke are), so we
+// simulate a tube of air along the track, never the whole map. All cars inject into the
+// SAME field, so smoke from one run is pushed by another car/run driving through it.
+function airKey(cx, cy, cz) { return ((cx + 4096) * 8192 + (cy + 4096)) * 8192 + (cz + 4096); }
+function airAdd(cx, cy, cz, vx, vy, vz) {
+  const k = airKey(cx, cy, cz); let c = AIR.cells.get(k);
+  if (!c) { c = { vx: 0, vy: 0, vz: 0, ttl: 0 }; AIR.cells.set(k, c); }
+  c.vx += vx; c.vy += vy; c.vz += vz; c.ttl = AIR_TTL;
+}
+function sampleAir(x, y, z) {                            // trilinear; missing cells = still air (0)
+  const A = AIR, gx = x * A.inv - 0.5, gy = y * A.inv - 0.5, gz = z * A.inv - 0.5;
+  const x0 = Math.floor(gx), y0 = Math.floor(gy), z0 = Math.floor(gz);
+  const fx = gx - x0, fy = gy - y0, fz = gz - z0;
+  let vx = 0, vy = 0, vz = 0;
+  for (let dz = 0; dz <= 1; dz++) for (let dy = 0; dy <= 1; dy++) for (let dx = 0; dx <= 1; dx++) {
+    const c = A.cells.get(airKey(x0 + dx, y0 + dy, z0 + dz)); if (!c) continue;
+    const w = (dx ? fx : 1 - fx) * (dy ? fy : 1 - fy) * (dz ? fz : 1 - fz);
+    vx += c.vx * w; vy += c.vy * w; vz += c.vz * w;
+  }
+  return [vx, vy, vz];
+}
+// a wheel stirs the air: drag along its travel + a vertical-axis swirl (vortex) around it
+function injectWheel(pos, up, dir, wSpd) {
+  const A = AIR, H = A.H, R = 2, rad = R * H, s = Math.min(wSpd, 25);
+  const drag = s * WHEEL_DRAG_K, swirl = s * WHEEL_SWIRL_K;
+  const cx0 = Math.floor(pos[0] * A.inv), cy0 = Math.floor(pos[1] * A.inv), cz0 = Math.floor(pos[2] * A.inv);
+  for (let dz = -R; dz <= R; dz++) for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+    const cxx = cx0 + dx, cyy = cy0 + dy, czz = cz0 + dz;
+    const ox = (cxx + 0.5) * H - pos[0], oy = (cyy + 0.5) * H - pos[1], oz = (czz + 0.5) * H - pos[2];
+    const dist = Math.hypot(ox, oy, oz); if (dist > rad) continue;
+    const w = 1 - dist / rad;
+    let tx = oz, tz = -ox; const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;   // swirl around world-up (horizontal)
+    airAdd(cxx, cyy, czz, (dir[0]*drag + tx*swirl) * w, 0, (dir[2]*drag + tz*swirl) * w);  // horizontal only — never into the ground
+  }
+}
+// the car body drags a wake along its heading — this is what shreds another car's smoke
+function injectWake(pos, dir, spd, up) {
+  const A = AIR, H = A.H, R = 3, rad = R * H, push = Math.min(spd, 40) * BODY_WAKE_K;
+  const cx0 = Math.floor(pos[0] * A.inv), cy0 = Math.floor(pos[1] * A.inv), cz0 = Math.floor(pos[2] * A.inv);
+  for (let dz = -R; dz <= R; dz++) for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+    const cxx = cx0 + dx, cyy = cy0 + dy, czz = cz0 + dz;
+    const ox = (cxx + 0.5) * H - pos[0], oy = (cyy + 0.5) * H - pos[1], oz = (czz + 0.5) * H - pos[2];
+    const dist = Math.hypot(ox, oy, oz); if (dist > rad) continue;
+    const w = 1 - dist / rad;
+    airAdd(cxx, cyy, czz, dir[0]*push*w, 0, dir[2]*push*w);        // wake runs horizontally, never into the ground
+  }
+}
+// one field tick: dissipate + evict, then inject the current car (car-agnostic — call once
+// per active car; one today, N when multiple replays run).
+function airStep(dt, i, fp) {
+  const cells = AIR.cells, decay = Math.exp(-dt / AIR_TAU);
+  for (const [k, c] of cells) { c.vx *= decay; c.vy *= decay; c.vz *= decay; c.ttl -= dt; if (c.ttl <= 0) cells.delete(k); }
+  if (!ex.wheelsOk[i]) return;
+  let ux = ex.nrm[i*3], uy = ex.nrm[i*3+1], uz = ex.nrm[i*3+2]; const un = Math.hypot(ux, uy, uz) || 1;
+  const up = [ux/un, uy/un, uz/un];
+  const cs = [];
+  for (let k = 0; k < 4; k++) {
+    const cur = wheelWorldAt(fp, k), prev = wheelWorldAt(Math.max(0, fp - 1), k); cs.push(cur);
+    if (!cur || !prev) continue;
+    let tx = cur[0]-prev[0], ty = cur[1]-prev[1], tz = cur[2]-prev[2]; const tl = Math.hypot(tx, ty, tz) || 1e-6;
+    injectWheel(cur, up, [tx/tl, ty/tl, tz/tl], tl / ex.dt);
+  }
+  if (BODY_WAKE_K > 0 && cs[0] && cs[1] && cs[2] && cs[3]) {  // body wake (off until multiple cars exist)
+    const cen = [(cs[0][0]+cs[1][0]+cs[2][0]+cs[3][0])/4, (cs[0][1]+cs[1][1]+cs[2][1]+cs[3][1])/4 + 0.4, (cs[0][2]+cs[1][2]+cs[2][2]+cs[3][2])/4];
+    let hx = ex.fwd[i*3], hy = ex.fwd[i*3+1], hz = ex.fwd[i*3+2]; const hl = Math.hypot(hx, hy, hz);
+    if (hl > 1e-6) injectWake(cen, [hx/hl, hy/hl, hz/hl], (ex.speed[i] || 0) / 3.6, up);
+  }
+}
+
+// draw the prebuilt skid-mark ribbon, revealed up to curFrame (fractional). Blends
+// dark onto the track; doesn't write depth (it's a decal sitting just off the surface).
+function drawTireMarks(mvp, L, fogD, curFrame, curLap) {
+  if (TYRE_MODE === 0 || !markCount) return;
+  gl.useProgram(progMark);
+  gl.uniformMatrix4fv(markLoc.mvp, false, mvp);
+  gl.uniform1f(markLoc.curFrame, curFrame);
+  gl.uniform1f(markLoc.curLap, curLap);
+  gl.uniform1f(markLoc.mode, TYRE_MODE === 2 ? 1 : 0);   // 0 = reset each lap, 1 = accumulate + fade
+  gl.uniform1f(markLoc.fade, MARK_FADE_FRAMES);
+  gl.uniform1f(markLoc.markAlpha, MARK_ALPHA);
+  gl.uniform3fv(markLoc.markColor, MARK_COLOR);
+  gl.uniform3f(markLoc.fogC, L.fog[0], L.fog[1], L.fog[2]);
+  gl.uniform1f(markLoc.fogD, fogD);
+  gl.bindBuffer(gl.ARRAY_BUFFER, markVBO);
+  gl.enableVertexAttribArray(markLoc.pos);   gl.vertexAttribPointer(markLoc.pos, 3, gl.FLOAT, false, 32, 0);
+  gl.enableVertexAttribArray(markLoc.frame); gl.vertexAttribPointer(markLoc.frame, 1, gl.FLOAT, false, 32, 12);
+  gl.enableVertexAttribArray(markLoc.lap);   gl.vertexAttribPointer(markLoc.lap, 1, gl.FLOAT, false, 32, 16);
+  gl.enableVertexAttribArray(markLoc.inten); gl.vertexAttribPointer(markLoc.inten, 1, gl.FLOAT, false, 32, 20);
+  gl.enableVertexAttribArray(markLoc.cross); gl.vertexAttribPointer(markLoc.cross, 1, gl.FLOAT, false, 32, 24);
+  gl.enableVertexAttribArray(markLoc.run);   gl.vertexAttribPointer(markLoc.run, 1, gl.FLOAT, false, 32, 28);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.depthMask(false);
+  gl.drawArrays(gl.TRIANGLES, 0, markCount);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  gl.disableVertexAttribArray(markLoc.frame);
+  gl.disableVertexAttribArray(markLoc.lap);
+  gl.disableVertexAttribArray(markLoc.inten);
+  gl.disableVertexAttribArray(markLoc.cross);
+  gl.disableVertexAttribArray(markLoc.run);
+}
+
+// advance the smoke particle pool by playback-time dt and spawn from sliding wheels.
+// Motion = curl-noise advection (organic swirl) + buoyancy + drag + gentle wind. Emission
+// is driven by a per-wheel slide accumulator so smoke BUILDS UP the longer/harder a wheel
+// slides. Two classes: rising "puffs" and long-lived ground-hugging "haze" (lingering trail).
+function smokeStep(dt, emit, i, nightF) {
+  const P = smoke.pool, acc = smoke.accum, t = smokePrevT || 0;
+  const collide = SMOKE_COLLIDE && smokeColl;                       // per-frame track collision (fine grid → cheap)
+  for (let j = P.length - 1; j >= 0; j--) {
+    const p = P[j]; p.age += dt;
+    if (p.age >= p.life) { P[j] = P[P.length - 1]; P.pop(); continue; }
+    const av = sampleAir(p.x, p.y, p.z);                            // shared air the cars stir (the physics)
+    const cv = sampleCurl(p.x + t * 0.6, p.y, p.z);                 // small turbulence overlay for organic detail
+    const tgx = av[0] + cv[0] * p.curl * AIR_TURB, tgz = av[2] + cv[2] * p.curl * AIR_TURB;
+    p.vx += (tgx - p.vx) * p.relax * dt + SMOKE_WIND[0] * dt;
+    p.vz += (tgz - p.vz) * p.relax * dt + SMOKE_WIND[2] * dt;
+    p.vy = p.vy * (1 - p.drag * dt) + (av[1] + cv[1] * p.curl * AIR_TURB * 0.4 + p.buoy) * dt;
+    p.vx *= (1 - p.drag * dt); p.vz *= (1 - p.drag * dt);
+    const ox = p.x, oy = p.y, oz = p.z;
+    p.x += p.vx * dt; p.y += p.vy * dt; p.z += p.vz * dt;
+    // per-frame track collision against the fine collider: the segment test can't tunnel even
+    // at speed, so smoke bends off any track/world geometry it crosses. Cheap (few tris/cell).
+    if (collide) {
+      // 1) movement crossing → bend off walls/banking/any surface it moves through
+      const hit = collideSmokeSeg(smokeColl, ox, oy, oz, p.x, p.y, p.z);
+      if (hit) {
+        const tt = Math.max(0, hit.t - 0.03);
+        p.x = ox + (p.x - ox) * tt; p.y = oy + (p.y - oy) * tt; p.z = oz + (p.z - oz) * tt;
+        const vn = p.vx * hit.nx + p.vy * hit.ny + p.vz * hit.nz;   // slide along the surface (bend)
+        p.vx -= hit.nx * vn; p.vy -= hit.ny * vn; p.vz -= hit.nz * vn;
+      }
+      // 2) per-frame FLOOR: cast down to the ACTUAL track surface under the particle now (not
+      // its spawn plane) and keep it above — catches smoke that drifted over higher/banked
+      // track or was born a hair below the shell (the "shit ton going through" case).
+      const floor = collideSmokeSeg(smokeColl, p.x, p.y + 2.5, p.z, p.x, p.y - 1.5, p.z);
+      if (floor) {
+        const hy = (p.y + 2.5) - 4.0 * floor.t;                     // world Y of the surface below
+        if (p.y < hy + 0.05) {
+          p.y = hy + 0.05;
+          const vn = p.vx * floor.nx + p.vy * floor.ny + p.vz * floor.nz;
+          if (vn < 0) { p.vx -= floor.nx * vn; p.vy -= floor.ny * vn; p.vz -= floor.nz * vn; }
+        }
+      }
+    } else {
+      // no collider: fall back to the cheap spawn-plane floor
+      const gd = (p.x - p.gx) * p.nx + (p.y - p.gy) * p.ny + (p.z - p.gz) * p.nz;
+      if (gd < 0.02) {
+        const c = 0.02 - gd;
+        p.x += p.nx * c; p.y += p.ny * c; p.z += p.nz * c;
+        const vn = p.vx * p.nx + p.vy * p.ny + p.vz * p.nz;
+        if (vn < 0) { p.vx -= p.nx * vn; p.vy -= p.ny * vn; p.vz -= p.nz * vn; }
+      }
+    }
+  }
+  if (!emit || !ex.smokeSlip || !ex.wheelsOk[i]) {                   // decay accumulators even when idle
+    for (let k = 0; k < 4; k++) acc[k] = Math.max(0, acc[k] - acc[k] * dt / SLIDE_TAU);
+    return;
+  }
+  // real tyre smoke scales with slip SPEED, not just angle: a slow pit peel-out has a big
+  // slip angle but little actual scrub, so gate the amount by speed. ~nothing under 30 km/h,
+  // full by ~90 km/h. Keeps long high-speed drifts smoky, kills the low-speed cloud.
+  const spd = ex.speed[i] || 0;
+  // speed→smoke amount, calibrated to the T-180 (tops ~570 km/h): 100 km/h ≈ 4%,
+  // 200 ≈ 50%, 400+ = full. Piecewise so the low-mid range barely smokes.
+  const speedFac =
+    spd <= 100 ? 0.10 * (spd / 100) :
+    spd <= 200 ? 0.10 + 0.40 * (spd - 100) / 100 :
+    spd <= 400 ? 0.50 + 0.50 * (spd - 200) / 200 : 1.0;
+  const spinAmt = 0.8 + Math.min(spd / 3.6 / 20, 1.6);             // swirl grows with wheel momentum
+  const fp = tCur / ex.dt;                                          // exact sub-frame playback position
+  // surface normal (forced toward the sky — ex.nrm sign is unreliable), used to drop the
+  // recorded wheel CENTRE down to the tyre CONTACT PATCH so smoke comes from the tyre exactly.
+  let unx = ex.nrm[i*3], uny = ex.nrm[i*3+1], unz = ex.nrm[i*3+2]; const unl = Math.hypot(unx, uny, unz) || 1;
+  unx /= unl; uny /= unl; unz /= unl; if (uny < 0) { unx = -unx; uny = -uny; unz = -unz; }
+  if (!smoke.wheelR && carWheels) {                                // cache per-wheel radius (0:FL 1:FR 2:RL 3:RR)
+    smoke.wheelR = [0.33, 0.33, 0.33, 0.33];
+    for (const w of carWheels) smoke.wheelR[(/F$/i.test(w.corner) ? 0 : 2) + (/^L/i.test(w.corner) ? 0 : 1)] = w.radius || 0.33;
+  }
+  // only fill the wheel path travelled since the LAST rendered frame (not a whole replay
+  // frame) so smoke is born AT the tyre, not smeared half a frame behind it.
+  const fill = Math.min(1, dt / ex.dt);
+  for (let k = 0; k < 4; k++) {
+    const it = smokeIntensity(ex.smokeSlip[i * 4 + k]) * speedFac;  // speed-scaled slide intensity
+    acc[k] = Math.min(SLIDE_MAX, Math.max(0, acc[k] + it * SLIDE_GAIN * dt - acc[k] * dt / SLIDE_TAU));
+    const build = acc[k] / SLIDE_MAX;                                // 0..1 sustained-slide build-up
+    const drive = Math.max(it, build * 0.6);
+    if (drive <= 0.05) continue;
+    const rearW = k >= 2 ? 1.0 : 0.22;                              // rear-drive: smoke mostly off the rears
+    // spawn at the TRUE current wheel position (sub-frame) and spread along the wheel's
+    // path this frame — so a fast car doesn't leave the smoke lagging a frame behind.
+    const cur = wheelWorldAt(fp, k); if (!cur) continue;
+    const prev = wheelWorldAt(Math.max(0, fp - 1), k) || cur;
+    const rad = smoke.wheelR ? smoke.wheelR[k] : 0.33;
+    // the wheel's world velocity — fresh smoke inherits it so it moves WITH the car briefly
+    // (staying around the tyre, swirling up) before air-drag slows it and it trails off.
+    const iex = 1 / ex.dt, INH = 0.62;
+    const wvx = (cur[0] - prev[0]) * iex * INH, wvy = (cur[1] - prev[1]) * iex * INH, wvz = (cur[2] - prev[2]) * iex * INH;
+    const rate = drive * 1.1 * dt * 60 * (0.9 + 0.4 * build) * rearW;  // sparse — one car's worth, not a pack
+    let n = Math.floor(rate); if (Math.random() < rate - n) n++;
+    for (let e = 0; e < n && P.length < smoke.cap; e++) {
+      const t = 1 - Math.random() * fill;                          // front of the path → AT the tyre (contact patch)
+      const bx = prev[0] + (cur[0] - prev[0]) * t - unx * rad, by = prev[1] + (cur[1] - prev[1]) * t - uny * rad, bz = prev[2] + (cur[2] - prev[2]) * t - unz * rad;
+      const ang = Math.random() * 6.283, jr = Math.random() * 0.08; // tight to the tyre
+      P.push({                                                       // puff: pools thick + low at the tyre, then wafts up
+        x: bx + Math.cos(ang) * jr, y: by + 0.03, z: bz + Math.sin(ang) * jr,
+        vx: wvx - Math.sin(ang) * spinAmt * 1.5 + Math.cos(ang) * 0.25,   // wheel velocity + tangential swirl (vortex)
+        vy: wvy + 0.5 + Math.random() * 0.5, vz: wvz + Math.cos(ang) * spinAmt * 1.5 + Math.sin(ang) * 0.25,
+        buoy: 3.0, drag: 0.7, curl: CURL_STR * 0.6, relax: 1.4,     // drag slows the inherited velocity → stays near the tyre, then rises
+        age: 0, life: 2.8 + Math.random() * 1.8, size0: (0.38 + it * 0.7) * (1 + 0.5 * build),
+        baseA: 0.13 + it * 0.18,                                    // thick at the wheels only when it's really sliding
+        gx: bx, gy: by, gz: bz, nx: unx, ny: uny, nz: unz,         // spawn-surface plane (banking-aware floor)
+        lx: bx, ly: by, lz: bz,                                     // last-collision-check position
+      });
+    }
+    if (P.length < smoke.cap && Math.random() < (0.06 + 0.18 * build) * rearW) { // sparse lingering ground haze
+      const t = 1 - Math.random() * fill;                          // front of the path → AT the tyre
+      const bx = prev[0] + (cur[0] - prev[0]) * t - unx * rad, by = prev[1] + (cur[1] - prev[1]) * t - uny * rad, bz = prev[2] + (cur[2] - prev[2]) * t - unz * rad;
+      const ang = Math.random() * 6.283, jr = Math.random() * 0.22;
+      P.push({
+        x: bx + Math.cos(ang) * jr, y: by + 0.02, z: bz + Math.sin(ang) * jr,
+        vx: wvx * 0.7 + Math.cos(ang) * 0.25, vy: 0.02, vz: wvz * 0.7 + Math.sin(ang) * 0.25,
+        buoy: 0.05, drag: 0.9, curl: CURL_STR * 0.4, relax: 0.6,   // high drag settles it into a ground trail
+        age: 0, life: 3.5 + Math.random() * 2.5, size0: 0.8 + build * 1.2,
+        baseA: 0.06, seed: Math.random(),
+        gx: bx, gy: by, gz: bz, nx: unx, ny: uny, nz: unz,         // spawn-surface plane (banking-aware floor)
+        lx: bx, ly: by, lz: bz,                                     // last-collision-check position
+      });
+    }
+  }
+}
+
+// step + draw the smoke pool. Playback-time driven: pause freezes it, a scrub/jump
+// clears it (particles are live sim, not replayable), forward play ages + emits. Shaded
+// like the scene (sun + ambient), lit into the HDR buffer, premultiplied so no dark
+// fringes, with soft-particle depth fade when the scene depth is available (HDR path).
+function smokeStepAndDraw(mvp, view, L, fogD, i, nightF, softOn, zNear, zFar) {
+  if (TYRE_MODE === 0) { smoke.pool.length = 0; AIR.cells.clear(); return; }
+  let dt = smokePrevT === null ? 0 : tCur - smokePrevT;
+  const scrub = smokePrevT === null || dt < 0 || dt > 0.2;
+  smokePrevT = tCur;
+  if (scrub) { smoke.pool.length = 0; AIR.cells.clear(); }         // field is live sim → clear on scrub
+  else if (dt > 0) {
+    if (playing && !scrubbing) airStep(dt, i, tCur / ex.dt);       // cars stir the shared air first
+    smokeStep(dt, playing && !scrubbing, i, nightF);               // then smoke rides it
+  }
+  const P = smoke.pool; if (!P.length) return;
+  const FL = 9;                                                  // floats/vertex: center3, corner2, size, alpha, seed, life
+  const need = P.length * 6 * FL;
+  if (!smoke.arr || smoke.arr.length < need) smoke.arr = new Float32Array(Math.max(need, 6 * FL * 64));
+  const A = smoke.arr, CORN = [[-1,-1],[1,-1],[1,1],[-1,-1],[1,1],[-1,1]];
+  let o = 0;
+  for (const p of P) {
+    const tt = p.age / p.life;
+    const av = Math.min(1, tt / 0.07) * Math.max(0, 1 - Math.max(0, (tt - 0.38) / 0.62));   // holds full through the spread, fades late
+    const size = p.size0 * (0.5 + p.age * 2.1), alpha = av * p.baseA;   // billows bigger as it spreads → thicker cloud
+    for (let c = 0; c < 6; c++) {
+      A[o++] = p.x; A[o++] = p.y; A[o++] = p.z;
+      A[o++] = CORN[c][0]; A[o++] = CORN[c][1];
+      A[o++] = size; A[o++] = alpha; A[o++] = p.seed; A[o++] = tt;
+    }
+  }
+  if (!smoke.vbo) smoke.vbo = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, smoke.vbo);
+  gl.bufferData(gl.ARRAY_BUFFER, A.subarray(0, o), gl.DYNAMIC_DRAW);
+  gl.useProgram(progSmoke);
+  gl.uniformMatrix4fv(smokeLoc.mvp, false, mvp);
+  gl.uniform3f(smokeLoc.camRight, view[0], view[4], view[8]);   // camera basis from the view matrix
+  gl.uniform3f(smokeLoc.camUp, view[1], view[5], view[9]);
+  gl.uniform3f(smokeLoc.sunDir, L.dir[0], L.dir[1], L.dir[2]);
+  gl.uniform3f(smokeLoc.sunCol, L.sun[0], L.sun[1], L.sun[2]);
+  gl.uniform3f(smokeLoc.ambSky, L.ambSky[0], L.ambSky[1], L.ambSky[2]);
+  gl.uniform3f(smokeLoc.ambGround, L.ambGround[0], L.ambGround[1], L.ambGround[2]);
+  gl.uniform3f(smokeLoc.fogC, L.fog[0], L.fog[1], L.fog[2]);
+  gl.uniform1f(smokeLoc.fogD, fogD);
+  gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, smoke.noiseTex); gl.uniform1i(smokeLoc.noise, 5);
+  const st = FL * 4;
+  const setAttribs = () => {
+    gl.enableVertexAttribArray(smokeLoc.center); gl.vertexAttribPointer(smokeLoc.center, 3, gl.FLOAT, false, st, 0);
+    gl.enableVertexAttribArray(smokeLoc.corner); gl.vertexAttribPointer(smokeLoc.corner, 2, gl.FLOAT, false, st, 12);
+    gl.enableVertexAttribArray(smokeLoc.size);   gl.vertexAttribPointer(smokeLoc.size, 1, gl.FLOAT, false, st, 20);
+    gl.enableVertexAttribArray(smokeLoc.alpha);  gl.vertexAttribPointer(smokeLoc.alpha, 1, gl.FLOAT, false, st, 24);
+    gl.enableVertexAttribArray(smokeLoc.seed);   gl.vertexAttribPointer(smokeLoc.seed, 1, gl.FLOAT, false, st, 28);
+    gl.enableVertexAttribArray(smokeLoc.life);   gl.vertexAttribPointer(smokeLoc.life, 1, gl.FLOAT, false, st, 32);
+  };
+  const clearAttribs = () => {
+    gl.disableVertexAttribArray(smokeLoc.corner); gl.disableVertexAttribArray(smokeLoc.size);
+    gl.disableVertexAttribArray(smokeLoc.alpha); gl.disableVertexAttribArray(smokeLoc.seed); gl.disableVertexAttribArray(smokeLoc.life);
+  };
+
+  if (softOn && hdrFX.smokeDens && smoke.depthTex) {
+    // SEAMLESS MERGE: accumulate density additively into a half-res buffer, then one
+    // composite pass ramps the summed density → overlapping puffs fuse into one field.
+    const dens = hdrFX.smokeDens;
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, smoke.depthTex); gl.uniform1i(smokeLoc.sceneDepth, 6);
+    gl.uniform1f(smokeLoc.softOn, 1);
+    gl.uniform2f(smokeLoc.screen, dens.w, dens.h);               // gl_FragCoord matches this half-res pass
+    gl.uniform2f(smokeLoc.camRange, zNear, zFar);
+    gl.uniform1f(smokeLoc.fadeDist, 0.6);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, dens.fbo);
+    gl.viewport(0, 0, dens.w, dens.h);
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);           // additive: sum overlapping puffs' density
+    setAttribs();
+    gl.drawArrays(gl.TRIANGLES, 0, P.length * 6);
+    clearAttribs();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFX.hdr.fbo);           // composite the merged field over the scene
+    gl.viewport(0, 0, cv.width, cv.height);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    gl.useProgram(progSmokeComp);
+    gl.activeTexture(gl.TEXTURE7); gl.bindTexture(gl.TEXTURE_2D, dens.tex); gl.uniform1i(smokeCompLoc.dens, 7);
+    gl.activeTexture(gl.TEXTURE5); gl.bindTexture(gl.TEXTURE_2D, smoke.noiseTex); gl.uniform1i(smokeCompLoc.noise, 5);
+    gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, smoke.depthTex); gl.uniform1i(smokeCompLoc.sceneDepth, 6);
+    gl.uniformMatrix4fv(smokeCompLoc.invVP, false, rvInv(mvp));      // world-pos reconstruction for anchored noise
+    gl.uniform3f(smokeCompLoc.wind, SMOKE_WIND[0], SMOKE_WIND[1], SMOKE_WIND[2]);
+    gl.uniform1f(smokeCompLoc.time, tCur);
+    gl.uniform1f(smokeCompLoc.erode, SMOKE_ERODE);
+    gl.uniform1f(smokeCompLoc.lo, SMOKE_MERGE_LO); gl.uniform1f(smokeCompLoc.hi, SMOKE_MERGE_HI);
+    hdrTri(progSmokeComp);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST); gl.depthMask(true);
+  } else {
+    // fallback (no float density buffer): direct premultiplied billboards, as before
+    const soft = softOn && smoke.depthTex ? 1 : 0;
+    gl.uniform1f(smokeLoc.softOn, soft);
+    if (soft) {
+      gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, smoke.depthTex); gl.uniform1i(smokeLoc.sceneDepth, 6);
+      gl.uniform2f(smokeLoc.screen, cv.width, cv.height); gl.uniform2f(smokeLoc.camRange, zNear, zFar); gl.uniform1f(smokeLoc.fadeDist, 0.6);
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    setAttribs();
+    gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+    gl.drawArrays(gl.TRIANGLES, 0, P.length * 6);
+    gl.depthMask(true); gl.disable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+    clearAttribs();
+  }
+}
+
 function render() {
   const w = cv.clientWidth, h = cv.clientHeight;
   const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -1399,7 +1896,8 @@ function render() {
   const fa = followActive();
   // near plane: small in follow mode (the car is right in front — a 2u near plane
   // clipped it like a solid object); larger for the overview cam's depth precision.
-  const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, fa ? 0.3 : 2, 60000);
+  const zNear = fa ? 0.3 : 2, zFar = 60000;
+  const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, zNear, zFar);
   const view = mLookAt(camEye(), fa ? follow.rig.look : cam.target, fa ? (follow.rig.viewUp || follow.rig.up) : [0, 1, 0]);
   const mvp = new Float32Array(mMul(proj, view));
   // fog thins with chase distance (soft far-fade when pulled back), but clamp the
@@ -1421,19 +1919,29 @@ function render() {
   const decelG = gforce ? gforce.brakeG - BRAKE_SCRUB * gforce.latG * gforce.latG : 0;
   const brakeF = Math.max(0, Math.min(1, (decelG - BRAKE_DEADZONE_G) / BRAKE_RANGE_G));
   const brakeInt = brakeF * nightF;           // red spill on the road behind, at night
-  // cast-shadow pass: render the car depth from the light's view, before the main passes
-  let lightVP = null;
-  if (SHADOW_ON && shadowReady && cm) { lightVP = buildLightVP(cm, L.dir); renderCarDepth(cm, lightVP); gl.viewport(0, 0, cv.width, cv.height); }
+  // cast-shadow pass: near cascade dynamic each frame; far cascade is the whole-track bake,
+  // only re-rendered when the sun moved (time changed) — cheap during normal playback.
+  shadowsRendered = false;
+  if (SHADOW_ON && shadowReady && cm) {
+    const timeChanged = timeOfDay !== staticBakeTime;
+    renderCarDepth(cm, L.dir, timeChanged);
+    if (trackAABB) staticBakeTime = timeOfDay;   // mark the static bake as current for this sun angle
+    gl.viewport(0, 0, cv.width, cv.height);
+  }
   // headlight-occlusion pass: scene depth from the headlight's view (night only, when the beam is on)
   let headVP = null;
   if (headInt > 0.001 && headReady && cm && carLights && carLights.head.length >= 2) {
     headVP = buildHeadVP(cm); renderHeadlightDepth(cm, headVP); gl.viewport(0, 0, cv.width, cv.height);
   }
   const setShadow = () => {
-    if (lightVP) {
-      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, shadowTex);
-      gl.uniform1i(tLoc.shadowMap, 1); gl.uniformMatrix4fv(tLoc.lightVP, false, lightVP);
-      gl.uniform1f(tLoc.shadowOn, 1); gl.uniform1f(tLoc.shadowTexel, 1 / SHADOW_SIZE);
+    if (shadowsRendered) {
+      const c0 = SHADOW_CASCADES[0], c1 = SHADOW_CASCADES[1];
+      gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, c0.tex);   // near cascade
+      gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, c1.tex);   // far cascade (unit 2 is the headlight depth)
+      gl.uniform1i(tLoc.shadowMap0, 1); gl.uniform1i(tLoc.shadowMap1, 3);
+      gl.uniformMatrix4fv(tLoc.lightVP0, false, c0.vp); gl.uniformMatrix4fv(tLoc.lightVP1, false, c1.vp);
+      gl.uniform1f(tLoc.shadowTexel0, 1 / c0.size); gl.uniform1f(tLoc.shadowTexel1, 1 / c1.size);
+      gl.uniform1f(tLoc.shadowOn, 1);
       gl.activeTexture(gl.TEXTURE0);
     } else gl.uniform1f(tLoc.shadowOn, 0);
   };
@@ -1490,6 +1998,14 @@ function render() {
     gl.depthMask(true);
   }
 
+  // tyre skid marks: dark ribbon on the track, revealed up to the current frame.
+  // Drawn after the track (over it) and before the car, independent of carShown so
+  // the rubber history stays visible even while the car is in a gap.
+  {
+    let curLap = 0; if (ex.laps) for (const l of ex.laps) if (l.frame <= i) curLap++;
+    drawTireMarks(mvp, L, fogD, tCur / ex.dt, curLap);
+  }
+
   gl.useProgram(prog);
   gl.uniformMatrix4fv(locMVP, false, mvp);
   gl.uniform1f(locFogD, fogD);
@@ -1518,21 +2034,33 @@ function render() {
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
-    setHeadlights(cm, headInt, headVP);
-    setBrakelights(cm, brakeInt);
+    setHeadlights(cm, 0, headVP);                              // the car's lamps light the ROAD, not its own body
+    setBrakelights(cm, 0);                                     // (avoids the head/brake cones pooling on the livery)
     gl.uniform1f(tLoc.shadowOn, 0);                            // the car doesn't self-shadow (avoids acne)
     gl.uniform1i(tLoc.tex, 0);
     gl.uniform1f(tLoc.alpha, 1.0);
     gl.activeTexture(gl.TEXTURE0);
     drawCarGroups(carGroups, cm);                              // body — keeps its crab
-    if (carWheels) {                                           // wheels steer to the line; only the tyre rolls with travel
-      const rollDist = wheelRollDistance(tCur / ex.dt);
-      const g = SUSP_ON ? carGForces(tCur / ex.dt) : null;     // dive/squat/roll/bump for procedural suspension
+    if (carWheels) {                                           // wheels steer + roll, and sit at their REAL recorded positions
+      const fp = tCur / ex.dt;
+      const rollDist = wheelRollDistance(fp);
+      const g = SUSP_ON ? carGForces(fp) : null;               // fallback procedural suspension (if no recorded data)
       for (const w of carWheels) {
         const roll = WHEEL_ROLL_SIGN * rollDist / (w.radius || 0.35);
-        const lift = g ? wheelLift(w, g) : 0;                  // whole corner travels vertically together
-        drawCarGroups(w.rollGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, roll, lift));   // tyre + rim: steer + roll + travel
-        drawCarGroups(w.staticGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, 0, lift));     // exo "M" cage + hub: steer + travel
+        const kIdx = (/F$/i.test(w.corner) ? 0 : 2) + (/^L/i.test(w.corner) ? 0 : 1);   // FL/FR/RL/RR
+        const W = wheelWorldAt(fp, kIdx);                      // recorded world position (real suspension over banking/bumps)
+        if (W) {                                               // move the whole corner to the recorded wheel centre
+          const tyre = wheelSteerModel(cm, w.pivot, carSteerAngle, roll, 0);
+          const cage = wheelSteerModel(cm, w.pivot, carSteerAngle, 0, 0);
+          const pw = mXfPt(w.pivot, cm), dx = W[0]-pw[0], dy = W[1]-pw[1], dz = W[2]-pw[2];
+          tyre[12] += dx; tyre[13] += dy; tyre[14] += dz;
+          cage[12] += dx; cage[13] += dy; cage[14] += dz;
+          drawCarGroups(w.rollGroups, tyre); drawCarGroups(w.staticGroups, cage);
+        } else {                                               // no recorded data → procedural lift fallback
+          const lift = g ? wheelLift(w, g) : 0;
+          drawCarGroups(w.rollGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, roll, lift));
+          drawCarGroups(w.staticGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, 0, lift));
+        }
       }
     }
     if (carSteerWheel) {                                        // cockpit wheel spins with steer
@@ -1574,6 +2102,17 @@ function render() {
     bindAndDraw(bufs.cursor, 1, gl.POINTS, 10);
     gl.enable(gl.DEPTH_TEST);
   }
+
+  // tyre smoke: live billboards off the same slip signal, into the HDR buffer so
+  // it fogs + tonemaps with the scene. Steps on playback time (pause freezes it).
+  // First copy scene depth to a texture so the smoke can do soft-particle fade (HDR path only).
+  if (usePost && hdrFX.depthCopy) {
+    gl.bindFramebuffer(gl.READ_FRAMEBUFFER, hdrFX.hdr.fbo);
+    gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, hdrFX.depthCopy.fbo);
+    gl.blitFramebuffer(0, 0, cv.width, cv.height, 0, 0, cv.width, cv.height, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFX.hdr.fbo);   // rebind the HDR target for the smoke draw
+  }
+  smokeStepAndDraw(mvp, view, L, fogD, i, nightF, usePost, zNear, zFar);
 
   if (usePost) runHDR();   // HDR scene → bloom + ACES tonemap → screen (blacks black, light LIGHT)
 }
@@ -1773,6 +2312,16 @@ document.getElementById("btnLine").addEventListener("click", function () {
   const btn = document.getElementById("btnShadow");
   if (!shadowReady) { btn.classList.remove("on"); btn.disabled = true; btn.title = "needs WebGL2 depth textures"; return; }
   btn.addEventListener("click", function () { SHADOW_ON = !SHADOW_ON; this.classList.toggle("on", SHADOW_ON); });
+})();
+(function () {   // tyre marks + smoke: cycle lap (reset each lap) → keep (accumulate + fade) → off
+  const btn = document.getElementById("btnTyres");
+  const LBL = ["tyres · off", "tyres · lap", "tyres · keep"];
+  btn.addEventListener("click", function () {
+    TYRE_MODE = (TYRE_MODE + 1) % 3;
+    btn.textContent = LBL[TYRE_MODE];
+    btn.classList.toggle("on", TYRE_MODE !== 0);
+    if (TYRE_MODE === 0) { smoke.pool.length = 0; }   // clear live particles when switched off
+  });
 })();
 (function () {   // HDR toggle (disabled if the GPU lacks float render targets)
   const btn = document.getElementById("btnHDR");
@@ -2013,11 +2562,22 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
           base += r.verts.length / 3; vo += r.verts.length; to += r.tris.length;
         }
         edgeIndex = RoadEdge.buildEdgeIndex(verts, tris);
+        // track world bounds → sizes the static whole-track shadow bake; reset forces a re-bake
+        { let a = 1e18, b = 1e18, c = 1e18, d = -1e18, e = -1e18, f = -1e18;
+          for (let v = 0; v < verts.length; v += 3) { const x = verts[v], y = verts[v+1], z = verts[v+2];
+            if (x<a)a=x; if(x>d)d=x; if(y<b)b=y; if(y>e)e=y; if(z<c)c=z; if(z>f)f=z; }
+          trackAABB = { cx:(a+d)/2, cy:(b+e)/2, cz:(c+f)/2, radius: 0.5*Math.hypot(d-a, e-b, f-c) };
+          staticBakeTime = null; }
         // world collider: full solid scene if we have it, else the road mesh
         try {
           worldColl = collGroups.length ? buildWorldColliderFromGroups(collGroups)
                                         : buildWorldCollider(verts, tris);
-        } catch (e) { worldColl = null; console.warn("collider build failed:", e); }
+          // smoke collides with the TRACK SURFACE ONLY (the road mesh), not the environment
+          // (grandstands/props/buildings) — keeps the per-particle queries cheap on detailed
+          // tracks. verts/tris here are the merged road mesh.
+          smokeColl = (tris && tris.length) ? buildWorldCollider(verts, tris, 3, 4096)
+                    : (collGroups.length ? buildWorldColliderFromGroups(collGroups, 3, 4096) : null);
+        } catch (e) { worldColl = null; smokeColl = null; console.warn("collider build failed:", e); }
         fi.textContent = fi.textContent.replace(" · building edge index…",
           ` · ${edgeIndex.count.toLocaleString()} edge segments${worldColl ? ", " + worldColl.count.toLocaleString() + " collider tris" : ""}`);
       } catch (err) {
@@ -2080,7 +2640,7 @@ function resetTrackScene() {
   }
   bufs.trackIdxN = 0;
   edgeIndex = null;
-  worldColl = null;
+  worldColl = null; smokeColl = null;
   const ct = document.getElementById("chipTrack");
   if (ct) ct.classList.remove("hidden");
 }
@@ -2642,6 +3202,17 @@ function selectCar(i) {
     ex.cumDist = cd;
   }
   ex.shifts = detectShifts(ex);   // kinematic upshift frames → exhaust backfires
+  { const sl = computeWheelSlip(ex); ex.slip = sl.slip; ex.smokeSlip = sl.smokeSlip; }  // marks (instant) + smoke (fast-decel gated)
+  {
+    const mesh = buildTireMarkMesh(ex);
+    markCount = mesh.length / 8;                       // 8 floats/vertex (pos3, frame, lap, intensity, cross, run)
+    if (!markVBO) markVBO = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, markVBO);
+    gl.bufferData(gl.ARRAY_BUFFER, mesh, gl.STATIC_DRAW);
+  }
+  smoke.pool.length = 0; smokePrevT = null; AIR.cells.clear();   // clear live particles + air field for the new car
+  smoke.accum[0] = smoke.accum[1] = smoke.accum[2] = smoke.accum[3] = 0;
+  ensureSmokeAssets();                                 // bake noise texture + curl field once
   stats = ACReplay.runStats(ex);
   buildGeometry();
   tCur = frameRange()[0] * ex.dt;
@@ -2694,7 +3265,8 @@ function loop(ts) {
     document.getElementById("chipLive").innerHTML =
       `t <b>${fmtT(tCur)}</b> · ${fmtSpeed(sp)} · ` +
       `alt ${altV} · tilt ${isFinite(tl) ? tl.toFixed(0) : "—"}°${edgeTxt}`;
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${fpsEMA.toFixed(0)} fps`;
+    let _smk = 0; if (ex.smokeSlip) for (let k = 0; k < 4; k++) _smk = Math.max(_smk, ex.smokeSlip[i * 4 + k]);
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${fpsEMA.toFixed(0)} fps · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)}`;
     drawScrub();
   }
   render();
