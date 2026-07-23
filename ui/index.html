@@ -23,8 +23,12 @@
   header {
     display: flex; align-items: center; gap: 14px;
     padding: 10px 16px; border-bottom: 1px solid var(--edge);
-    flex: 0 0 auto;
+    position: absolute; top: 0; left: 0; right: 0; z-index: 20;
+    background: linear-gradient(180deg, rgba(10,13,19,0.95) 0%, rgba(10,13,19,0.82) 68%, rgba(10,13,19,0) 100%);
+    border-bottom: none;
+    transition: opacity 0.5s ease;
   }
+  header.faded { opacity: 0; pointer-events: none; }
   header .logo {
     font-weight: 800; font-style: italic; font-size: 18px; letter-spacing: 0.02em;
   }
@@ -94,12 +98,60 @@
   .chip b { color: #dbe2ee; font-weight: 600; }   /* values read, chrome recedes */
   .chip .dim { color: var(--muted); opacity: 0.7; }
 
+  /* ---- racing telemetry dash ---- */
+  #dash {
+    display: flex; flex-direction: column; gap: 5px; min-width: 236px;
+    background: linear-gradient(180deg, rgba(16,21,30,0.66), rgba(10,13,19,0.58));
+    border: 1px solid rgba(255,255,255,0.07); border-left: 2px solid var(--accent);
+    border-radius: 6px; padding: 8px 10px 9px; backdrop-filter: blur(3px);
+  }
+  #tach { position: relative; height: 6px; border-radius: 3px; background: rgba(255,255,255,0.06); overflow: hidden; }
+  #tachfill {
+    height: 100%; width: 0%; border-radius: 3px;
+    background: linear-gradient(90deg, #2E7BE2 0%, #46C6C0 45%, #E2C22E 72%, var(--accent) 100%);
+    transition: width 0.045s linear;
+  }
+  #tach.redline #tachfill { background: var(--accent); box-shadow: 0 0 9px var(--accent); animation: redpulse 0.35s infinite alternate; }
+  @keyframes redpulse { from { opacity: 0.75; } to { opacity: 1; } }
+  #dashmain { display: flex; align-items: baseline; gap: 10px; }
+  #dgear {
+    font-family: "Bahnschrift","Segoe UI Semibold",sans-serif; font-weight: 700;
+    font-size: 30px; line-height: 0.9; color: var(--ink); text-align: center; min-width: 1.5ch;
+    background: rgba(226,58,46,0.13); border: 1px solid rgba(226,58,46,0.42); border-radius: 4px; padding: 2px 7px;
+  }
+  #dspeedwrap { display: flex; align-items: baseline; gap: 3px; }
+  #dspeed {
+    font-family: "Bahnschrift","Segoe UI Semibold",sans-serif; font-weight: 700; font-style: italic;
+    font-size: 32px; line-height: 0.9; color: var(--ink); font-variant-numeric: tabular-nums; letter-spacing: -0.01em;
+  }
+  #dspeedu { font-family: "Cascadia Code",monospace; font-size: 10px; color: var(--muted); }
+  #dboostwrap { margin-left: auto; text-align: right; }
+  #dboost { font-family: "Cascadia Code",monospace; font-size: 15px; font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  .dlbl { font-family: "Cascadia Code",monospace; font-size: 8.5px; letter-spacing: 0.1em; color: var(--muted); }
+  #dboostwrap .dlbl { display: block; }
+  #pedals { display: flex; gap: 9px; }
+  .pbar { flex: 1; display: flex; align-items: center; gap: 5px; }
+  .pbartrack { flex: 1; height: 5px; border-radius: 3px; background: rgba(255,255,255,0.06); overflow: hidden; }
+  .pfill { height: 100%; width: 0%; border-radius: 3px; transition: width 0.045s linear; }
+  .pfill.thr { background: #34C759; }
+  .pfill.brk { background: var(--accent); }
+  #dsecondary, #dstats {
+    font-family: "Cascadia Code",monospace; font-size: 10px; color: var(--muted);
+    font-variant-numeric: tabular-nums; letter-spacing: -0.01em; line-height: 1.4;
+  }
+  #dstats { padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.06); }
+  #dsecondary b, #dstats b { color: #dbe2ee; font-weight: 600; }
+  /* replays without telemetry: only the big speed + secondary/stats remain */
+  #dash.no-tel #tach, #dash.no-tel #dgear, #dash.no-tel #dboostwrap, #dash.no-tel #pedals { display: none; }
+
   #help {
     position: absolute; right: 12px; top: 12px;
     background: rgba(16,21,30,0.82); border: 1px solid var(--edge); border-radius: 5px;
     padding: 6px 10px; font-family: "Cascadia Code", Consolas, monospace;
     font-size: 11px; color: var(--muted);
+    transition: opacity 0.5s ease;
   }
+  #help.faded { opacity: 0; pointer-events: none; }
 
   /* ---- intro (clean title card) ---- */
   #intro {
@@ -295,7 +347,7 @@
   <span id="timeCtl" title="Time of day" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.85"><span id="timeIcon">🌙</span><input id="timeSlider" type="range" min="0" max="1439" value="60" style="width:92px;vertical-align:middle"><span id="timeLabel" style="min-width:38px">01:00</span></span>
   <button id="btnShadow" class="on">shadows</button>
   <button id="btnTyres" class="on" title="skid marks + smoke — click to cycle: lap · keep · off">tyres · lap</button>
-  <button id="btnHDR" class="on">HDR</button>
+  <span id="volCtl" title="Volume" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85"><span id="volIcon" title="mute / unmute" style="cursor:pointer">🔊</span><input id="volSlider" type="range" min="0" max="100" value="100" style="width:78px;vertical-align:middle"></span>
   <button id="btnLap" class="on">lap only</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
@@ -307,6 +359,7 @@
   <button id="btnOpen">open replay…</button>
   <button id="btnTrack">load track kn5…</button>
   <button id="btnTracksDir" title="point at ...\assettocorsa\content\tracks once; replays then auto-load their track">tracks folder…</button>
+  <button id="btnFull" title="windowed fullscreen (F11)">⛶ full</button>
 </header>
 
 <div id="stage">
@@ -323,12 +376,24 @@
     <p class="mono" id="droperr" style="color:var(--accent)"></p>
   </div>
   <div id="hud" class="hidden">
-    <div class="chip" id="chipStats"></div>
-    <div class="chip" id="chipLive"></div>
+    <div id="dash">
+      <div id="tach"><div id="tachfill"></div></div>
+      <div id="dashmain">
+        <div id="dgear">–</div>
+        <div id="dspeedwrap"><span id="dspeed">0</span><span id="dspeedu">km/h</span></div>
+        <div id="dboostwrap"><span class="dlbl">BOOST</span><span id="dboost">–</span></div>
+      </div>
+      <div id="pedals">
+        <div class="pbar"><span class="dlbl">THR</span><div class="pbartrack"><div id="thrfill" class="pfill thr"></div></div></div>
+        <div class="pbar"><span class="dlbl">BRK</span><div class="pbartrack"><div id="brkfill" class="pfill brk"></div></div></div>
+      </div>
+      <div id="dsecondary"></div>
+      <div id="dstats"></div>
+    </div>
     <div class="chip" id="chipLaps"></div>
     <div class="chip" id="chipTrack" style="color:var(--accent)">NO TRACK LOADED — the ribbon is your driven line, not the road. Click "load track kn5…" to render the real track.</div>
   </div>
-  <div id="help" class="hidden">drag look · WASD fly · Shift/Ctrl up/down · Space pause · wheel zoom</div>
+  <div id="help" class="hidden">drag look · WASD fly · Shift/Ctrl up/down · Space pause · wheel zoom · <span id="audioind" style="opacity:.5">M sound</span></div>
   <div id="transport" class="hidden">
     <canvas id="scrub" height="34" aria-label="Timeline scrubber"></canvas>
     <div id="timelabel"></div>
@@ -412,6 +477,7 @@
 <script src="kn5.js"></script>
 <script src="kn5tex.js"></script>
 <script src="carrender.js"></script>
+<script src="audioengine.js"></script>
 <script src="roadedge.js"></script>
 <script src="intro.js"></script>
 <script>
@@ -419,6 +485,9 @@
 /* ===================== state ===================== */
 let replay = null, ex = null, stats = null;
 let playing = true, rate = 1, tCur = 0;
+let audioAutoStarted = false;   // engine sound spawns on with the first replay
+// webview autoplay lock: any user gesture resumes a suspended AudioContext
+["pointerdown", "keydown"].forEach(ev => addEventListener(ev, () => { if (window.BBAudio) BBAudio.resumeIfNeeded(); }));
 let colorMode = "speed";
 let lapOnly = true;
 
@@ -448,13 +517,14 @@ let sceneGroups = null; // textured visual scene draw batches
 // second program (VST/FST textured+lit scene) + progT + tLoc → glcore.js
 // IDENT4 → mathutil.js
 let carGroups = null;   // uploaded car model mesh groups (LOD0)
+let carGlass = null;    // windscreen glass groups → drawn with the reflective progGlass pass
 let carLights = null;   // { head:[[x,y,z]...], tail:[...] } emitter points from the model housings
 let carNozzle = null;   // turbine nozzle centroid (model space) — plume + backfire emit here
 let carWheels = null;   // steerable wheels {corner, pivot, front, radius, rollGroups, staticGroups}
 let carSteerWheel = null; // in-cockpit steering wheel { pivot, ax, groups }
 let STEER_WHEEL_RATIO = 3.0;  // cockpit wheel turns this × the road-wheel angle
 let STEER_WHEEL_AXIS = 2;     // which node axis it spins about (0=X,1=Y,2=Z); flip if it tumbles
-let STEER_WHEEL_SIGN = 1;     // flip if it turns the wrong way
+let STEER_WHEEL_SIGN = -1;    // flip if it turns the wrong way (driver was counter-steering vs the wheels)
 let WHEEL_ROLL_SIGN = 1;      // road-wheel roll-spin direction (flip if wheels spin backward)
 // procedural suspension: each corner travels vertically vs the body under load + bumps
 // (no suspension channel in the replay — inferred from the G-forces we do have).
@@ -478,7 +548,8 @@ let DRIVER_HEAD_SIGN = 1;         // flip if the head turns the wrong way
 // hands orbit the rim with the wheel spin. The driver's arm is nearly straight at
 // rest, so the hand going up-and-over can't reach far — cap the orbit where both
 // hands stay on the rim (beyond it, the wheel keeps spinning under a held grip).
-let DRIVER_GRIP_SPIN_MAX = 0.7;   // max hand orbit (rad, ~40°)
+let DRIVER_GRIP_SPIN_MAX = 1.05;  // max hand orbit (rad, ~60°) — pushed toward the arm's reach limit so the hands travel further round the wheel; wheel is locked to this so they stay gripped
+let DRIVER_GRIP_UP = 0.0;         // base grip-height offset (rad): 0 = the rig's natural symmetric grip (rim-orbit coupling made raising it lopsided — tune eyes-on)
 let DRIVER_GRIP_SPIN_SIGN = 1;    // flip if the hands orbit opposite the wheel
 const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
 // vector + matrix helpers (v3*, mXfPt, mRot, mT, rv*, ik2bone, rotP, scaleMat) → mathutil.js
@@ -498,8 +569,8 @@ gl.attachShader(progThr, shader(gl.VERTEX_SHADER,
   "void main(){ gl_Position = uMVP*vec4(aPos,1.0); gl_PointSize = aSize; vB = aBright; }"));
 gl.attachShader(progThr, shader(gl.FRAGMENT_SHADER,
   "precision mediump float; varying float vB;" +
-  "void main(){ float r = length(gl_PointCoord-0.5)*2.0; float a = pow(smoothstep(1.0,0.0,r),1.6)*vB;" +
-  " vec3 col = mix(vec3(0.25,0.6,1.0), vec3(0.8,0.95,1.0), a);" +
+  "void main(){ float r = length(gl_PointCoord-0.5)*2.0; float a = pow(smoothstep(1.0,0.0,r),1.8)*vB;" +
+  " vec3 col = mix(vec3(0.14,0.46,1.0), vec3(0.92,0.97,1.0), min(a,1.0));" +   // deep blue edge → white-hot core
   " gl_FragColor = vec4(col*a, a); }"));
 gl.linkProgram(progThr);
 const thrLoc = {
@@ -513,8 +584,17 @@ const thrBuf = gl.createBuffer();
 // turbine activity inferred from the driving state (the mod fires it under high
 // slip during hard cornering, per its design + our research). 0..1.
 function turbineIntensity(i) {
-  const N = ex.N, P = ex.pos, FW = ex.fwd;
+  const N = ex.N;
   if (i < 1 || i >= N - 1 || ex.gap[i]) return 0;
+  // REAL telemetry: the plume IS engine thrust — drive it off actual turbo boost
+  // pressure (1.0 idle → ~1.94 at load), throttle-gated so a lift collapses it.
+  if (ex.tel && ex.tel.has.boost) {
+    const boostN = Math.max(0, Math.min(1, (ex.tel.boost[i] - 1.05) / 0.85));
+    const thr = Math.max(0, Math.min(1, ex.tel.gas[i]));
+    return Math.min(1, boostN * (0.4 + 0.6 * thr));
+  }
+  // ---- kinematic fallback (no telemetry stamped) ----
+  const P = ex.pos, FW = ex.fwd;
   // slip: angle between velocity and real body heading
   const a = Math.max(0, i - 3), b = Math.min(N - 1, i + 3);
   let vx = P[b * 3] - P[a * 3], vy = P[b * 3 + 1] - P[a * 3 + 1], vz = P[b * 3 + 2] - P[a * 3 + 2];
@@ -536,28 +616,53 @@ function turbineIntensity(i) {
 
 // blue thruster plume from the Mach 6's rear, perspective-sized point sprites — a straight
 // jet out the nozzle. `lum` brightens it (cranked at night).
+// JET AFTERBURNER — a continuous blue flame cone out the turbine nozzle: a thin white-hot core with
+// shock diamonds (the periodic bright spots real afterburners show), wrapped in a soft blue glow, with
+// turbulent wobble that grows toward the tip and a plume that stretches under boost. Additive, blue.
 function drawThruster(m, inten, mvp, lum) {
   lum = lum || 1;
   const eye = camEye();
   const nz = carNozzle || [0, 0.49, -2.1];                    // emit from the turbine nozzle geometry
-  const lx = nz[0], ly = nz[1], lz = nz[2] + 0.05;            // recessed inside the mouth → glow reads as INSIDE the housing, exits the nozzle
+  const lx = nz[0], ly = nz[1], lz = nz[2] + 0.02;            // sit at the nozzle mouth (barely recessed) — a deep recess + fat sprites washed the housing
   const ox = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
   const oy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
   const oz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
-  const bx = -m[8], by = -m[9], bz = -m[10];                  // backward = −nose
-  const K = 11, arr = new Float32Array(K * 5);
-  const t0 = performance.now();
-  const fl = 0.8 + 0.2 * Math.sin(t0 * 0.045) + 0.07 * Math.sin(t0 * 0.13);
+  const bx = -m[8], by = -m[9], bz = -m[10];                  // backward = −nose (plume axis)
+  const rx = m[0], ry = m[1], rz = m[2], ux = m[4], uy = m[5], uz = m[6];   // car right / up → lateral turbulence plane
   const th = Math.tan(0.9 / 2), Hpx = cv.height;
-  const len = 0.7 + inten * 2.6;                              // plume length scales with turbine power (dots spread as it spools up)
-  for (let k = 0; k < K; k++) {
-    const t = k / (K - 1);
-    const px = ox + bx * t * len, py = oy + by * t * len, pz = oz + bz * t * len;   // straight plume aft
+  const t0 = performance.now();
+  const flick = 0.86 + 0.14 * Math.sin(t0 * 0.05) + 0.06 * Math.sin(t0 * 0.017);  // combustion flicker
+  const len = 0.4 + inten * 1.5;                             // SHORT, girthy burst out the nozzle (not a long trail)
+  const KC = 32, KG = 22, K = KC + KG, arr = new Float32Array(K * 5);
+  let idx = 0;
+  const push = (t, r, b, jitAmp, seed) => {
+    const ang = t0 * 0.011 + seed * 2.3;                     // swirl direction in the lateral plane
+    const wob = jitAmp * Math.sin(t * 9.0 + t0 * 0.02 + seed);
+    const jx = (rx * Math.cos(ang) + ux * Math.sin(ang)) * wob;
+    const jy = (ry * Math.cos(ang) + uy * Math.sin(ang)) * wob;
+    const jz = (rz * Math.cos(ang) + uz * Math.sin(ang)) * wob;
+    const px = ox + bx * t * len + jx, py = oy + by * t * len + jy, pz = oz + bz * t * len + jz;
     const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
-    const worldR = (0.15 * (1 - t * 0.5)) * inten;            // tight to the nozzle so it doesn't leak past the housing
-    arr[k * 5] = px; arr[k * 5 + 1] = py; arr[k * 5 + 2] = pz;
-    arr[k * 5 + 3] = Math.min(500, worldR * Hpx / (dist * th));
-    arr[k * 5 + 4] = (1 - t) * inten * fl * lum;
+    arr[idx * 5] = px; arr[idx * 5 + 1] = py; arr[idx * 5 + 2] = pz;
+    arr[idx * 5 + 3] = Math.min(500, r * Hpx / (dist * th));
+    arr[idx * 5 + 4] = b;
+    idx++;
+  };
+  // inner core — thin, white-hot, dense; brightness pulses at shock diamonds and tapers to the tip
+  for (let k = 0; k < KC; k++) {
+    const t = k / (KC - 1);
+    const shock = 1 + 0.55 * Math.pow(Math.max(0, Math.sin(t * 13.0 - t0 * 0.02)), 6);   // shock diamonds drifting aft
+    // belly profile: NARROW at the mouth (so it doesn't wash the housing) → fattest just aft → taper
+    const r = (0.11 * (0.3 + 0.7 * Math.min(1, t * 4.5)) * (1 - t * 0.55) + 0.010) * (0.85 + 0.35 * inten);
+    const b = (1 - Math.pow(t, 1.25)) * inten * flick * lum * shock * 1.15;
+    push(t, r, b, (0.014 + 0.09 * t * t) * (0.6 + 0.4 * inten), k * 0.7);
+  }
+  // outer glow — wider, softer blue cone enveloping the core
+  for (let k = 0; k < KG; k++) {
+    const t = k / (KG - 1);
+    const r = (0.2 * (0.32 + 0.68 * Math.min(1, t * 3.8)) * (1 - t * 0.45) + 0.018) * (0.75 + 0.45 * inten);   // wide envelope, but narrow at the mouth so it doesn't spill onto the housing
+    const b = (1 - t) * 0.45 * inten * flick * lum;
+    push(t, r, b, (0.02 + 0.12 * t * t) * (0.6 + 0.4 * inten), 100 + k * 0.9);
   }
   gl.useProgram(progThr);
   gl.uniformMatrix4fv(thrLoc.mvp, false, mvp);
@@ -573,6 +678,30 @@ function drawThruster(m, inten, mvp, lum) {
 
 // backfire intensity at fractional frame `fp`: a sharp pop right at a detected upshift,
 // decaying over ~0.16 s. Deterministic (scrub-safe). 0 when not near a shift.
+// Real backfire trigger frames from telemetry: gear changes (the throttle-cut pop),
+// throttle lifts at high rpm (overrun crackle), and rev-limiter onset (limiter bang).
+// Far truer than the kinematic upshift guess — exact timing, and it catches downshifts
+// and lift-off pops the kinematic version never saw. Returns sorted frames, or null.
+function detectTelemetryBackfires(ex) {
+  const T = ex.tel; if (!T) return null;
+  const N = ex.N, out = [];
+  const minGap = Math.max(1, Math.round(0.09 / ex.dt));   // debounce so one event = one pop
+  let last = -1e9, lastReal = -1;
+  const gearAt = k => Math.round(T.gear[k]);
+  for (let i = 1; i < N; i++) {
+    if (ex.gap[i] || ex.gap[i - 1]) continue;
+    let pop = false;
+    const gi = gearAt(i);
+    if (gi >= 2) {                                                                 // a forward-gear reading
+      if (lastReal >= 2 && gi !== lastReal) pop = true;                            // gear changed vs last real gear (skips transient N blips)
+      lastReal = gi;
+    }
+    if (!pop && T.gas[i - 1] > 0.8 && T.gas[i] < 0.25 && T.rpm[i] > 5200) pop = true; // lift-off overrun crackle
+    if (!pop && T.rpm[i] >= 9750 && T.rpm[i - 1] < 9750 && T.gas[i] > 0.7) pop = true; // rev-limiter bang (real limiter ~9842)
+    if (pop && (i - last) >= minGap) { out.push(i); last = i; }
+  }
+  return out;
+}
 function backfireAt(fp) {
   const sh = ex.shifts; if (!sh || !sh.length) return 0;
   const decay = Math.max(2, Math.round(0.16 / ex.dt));
@@ -585,7 +714,9 @@ function backfireAt(fp) {
 }
 // exhaust backfire: bright orange pops on an upshift — from the TWO DUAL EXHAUSTS that flank
 // the turbine (NOT the turbine itself), brighter at night.
-const EXH_X = 0.5, EXH_Y = -0.08, EXH_Z = 0.05;               // dual-exhaust offset from the turbine nozzle (tune to model)
+// dual-exhaust openings relative to the turbine nozzle — measured from the Mach 6 kn5 geometry:
+// exhaust pipes flank the turbine at x≈±0.30, tips at z≈-2.4 / y≈0.48 (nozzle ≈ [0,0.50,-2.24]).
+const EXH_X = 0.30, EXH_Y = -0.02, EXH_Z = -0.16;
 function drawBackfire(cm, mvp, th, inten, nightF) {
   const eye = camEye(), Hpx = cv.height;
   const nz = carNozzle || [0, 0.49, -2.1];
@@ -642,11 +773,20 @@ function drawCarLights(cm, mvp, th, nightF, brakeF) {
   // lamp keeps a soft halo, so the lower two don't leak light onto the body.
   const warm = [];
   { const hl = carLights.headLamps || [], sL = [], sR = [];
+    const fl = Math.hypot(cm[8], cm[9], cm[10]) || 1, fwd = [cm[8] / fl, cm[9] / fl, cm[10] / fl];  // beam/forward axis
     for (const a of hl) (a[0] > 0 ? sL : sR).push(a);
     for (const arr of [sL, sR]) arr.slice().sort((p, q) => q[1] - p[1]).forEach((a, idx) => {
       const P = mXfPt(a, cm);
-      push(warm, P, 0.05, 0.55 * nightF);                    // crisp bulb, dimmer so bloom doesn't smear the body
-      if (idx === 0) push(warm, P, 0.085, 0.12 * nightF);    // top lamp: small tight halo
+      // how head-on the beam is to the camera — real headlights GLARE far brighter when you look into
+      // them, so the luminous halo swells when the beams point your way (bloom's gone, so draw the glow).
+      let dx = eye[0] - P[0], dy = eye[1] - P[1], dz = eye[2] - P[2]; const dl = Math.hypot(dx, dy, dz) || 1;
+      const facing = Math.max(0, (dx * fwd[0] + dy * fwd[1] + dz * fwd[2]) / dl);
+      // fade the soft halos OUT with distance: far off, the sprites converge and stack additively into a
+      // blown-out ball, so keep only the tight bulb at range (still reads as a distant headlight point).
+      const near = Math.max(0, Math.min(1, (42 - dl) / 30));                 // 1 within ~12m → 0 by ~42m
+      push(warm, P, 0.05, (0.6 + 0.5 * facing) * nightF * (0.4 + 0.6 * near));       // crisp bulb (dimmer at range so the 3-lamp cluster doesn't stack hot)
+      push(warm, P, 0.13, (0.10 + 0.30 * facing) * nightF * near);                   // soft luminous halo — near only
+      if (idx === 0) push(warm, P, 0.26, (0.03 + 0.18 * facing * facing) * nightF * near);  // wide bloom — near + head-on only
     });
   }
   // tail lights: red running glow → wider/hotter flare under braking (3 lamps/side).
@@ -673,6 +813,69 @@ function drawCarLights(cm, mvp, th, nightF, brakeF) {
   batch(red, [1.0*E, (0.06 + 0.13 * brakeF)*E, 0.03*E]);       // tail + red accents (hotter when braking)
   batch(white, [0.85*E, 0.93*E, 1.0*E]);                       // cool-white LED accents
   gl.depthMask(true); gl.disable(gl.BLEND);
+}
+
+// ELEGANT LENS FLARE — a screen-space additive glare for the headlamps at night: a tight core, a
+// soft round glow, an anamorphic horizontal streak (the cinematic bit), and a faint vertical spike.
+// Only shows when the beams face the camera (front views / flybys), so it isn't a constant smear.
+const progFlare = gl.createProgram();
+gl.attachShader(progFlare, shader(gl.VERTEX_SHADER,
+  "attribute vec2 aP; varying vec2 vN; void main(){ vN = aP; gl_Position = vec4(aP,0.0,1.0); }"));
+gl.attachShader(progFlare, shader(gl.FRAGMENT_SHADER,
+  "precision mediump float; varying vec2 vN; uniform float uAspect; uniform vec3 uWarm;" +
+  "uniform vec3 uL0; uniform vec3 uL1;" +   // xy = ndc pos, z = intensity (0 = off)
+  "float flare(vec3 L){ if(L.z<=0.0) return 0.0; vec2 d = vN - L.xy; d.x *= uAspect;" +
+  "  float r2 = dot(d,d);" +
+  "  float core = exp(-r2*130.0);" +                                  // tight bright core
+  "  float glow = exp(-r2*13.0)*0.32;" +                              // soft round glare
+  "  float streak = exp(-d.y*d.y*850.0)*exp(-d.x*d.x*6.0)*0.55;" +    // anamorphic horizontal streak
+  "  float spike = exp(-d.x*d.x*850.0)*exp(-d.y*d.y*70.0)*0.14;" +    // subtle vertical spike (star)
+  "  return (core+glow+streak+spike)*L.z; }" +
+  "void main(){ float f = flare(uL0)+flare(uL1); gl_FragColor = vec4(uWarm*f, f); }"));
+gl.linkProgram(progFlare);
+const flareLoc = {
+  p: gl.getAttribLocation(progFlare, "aP"), aspect: gl.getUniformLocation(progFlare, "uAspect"),
+  warm: gl.getUniformLocation(progFlare, "uWarm"), l0: gl.getUniformLocation(progFlare, "uL0"), l1: gl.getUniformLocation(progFlare, "uL1"),
+};
+const flareBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, flareBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);  // fullscreen tri
+// project a world point to NDC, and gauge how head-on the beam is to the camera → flare intensity
+function drawLensFlare(cm, mvp, nightF) {
+  if (!carLights || nightF < 0.02 || !carLights.head || carLights.head.length < 2) return;
+  const eye = camEye();
+  const fl = Math.hypot(cm[8], cm[9], cm[10]) || 1, fwd = [cm[8] / fl, cm[9] / fl, cm[10] / fl];
+  const L = [[0, 0, 0], [0, 0, 0]];
+  for (let k = 0; k < 2; k++) {
+    const P = mXfPt(carLights.head[k], cm);
+    const cx = mvp[0] * P[0] + mvp[4] * P[1] + mvp[8] * P[2] + mvp[12];
+    const cy = mvp[1] * P[0] + mvp[5] * P[1] + mvp[9] * P[2] + mvp[13];
+    const cw = mvp[3] * P[0] + mvp[7] * P[1] + mvp[11] * P[2] + mvp[15];
+    if (cw <= 0.0001) continue;                                   // behind the camera
+    const nx = cx / cw, ny = cy / cw;
+    if (Math.abs(nx) > 1.4 || Math.abs(ny) > 1.4) continue;       // well off-screen
+    let dx = eye[0] - P[0], dy = eye[1] - P[1], dz = eye[2] - P[2]; const dl = Math.hypot(dx, dy, dz) || 1;
+    const facing = Math.max(0, (dx * fwd[0] + dy * fwd[1] + dz * fwd[2]) / dl);
+    const edge = Math.max(0, 1 - Math.max(Math.abs(nx), Math.abs(ny)) * 0.7);   // ease out toward screen edges
+    // the flare is screen-space (fixed NDC size), so without this a FAR car throws the same full-size
+    // glare ball as a near one — fade it hard with distance so it only blooms when the car is close.
+    const distFade = Math.max(0, Math.min(1, (60 - dl) / 45));                  // full within ~15m → gone by ~60m
+    const inten = Math.pow(facing, 3.0) * nightF * (0.35 + 0.65 * edge) * distFade * 0.85;  // elegant = restrained
+    if (inten < 0.015) continue;
+    L[k] = [nx, ny, Math.min(inten, 1.1)];
+  }
+  if (L[0][2] <= 0 && L[1][2] <= 0) return;
+  gl.useProgram(progFlare);
+  gl.uniform1f(flareLoc.aspect, cv.width / cv.height);
+  gl.uniform3f(flareLoc.warm, 1.0, 0.94, 0.82);                   // warm-white flare
+  gl.uniform3f(flareLoc.l0, L[0][0], L[0][1], L[0][2]);
+  gl.uniform3f(flareLoc.l1, L[1][0], L[1][1], L[1][2]);
+  gl.bindBuffer(gl.ARRAY_BUFFER, flareBuf);
+  gl.enableVertexAttribArray(flareLoc.p); gl.vertexAttribPointer(flareLoc.p, 2, gl.FLOAT, false, 0, 0);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE);             // additive
+  gl.disable(gl.DEPTH_TEST); gl.depthMask(false);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.enable(gl.DEPTH_TEST); gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
 // contact shadow: a soft dark oval decal laid flat on the track under the car so it
@@ -965,7 +1168,7 @@ function followUpdate(fp, dt) {
   // zoomN: 0 at the default distance, 1 fully zoomed in (wheel min). As it zooms in
   // the eye must also DROP to the car's level, or it ends up above the car looking
   // down at the ground; low + behind lets the framing tilt up the road instead.
-  const zoomN = Math.max(0, Math.min(1, (1 - (follow.distMul || 1)) / 0.58));
+  const zoomN = Math.max(0, Math.min(1, (1 - (follow.distMul || 1)) / 0.88));
   const distT = (DMIN + (DMAX - DMIN) * speedN * (1 - 0.55 * curveN)) * (follow.distMul || 1);
   const heightT = (HMIN + (HMAX - HMIN) * speedN * (1 - 0.5 * curveN)) * (1 - 0.8 * zoomN);
   const sideT = distT * 0.34 * curveN * turnSign * FOLLOW_SWING;   // swing into the corner
@@ -974,7 +1177,9 @@ function followUpdate(fp, dt) {
   if (!R.ready) { R.dist = distT; R.height = heightT; R.side = sideT; R.bank = bankT; R.up = [ux, uy, uz]; R.ready = true; }
   // kUp fast enough to track a corkscrew's spinning road-normal; kSlow eases FOV/framing
   const kMed = easeK(5.0, dt), kUp = easeK(5.5, dt), kBank = easeK(3.0, dt), kSlow = easeK(2.0, dt);
-  R.dist += (distT - R.dist) * kMed;
+  // back up fast, pull in SLOW — so a violent slowdown (distT drops with speed) doesn't rush the eye
+  // in and crowd the car; it stays backed off, keeping room, especially when zoomed all the way in.
+  R.dist += (distT - R.dist) * (distT < R.dist ? easeK(1.6, dt) : easeK(6.0, dt));
   R.height += (heightT - R.height) * kMed;
   R.side += (sideT - R.side) * kMed;
   R.bank = (R.bank || 0) + (bankT - (R.bank || 0)) * kBank;
@@ -989,6 +1194,9 @@ function followUpdate(fp, dt) {
   // rigid desired eye — tracks the car every frame with only the SHAPE smoothed,
   // so there is NO positional lag (the old eye-smoothing trailed ~15 m at 300 km/h
   // and couldn't hold a corkscrew). Collision & framing ride on top.
+  // RIGIDLY attached to the car — inherits its whole motion, so it rides seamlessly through any loop /
+  // spiral / bank. (Softening the vertical DETACHED the eye from the car and broke that seamless follow;
+  // the bumps worth killing are the object-collision folds, handled below — not the car's own motion.)
   const desx = px - Hx * R.dist + R.up[0] * R.height + rx * R.side;
   const desy = py - Hy * R.dist + R.up[1] * R.height + ry * R.side;
   const desz = pz - Hz * R.dist + R.up[2] * R.height + rz * R.side;
@@ -996,8 +1204,16 @@ function followUpdate(fp, dt) {
   // Only the fraction is smoothed (spring feel) — the base still tracks rigidly. ---
   const pivot = [px - Hx * 2 + R.up[0] * 2, py - Hy * 2 + R.up[1] * 2, pz - Hz * 2 + R.up[2] * 2];
   const hit = collideSegment(worldColl, pivot, [desx, desy, desz]);
-  const fracT = (hit > 0 && hit < 1) ? Math.max(0.12, hit * 0.9) : 1;
-  R.collFrac = (R.collFrac == null) ? fracT : R.collFrac + (fracT - R.collFrac) * kMed;
+  // Ignore 1-frame flickers — a thin trackside object flashing through the boom shouldn't jolt the
+  // cam; only a collision that PERSISTS folds it. Then smooth ASYMMETRICALLY: fold in quick enough to
+  // avoid clipping, but ease back out slowly so clearing an object doesn't snap the framing. Keeps the
+  // genuine sustained collisions (the immersive track rebound) while killing the object-bump jitter.
+  const rawHit = hit > 0 && hit < 1;
+  R.hitFrames = rawHit ? (R.hitFrames || 0) + 1 : 0;
+  const fracT = R.hitFrames >= 2 ? Math.max(0.12, hit * 0.9) : 1;
+  const prevFrac = (R.collFrac == null) ? 1 : R.collFrac;
+  const kColl = fracT < prevFrac ? easeK(7.0, dt) : easeK(1.6, dt);   // fold in fast, recover slow
+  R.collFrac = (R.collFrac == null) ? fracT : R.collFrac + (fracT - R.collFrac) * kColl;
   const fr = Math.min(1, R.collFrac);
   let exW = pivot[0] + (desx - pivot[0]) * fr;
   let eyW = pivot[1] + (desy - pivot[1]) * fr;
@@ -1005,13 +1221,15 @@ function followUpdate(fp, dt) {
   // never ram the car: keep the eye outside the car BODY, not just its centre. The
   // T-180's tail reaches ~2.7 m behind its origin, so a smaller radius put the low
   // zoomed eye inside the model (backfaces + near-clip glitch). Sit just behind it.
-  const MINCAR = 3.6;
+  const MINCAR = 3.6 * (1 - 0.78 * zoomN);   // shrink the keep-out radius hard as it zooms → right into the cockpit
   const cvx = exW - px, cvy = eyW - py, cvz = ezW - pz, cvl = Math.hypot(cvx, cvy, cvz);
   if (cvl > 1e-4 && cvl < MINCAR) { const g = MINCAR / cvl; exW = px + cvx * g; eyW = py + cvy * g; ezW = pz + cvz * g; }
   // anti-clip floor: keep the eye a minimum clearance on the +up side of the road
   const upDot = (exW - px) * R.up[0] + (eyW - py) * R.up[1] + (ezW - pz) * R.up[2];
   const MINH = 1.6 * (1 - 0.8 * zoomN);   // let the eye ride low when fully zoomed in
   if (upDot < MINH) { const add = MINH - upDot; exW += R.up[0] * add; eyW += R.up[1] * add; ezW += R.up[2] * add; }
+  // (no ground clamp — it broke spirals/loops and shuffled on stacked track; the original anti-clip
+  // floor above is enough. The car being centred is by AIMING, not by burying the eye.)
   R.eye = R.eye || [0, 0, 0];
   R.eye[0] = exW; R.eye[1] = eyW; R.eye[2] = ezW;   // rigid, no lag
   // FOV + framing height ease SLOWLY toward their close/far targets: as it closes in
@@ -1025,13 +1243,16 @@ function followUpdate(fp, dt) {
   // heading/up basis — never the eye→car direction, which degenerates (and used to
   // flip 180°) when the camera rides near overhead. Solve the aim pitch β in the
   // heading–up plane that lands the car's vertical screen position exactly at frameY. ---
-  const dEx = px - R.eye[0], dEy = py - R.eye[1], dEz = pz - R.eye[2];
+  // as it zooms in, drift the framing focus from the car centre UP onto the driver's head (cockpit feel)
+  const nk = (carDriver && carDriver.neckPivot) ? carDriver.neckPivot : [0, 1.08, 0.09];
+  const df = zoomN * 0.85, dh = nk[1] * df;
+  const dEx = (px + R.up[0] * dh) - R.eye[0], dEy = (py + R.up[1] * dh) - R.eye[1], dEz = (pz + R.up[2] * dh) - R.eye[2];
   const Af = dEx * Hx + dEy * Hy + dEz * Hz;                // car-ahead component (along heading)
   const Bf = dEx * R.up[0] + dEy * R.up[1] + dEz * R.up[2]; // car-vertical component (along up)
   const kf = R.frameY * Math.tan(R.fov * 0.5);
   let beta = Math.atan2(Bf - kf * Af, Af + kf * Bf);        // pitch that puts the car at frameY
   const BMAX = 1.45; if (beta > BMAX) beta = BMAX; else if (beta < -BMAX) beta = -BMAX; // never aim backward
-  beta -= FOLLOW_LOOKDOWN * zoomN;   // tilt the view down like a neck as it zooms fully in
+  beta -= (FOLLOW_LOOKDOWN + 0.44) * zoomN;   // tilt the view down like a neck as it zooms in — +~25° at full zoom for the low cockpit look
   const cbe = Math.cos(beta), sbe = Math.sin(beta);
   const fX = Hx * cbe + R.up[0] * sbe, fY = Hy * cbe + R.up[1] * sbe, fZ = Hz * cbe + R.up[2] * sbe;
   R.look = [R.eye[0] + fX * 60, R.eye[1] + fY * 60, R.eye[2] + fZ * 60];
@@ -1383,7 +1604,7 @@ function renderHeadlightDepth(cm, headVP) {
  * blooms only the genuinely-bright pixels (threshold ~1) and ACES-tonemaps to the screen,
  * so darkness stays crushed and highlights blow out. Needs EXT_color_buffer_float. */
 const hdrFX = {
-  ok: false, enabled: true, w: 0, h: 0, hdr: null, bloomA: null, bloomB: null, quad: null,
+  ok: false, enabled: false, w: 0, h: 0, hdr: null, bloomA: null, bloomB: null, quad: null,   // HDR/bloom OFF for good (2026-07-23 — the bloomed look was disliked; toggle button removed)
   bright: null, blur: null, comp: null,
   exposure: 1.02, threshold: 1.35, bloomAmt: 0.75, sat: 1.32,
 };
@@ -1896,7 +2117,10 @@ function render() {
   const fa = followActive();
   // near plane: small in follow mode (the car is right in front — a 2u near plane
   // clipped it like a solid object); larger for the overview cam's depth precision.
-  const zNear = fa ? 0.3 : 2, zFar = 60000;
+  // shrink the near-clip as it zooms in → the camera reads "smaller" and can sit closer to geometry
+  // (and the driver) without the near plane slicing through it.
+  const zN = fa ? Math.max(0, Math.min(1, (1 - (follow.distMul || 1)) / 0.88)) : 0;
+  const zNear = fa ? (0.3 - 0.2 * zN) : 2, zFar = 60000;
   const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, zNear, zFar);
   const view = mLookAt(camEye(), fa ? follow.rig.look : cam.target, fa ? (follow.rig.viewUp || follow.rig.up) : [0, 1, 0]);
   const mvp = new Float32Array(mMul(proj, view));
@@ -1910,6 +2134,36 @@ function render() {
   const i = Math.max(0, Math.min(ex.N - 1, Math.floor(tCur / ex.dt)));
   const carShown = carGroups && showCar && !ex.gap[i];
   const cm = carShown ? carModelMatrix(tCur / ex.dt) : null;
+  // spatial audio: listener = camera, engine source = car's world position
+  if (window.BBAudio && BBAudio.isOn()) {
+    const aeye = camEye();
+    const atgt = fa ? follow.rig.look : cam.target;
+    const aup = fa ? (follow.rig.viewUp || follow.rig.up) : [0, 1, 0];
+    let afx = atgt[0] - aeye[0], afy = atgt[1] - aeye[1], afz = atgt[2] - aeye[2];
+    const afl = Math.hypot(afx, afy, afz) || 1; afx /= afl; afy /= afl; afz /= afl;
+    BBAudio.setListener(aeye[0], aeye[1], aeye[2], afx, afy, afz, aup[0], aup[1], aup[2]);
+    if (!ex.gap[i]) {
+      // emit from the REAR of the car (turbine nozzle, model-space → world via the car matrix), and
+      // aim the source backward so the engine projects OUT THE BACK, not from the middle.
+      let sx = ex.pos[i * 3], sy = ex.pos[i * 3 + 1], sz = ex.pos[i * 3 + 2];
+      if (cm && carNozzle) {
+        const L = carNozzle;
+        sx = cm[0] * L[0] + cm[4] * L[1] + cm[8] * L[2] + cm[12];
+        sy = cm[1] * L[0] + cm[5] * L[1] + cm[9] * L[2] + cm[13];
+        sz = cm[2] * L[0] + cm[6] * L[1] + cm[10] * L[2] + cm[14];
+      }
+      BBAudio.setCarPos(sx, sy, sz);
+      if (cm) { const bl = Math.hypot(cm[8], cm[9], cm[10]) || 1; BBAudio.setSourceDir(-cm[8] / bl, -cm[9] / bl, -cm[10] / bl); }
+      const ddx = aeye[0] - sx, ddy = aeye[1] - sy, ddz = aeye[2] - sz;
+      BBAudio.setDistance(Math.hypot(ddx, ddy, ddz));
+      // flyby Doppler: pitch by the car's radial velocity relative to the camera (the "PHHEEW" as it blows past)
+      const j1 = Math.min(ex.N - 1, i + 1), j0 = Math.max(0, i - 1), vdt = ((j1 - j0) * ex.dt) || ex.dt;
+      const cvx = (ex.pos[j1 * 3] - ex.pos[j0 * 3]) / vdt, cvy = (ex.pos[j1 * 3 + 1] - ex.pos[j0 * 3 + 1]) / vdt, cvz = (ex.pos[j1 * 3 + 2] - ex.pos[j0 * 3 + 2]) / vdt;
+      const rl2 = Math.hypot(sx - aeye[0], sy - aeye[1], sz - aeye[2]) || 1;
+      const vRad = (cvx * (sx - aeye[0]) + cvy * (sy - aeye[1]) + cvz * (sz - aeye[2])) / rl2;   // + receding / − approaching (m/s)
+      BBAudio.setDoppler(343 / (343 + vRad * rate));   // × replay rate so fast-forward flybys pitch too
+    }
+  }
   const headInt = (carShown && carLights && carLights.head.length >= 2) ? nightF : 0;
   // brake detection (no brake channel in these replays — verified by probing the frame
   // bytes): infer it, but physically. Start from gravity-corrected deceleration (so loops
@@ -2064,7 +2318,8 @@ function render() {
       }
     }
     if (carSteerWheel) {                                        // cockpit wheel spins with steer
-      const ang = carSteerAngle * STEER_WHEEL_RATIO * STEER_WHEEL_SIGN;
+      // lock the wheel to the hands' reachable range so they never diverge (hands stay gripped)
+      const ang = Math.max(-DRIVER_GRIP_SPIN_MAX, Math.min(DRIVER_GRIP_SPIN_MAX, carSteerAngle * STEER_WHEEL_RATIO * STEER_WHEEL_SIGN));
       drawCarGroups(carSteerWheel.groups, axisSpinModel(cm, carSteerWheel.ax[STEER_WHEEL_AXIS], ang, carSteerWheel.pivot));
     }
     if (carDriver) {                                           // driver: seated on the wheel (knh pose), hands orbit with the steer, head turns to the line
@@ -2073,6 +2328,29 @@ function render() {
       driverSeatedSkin(Math.max(-DRIVER_GRIP_SPIN_MAX, Math.min(DRIVER_GRIP_SPIN_MAX, raw)));
       for (const sm of carDriver.skinned) drawCarGroups([sm.grp], dp.body);
       drawCarGroups(carDriver.headGroups, dp.head);
+    }
+    // reflective WINDSCREEN — a transparent pass over the car: fresnel rim + sky/ground reflection +
+    // a sharp sun glint that slides across as the car turns. Depth-tested but no depth-write, blended.
+    if (carGlass && carGlass.length) {
+      const eye = camEye();
+      gl.useProgram(progGlass);
+      gl.uniformMatrix4fv(gLoc.mvp, false, mvp); gl.uniformMatrix4fv(gLoc.model, false, cm);
+      gl.uniform3f(gLoc.eye, eye[0], eye[1], eye[2]);
+      gl.uniform3f(gLoc.sun, L.dir[0], L.dir[1], L.dir[2]);
+      gl.uniform3f(gLoc.sunCol, L.sun[0], L.sun[1], L.sun[2]);
+      gl.uniform3f(gLoc.sky, L.ambSky[0] * 1.4, L.ambSky[1] * 1.4, L.ambSky[2] * 1.5);
+      gl.uniform3f(gLoc.ground, L.ambGround[0], L.ambGround[1], L.ambGround[2]);
+      gl.uniform3f(gLoc.fogC, L.fog[0], L.fog[1], L.fog[2]); gl.uniform1f(gLoc.fogD, fogD);
+      gl.uniform3f(gLoc.tint, 0.015, 0.02, 0.03); gl.uniform1f(gLoc.opacity, 0.10);
+      gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+      for (const g of carGlass) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf); gl.enableVertexAttribArray(gLoc.pos); gl.vertexAttribPointer(gLoc.pos, 3, gl.FLOAT, false, 12, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, g.nrmBuf); gl.enableVertexAttribArray(gLoc.nrm); gl.vertexAttribPointer(gLoc.nrm, 3, gl.FLOAT, false, 12, 0);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
+        gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+      }
+      gl.depthMask(true); gl.disable(gl.BLEND);
+      gl.useProgram(progT);   // restore for the rest of the car pass
     }
     gl.disableVertexAttribArray(tLoc.nrm); gl.disableVertexAttribArray(tLoc.uv);
     if (showThruster) {
@@ -2084,6 +2362,7 @@ function render() {
     if (carLights && nightF > 0.02) {           // tail bleed (flare on braking) + lamp glows at night
       const fov = fa ? (follow.rig.fov || 0.9) : 0.9;
       drawCarLights(cm, mvp, Math.tan(fov / 2), nightF, brakeF);
+      drawLensFlare(cm, mvp, nightF);           // elegant headlamp glare when the beams face the camera
     }
     gl.useProgram(prog);
   }
@@ -2158,7 +2437,7 @@ cv.addEventListener("contextmenu", e => e.preventDefault());
 cv.addEventListener("wheel", e => {
   e.preventDefault();
   if (follow.on) {
-    follow.distMul = Math.max(0.42, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
+    follow.distMul = Math.max(0.12, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
   } else {
     cam.dist = Math.max(3, Math.min(50000, cam.dist * (e.deltaY > 0 ? 1.12 : 0.89)));
   }
@@ -2174,6 +2453,13 @@ addEventListener("keydown", e => {
   if (t && (t.tagName === "INPUT" || t.tagName === "SELECT" || t.tagName === "TEXTAREA")) return;
   if (e.key === " ") { togglePlay(); e.preventDefault(); return; }
   const k = e.key.toLowerCase();
+  if (k === "m") {   // toggle the telemetry-driven engine soundscape
+    if (window.BBAudio) BBAudio.toggle().then(on => {
+      const el = document.getElementById("audioind");
+      if (el) { el.textContent = on ? "♪ sound on" : "♪ sound off"; el.style.opacity = on ? "1" : "0.5"; }
+    });
+    e.preventDefault(); return;
+  }
   if (FLY.has(k)) { flyKeys.add(k); e.preventDefault(); }
 });
 addEventListener("keyup", e => flyKeys.delete(e.key.toLowerCase()));
@@ -2323,10 +2609,57 @@ document.getElementById("btnLine").addEventListener("click", function () {
     if (TYRE_MODE === 0) { smoke.pool.length = 0; }   // clear live particles when switched off
   });
 })();
-(function () {   // HDR toggle (disabled if the GPU lacks float render targets)
-  const btn = document.getElementById("btnHDR");
-  if (!hdrFX.ok) { btn.classList.remove("on"); btn.disabled = true; btn.title = "needs WebGL2 float buffers"; return; }
-  btn.addEventListener("click", function () { hdrFX.enabled = !hdrFX.enabled; this.classList.toggle("on", hdrFX.enabled); });
+(function () {   // volume slider → master gain; icon click mutes/unmutes
+  const slider = document.getElementById("volSlider"), icon = document.getElementById("volIcon");
+  if (!slider) return;
+  let lastNonZero = 100;
+  const iconFor = v => v <= 0 ? "🔇" : v < 45 ? "🔈" : v < 80 ? "🔉" : "🔊";
+  const apply = v => { if (icon) icon.textContent = iconFor(v); if (window.BBAudio) BBAudio.setVolume(v / 100); };
+  slider.addEventListener("input", function () { const v = +this.value; if (v > 0) lastNonZero = v; apply(v); });
+  if (icon) icon.addEventListener("click", function () {
+    const cur = +slider.value;
+    const v = cur > 0 ? 0 : (lastNonZero || 100);
+    slider.value = v; apply(v);
+  });
+  apply(+slider.value);
+})();
+(function () {   // auto-hide the header + the top-right "drag look" help: fade them out when the pointer is idle, bring them back on activity
+  const header = document.querySelector("header");
+  if (!header) return;
+  const faders = [header, document.getElementById("help")].filter(Boolean);
+  let t = null;
+  const IDLE_MS = 2600;
+  const setFaded = on => faders.forEach(el => el.classList.toggle("faded", on));
+  const wake = () => {
+    setFaded(false);
+    if (t) clearTimeout(t);
+    t = setTimeout(() => setFaded(true), IDLE_MS);
+  };
+  ["pointermove", "pointerdown", "keydown", "wheel"].forEach(ev => addEventListener(ev, wake, { passive: true }));
+  // never fade while the pointer is actually over one of them (mid-adjustment / reading the keys)
+  faders.forEach(el => {
+    el.addEventListener("pointerenter", () => { if (t) clearTimeout(t); setFaded(false); });
+    el.addEventListener("pointerleave", wake);
+  });
+  wake();
+})();
+(function () {   // windowed fullscreen — Tauri borderless-fullscreen (no exclusive mode switch); F11 or the ⛶ button
+  const twin = (window.__TAURI__ && window.__TAURI__.window) ? window.__TAURI__.window : null;
+  async function toggle() {
+    try {
+      if (twin) {
+        const w = twin.getCurrentWindow ? twin.getCurrentWindow() : twin.appWindow;
+        await w.setFullscreen(!(await w.isFullscreen()));
+      } else if (!document.fullscreenElement) {      // browser fallback (dev in a plain browser)
+        await document.documentElement.requestFullscreen();
+      } else {
+        await document.exitFullscreen();
+      }
+    } catch (e) { console.warn("[fullscreen]", e); }
+  }
+  const btn = document.getElementById("btnFull");
+  if (btn) btn.addEventListener("click", toggle);
+  addEventListener("keydown", e => { if (e.key === "F11") { e.preventDefault(); toggle(); } });
 })();
 function setMode(m) {
   colorMode = m;
@@ -2613,6 +2946,10 @@ function resetTrackScene() {
     }
     carGroups = null;
   }
+  if (carGlass) {
+    for (const g of carGlass) { gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf); gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf); if (g.tex) gl.deleteTexture(g.tex); }
+    carGlass = null;
+  }
   carLights = null; carNozzle = null;
   if (carWheels) {
     for (const w of carWheels) for (const g of [...w.rollGroups, ...w.staticGroups]) {
@@ -2662,6 +2999,8 @@ async function uploadGroups(groupList, scene, fallbackRGB) {
       posBuf: mk(g.pos, gl.ARRAY_BUFFER), nrmBuf: mk(g.nrm, gl.ARRAY_BUFFER),
       uvBuf: mk(g.uv, gl.ARRAY_BUFFER), idxBuf: mk(g.idx, gl.ELEMENT_ARRAY_BUFFER),
       count: g.idx.length, tex, alphaTested: !!mat.alphaTested,
+      blend: mat.blendMode === 1,   // transparent (alpha-blend)
+      glass: /glass/i.test(mat.name || "") && !/headlight/i.test(mat.name || ""),   // windscreen → reflective pass
     });
   }
   return out;
@@ -2675,8 +3014,10 @@ async function loadCarModel(carId) {
     const files = await tinvoke("find_car", { carId });
     if (!files || !files.length) return;
     const ab = await tinvoke("read_file", { path: files[0].path });
-    const scene = KN5.extractScene(ab, { lod0Only: true });
+    const scene = KN5.extractScene(ab, { lod0Only: true, skipTransparent: false });   // keep glass (windscreen) — normally skipped
     carGroups = await uploadSceneGroups(scene, [150, 152, 158]);
+    carGlass = carGroups.filter(g => g.glass);       // windscreen → reflective glass pass
+    carGroups = carGroups.filter(g => !g.blend);     // opaque body only (all transparent stays out of the solid pass)
     // light emitters from the model's own housings (model space): headlight/brakelight
     // bulbs as one centroid per side, and the LED arrays (white + red) clustered per lamp.
     // head = per-side beam origins (2); headLamps/tail = the individual 3-per-side lamps
@@ -2770,10 +3111,12 @@ async function loadCarModel(carId) {
             }
           } catch (e) { console.warn("driver pose load failed:", e); poseWorld = null; }
         }
-        const headGroups = await uploadGroups(dscene.meshes.filter(m => !m.skinned), dscene, [170, 172, 178]);
+        // hide the HANS device (RT_HANS) — the shoulder/neck collar clips ugly on our seated pose
+        const isHans = m => /hans/i.test((dscene.materials[m.materialId] || {}).name || "");
+        const headGroups = await uploadGroups(dscene.meshes.filter(m => !m.skinned && !isHans(m)), dscene, [170, 172, 178]);
         // skinned meshes get DYNAMIC pos/nrm buffers (skinned to the seated pose)
         const skinned = [];
-        for (const m of dscene.meshes.filter(x => x.skinned)) {
+        for (const m of dscene.meshes.filter(x => x.skinned && !isHans(x))) {
           const grp = (await uploadGroups([m], dscene, [170, 172, 178]))[0];
           gl.bindBuffer(gl.ARRAY_BUFFER, grp.posBuf); gl.bufferData(gl.ARRAY_BUFFER, m.pos, gl.DYNAMIC_DRAW);
           gl.bindBuffer(gl.ARRAY_BUFFER, grp.nrmBuf); gl.bufferData(gl.ARRAY_BUFFER, m.nrm, gl.DYNAMIC_DRAW);
@@ -2802,7 +3145,9 @@ async function loadCarModel(carId) {
             const S0 = originOf("DRIVER:RIG_Arm_"+s), E0 = originOf("DRIVER:RIG_ForeArm_"+s), W0 = originOf("DRIVER:RIG_HAND_"+s);
             if (!S0 || !E0 || !W0) continue;
             arms.push({ S0, E0, W0, L1: v3len(v3sub(E0, S0)), L2: v3len(v3sub(W0, E0)), pole: v3sub(E0, S0),
-                        armSub: subtreeOf("DRIVER:RIG_Arm_"+s), foreSub: subtreeOf("DRIVER:RIG_ForeArm_"+s) });
+                        armSub: subtreeOf("DRIVER:RIG_Arm_"+s), foreSub: subtreeOf("DRIVER:RIG_ForeArm_"+s),
+                        handSub: subtreeOf("DRIVER:RIG_HAND_"+s),   // hand+fingers → grip rolls with the wheel
+                        gripBase: (s === "L" ? 1 : -1) * DRIVER_GRIP_UP });   // raise each hand up the rim
           }
         }
         carDriver = { skinned, headGroups, skel, poseWorld, neckPivot, arms, wheelC, wheelAxis };
@@ -2834,6 +3179,15 @@ function loadReplayBuffer(ab, name) {
     } else sel.classList.add("hidden");
     maybeAutoLoadTrack(replay.track);
     if (replay.cars[0]) loadCarModel(replay.cars[0].carId);
+    // audio comes up ON by default (M mutes). Kick it off on the first replay; the webview's
+    // autoplay lock is released by the load click itself, with a gesture fallback below.
+    if (window.BBAudio && !audioAutoStarted) {
+      audioAutoStarted = true;
+      BBAudio.setEnabled(true).then(on => {
+        const el = document.getElementById("audioind");
+        if (el) { el.textContent = on ? "♪ sound on" : "♪ sound off"; el.style.opacity = on ? "1" : "0.5"; }
+      });
+    }
   } catch (err) {
     droperr.textContent = err.message;
     drop.classList.remove("hidden");
@@ -3202,6 +3556,11 @@ function selectCar(i) {
     ex.cumDist = cd;
   }
   ex.shifts = detectShifts(ex);   // kinematic upshift frames → exhaust backfires
+  // REAL telemetry (if the replay was stamped by telemetry_logger): tail-align it onto
+  // these N frames so effects can read actual rpm/throttle/brake/boost/slip instead of
+  // guessing kinematically. null when the file has no BBTL blob → kinematic fallback stands.
+  ex.tel = ACReplay.alignTelemetry(replay.telemetry, ex.N, ex.dt);
+  { const tb = detectTelemetryBackfires(ex); if (tb && tb.length) ex.shifts = tb; }     // real gear/lift/limiter pops override the kinematic guess
   { const sl = computeWheelSlip(ex); ex.slip = sl.slip; ex.smokeSlip = sl.smokeSlip; }  // marks (instant) + smoke (fast-decel gated)
   {
     const mesh = buildTireMarkMesh(ex);
@@ -3227,15 +3586,15 @@ function refreshStatsChip() {
   if (!stats) return;
   const dist = units === "imperial" ? (stats.distanceKm * 0.621371).toFixed(2) + " mi" : stats.distanceKm.toFixed(2) + " km";
   const vert = units === "imperial" ? Math.round(stats.verticalM * 3.28084) + " ft" : stats.verticalM.toFixed(0) + " m";
-  document.getElementById("chipStats").innerHTML =
-    `<b>${fmtSpeed(stats.maxKph)}</b> max · ${fmtSpeed(stats.medianKph)} median · ` +
-    `${dist} · vert ${vert} · ` +
-    `tilt med ${isFinite(stats.medianTilt) ? stats.medianTilt.toFixed(0) : "—"}° · inv ${stats.invertedPct.toFixed(1)}%`;
+  document.getElementById("dstats").innerHTML =
+    `<b>${fmtSpeed(stats.maxKph)}</b> max · ${fmtSpeed(stats.medianKph)} med · ` +
+    `${dist} · vert ${vert}`;
 }
 
 /* ===================== main loop ===================== */
 let lastTs = 0;
 let fpsEMA = 0, fpsPrev = 0;
+let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on shift-frame crossings
 function loop(ts) {
   if (fpsPrev) { const inst = 1000 / Math.max(0.1, ts - fpsPrev); fpsEMA += (inst - fpsEMA) * 0.08; }
   fpsPrev = ts;
@@ -3262,9 +3621,47 @@ function loop(ts) {
       edgeTxt = ` · edge ${warm}${e.dist.toFixed(2)} m${warm ? "</b>" : ""}`;
     }
     const altV = units === "imperial" ? Math.round(ex.pos[i * 3 + 1] * 3.28084) + " ft" : ex.pos[i * 3 + 1].toFixed(0) + " m";
-    document.getElementById("chipLive").innerHTML =
-      `t <b>${fmtT(tCur)}</b> · ${fmtSpeed(sp)} · ` +
-      `alt ${altV} · tilt ${isFinite(tl) ? tl.toFixed(0) : "—"}°${edgeTxt}`;
+    // ---- racing dash: real engine telemetry drives the tach/gear/pedals/boost ----
+    const T = ex.tel;
+    const dash = document.getElementById("dash");
+    if (T) {
+      dash.classList.remove("no-tel");
+      const rpm = T.rpm[i], g = Math.round(T.gear[i]);
+      // scale ends at the real SHIFT/redline zone (~9350), not the absolute limiter. Measured from
+      // telemetry: hard upshifts land ~9069, p99.9=9355, and the limiter (9842) is only a top-0.1%
+      // brush. Scaling to 9842 left a chunk unfilled at the shift point; scaling to 9350 makes a hard
+      // pull read near-full with a sliver (matching the in-game tach), and the rare limiter kiss just
+      // pegs the bar at 100%.
+      const RPM_MAX = 9350, REDLINE = 8900;
+      document.getElementById("tachfill").style.width = Math.max(0, Math.min(100, rpm / RPM_MAX * 100)).toFixed(1) + "%";
+      document.getElementById("tach").classList.toggle("redline", rpm >= REDLINE);
+      document.getElementById("dgear").textContent = g <= 0 ? "R" : g === 1 ? "N" : String(g - 1);
+      document.getElementById("dboost").textContent = T.has.boost ? T.boost[i].toFixed(2) : "–";
+      document.getElementById("thrfill").style.width = Math.round(Math.max(0, Math.min(1, T.gas[i])) * 100) + "%";
+      document.getElementById("brkfill").style.width = Math.round(Math.max(0, Math.min(1, T.brake[i])) * 100) + "%";
+    } else {
+      dash.classList.add("no-tel");
+    }
+    // big speed — real telemetry speed if present, else the kinematic estimate
+    const spKph = T && isFinite(T.speed[i]) ? T.speed[i] : (isFinite(sp) ? sp : 0);
+    document.getElementById("dspeed").textContent = units === "imperial" ? Math.round(spKph * 0.621371) : Math.round(spKph);
+    document.getElementById("dspeedu").textContent = units === "imperial" ? "mph" : "km/h";
+    // secondary readouts: time · alt · tilt · edge-distance
+    document.getElementById("dsecondary").innerHTML =
+      `<b>${fmtT(tCur)}</b> · alt ${altV} · tilt ${isFinite(tl) ? tl.toFixed(0) : "—"}°${edgeTxt}` +
+      (T ? ` <span style="opacity:.5">[real·${T.mode}]</span>` : "");
+    // telemetry-driven engine soundscape (silent unless toggled on with M, needs telemetry)
+    if (window.BBAudio) {
+      BBAudio.update(T ? { rpm: T.rpm[i], gas: T.gas[i], brake: T.brake[i], boost: T.has.boost ? T.boost[i] : 0, speed: T.speed[i] } : null);
+      if (BBAudio.isOn()) {
+        const d = BBAudio.dbg(); const el = document.getElementById("audioind"); if (el) el.textContent = `♪ ${d.rpm} rpm · ${d.bands} bands`;
+        // backfire cracks on the same shift/lift frames that fire the visual pops
+        if (playing && !scrubbing && ex.shifts && bfPrevFrame >= 0 && i > bfPrevFrame && i - bfPrevFrame < 30) {
+          for (const sf of ex.shifts) if (sf > bfPrevFrame && sf <= i) { BBAudio.backfire(); break; }
+        }
+      }
+      bfPrevFrame = i;
+    }
     let _smk = 0; if (ex.smokeSlip) for (let k = 0; k < 4; k++) _smk = Math.max(_smk, ex.smokeSlip[i * 4 + k]);
     timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${fpsEMA.toFixed(0)} fps · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)}`;
     drawScrub();

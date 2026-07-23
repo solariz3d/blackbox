@@ -1,5 +1,91 @@
 # Changelog
 
+## 2026-07-23 — Windowed fullscreen
+
+### Added
+- **Windowed fullscreen toggle** — `F11` or the `⛶ full` header button toggles Tauri borderless
+  fullscreen (no exclusive mode switch; alt-tab friendly). Falls back to the browser Fullscreen API
+  when not running under Tauri. Granted `core:window:allow-set-fullscreen` + `allow-is-fullscreen` in
+  the capabilities (only `core:default` was present, which doesn't include the fullscreen setter).
+
+## 2026-07-23 — Thruster rebuilt as a blue jet afterburner
+
+### Changed
+- **Turbine flame is now a real afterburner cone** (`drawThruster`) instead of a line of ~11 dots. A
+  dense (32) thin white-hot blue **core** with drifting **shock diamonds** (periodic bright spots),
+  wrapped in a soft blue **outer glow** (22), with turbulent lateral wobble that grows toward the tip
+  and a plume that stretches harder under boost. Shader core color deepened (blue edge → white-hot
+  center). Matches the "blue afterburner" look confirmed by the user. Then dialed **shorter and
+  girthier** per feedback: `len 0.55+3.4·inten → 0.4+1.5·inten`, core/glow radii fattened (~0.095/0.19,
+  fattest at the nozzle) — a stubby burst out the nozzle rather than a long trail.
+
+## 2026-07-23 — Night lights: distance attenuation (fix distance blowout + see-through)
+
+### Fixed
+- **No more distant "ball of light"** — the lens flare is screen-space (fixed NDC size), so a far car
+  threw the same full-size glare as a near one; now faded hard with distance (full ≤15m → gone by ~60m).
+  The headlamp soft-halos also fade out with distance (gone by ~42m) leaving only the crisp bulb, and
+  each bulb dims at range so the 3-lamp cluster doesn't stack additively into a hot blob.
+- Reduced the see-through-geometry at range (the halos that spilled over environment geometry are now
+  distance-faded). NOTE: near-field glow is depth-tested by the lamp-center depth, so a lamp behind a
+  wall is hidden, but a large halo can still spill over *thin* foreground geometry when the lamp center
+  peeks through a gap, and the flare ignores depth by design (lens artifact). A proper per-pixel fix
+  needs a scene-depth texture (also would restore smoke soft-particles lost when HDR was disabled) —
+  deferred.
+
+## 2026-07-23 — Night: luminescent headlights + elegant lens flare
+
+### Added
+- **Headlamps read more luminescent at night** (`drawCarLights`) — each lamp now gets a soft additive
+  halo (plus a wide bloom on the top lamp) that swells with how head-on the beam is to the camera, so
+  the lights glare when you look into them. Rebuilt as drawn glow because HDR bloom is now off.
+- **Elegant lens flare** (`progFlare` / `drawLensFlare`) — a screen-space additive glare for the
+  headlamps: tight core + soft round glow + anamorphic horizontal streak + a faint vertical spike,
+  warm-white. Gated on `facing^3 × nightF` and eased toward screen edges, so it only appears when the
+  beams point at the camera (front views / flybys) and stays restrained rather than a constant smear.
+
+## 2026-07-23 — Tach scale matched to the real limiter
+
+### Fixed
+- **Tach no longer under-fills** — the bar left a chunk of empty range when using all of a gear. First
+  pass scaled to the limiter (`RPM_MAX 10200→9850`), but a chunk remained: telemetry shows hard
+  upshifts land ~9069 rpm and p99.9 is 9355 — the 9842 limiter is only a top-0.1% brush, so scaling to
+  it still left the shift point at ~92%. Set `RPM_MAX=9350`, `REDLINE=8900` (the real shift/redline
+  zone) so a hard pull reads near-full with a sliver and the rare limiter kiss pegs the bar. Also moved
+  the rev-limiter backfire trigger 9400 → 9750 (it was firing mid-rev, below the actual limiter).
+
+## 2026-07-23 — UI: HDR removed, volume control, auto-hiding top bar
+
+### Removed
+- **HDR/bloom turned off for good + toggle button removed** — the bloomed look was disliked. `hdrFX.enabled`
+  now defaults `false` (scene renders straight to canvas, no bloom/ACES tonemap); the `HDR` header button
+  and its toggle handler are gone. Smoke falls to its direct-billboard path (the same look seen with HDR
+  toggled off). HDR post code is left in place, dormant, in case it's ever wanted back.
+
+### Added
+- **Volume control in the header** (`#volCtl` slider + speaker icon) — drives a new `BBAudio.setVolume(0..1)`
+  that scales the master ceiling live; the icon click mutes/unmutes (remembers last level). Replaces the
+  old HDR button's slot in the bar.
+- **Auto-hiding top bar** — the header now fades away after ~2.6s of pointer idle and returns on any
+  activity (mirrors the existing transport auto-hide: same timing, kept visible while hovered). It's now an
+  absolute overlay with a gradient backdrop so the 3D view goes full-screen when the bar is gone.
+
+## 2026-07-23 — Engine audio: longer travel, quieter tail, wider directional stereo
+
+### Changed
+- **Sound travels much further — a loud car carries far, then genuinely fades** (`ui/audioengine.js`)
+  — distance falloff retuned `DIST_REF 20→48`, `DIST_ROLLOFF 1.5→1.4` (exponential). Big full bubble
+  so the T-180 carries out to long range, then keeps diminishing with no plateau (~38% at 96m, ~14%
+  at 200m, ~4% at 500m, ~1.4% at 1000m).
+- **Killed the far-distance plateau** — the reverb/echo wash bypasses the panner and had a hard floor
+  (`k = 0.15 + 0.85*df`) that never let it drop below 15%, so once the dry engine went faint far off,
+  the never-dying wash was all you heard → "fly across the map and it never gets quieter." Removed the
+  floor (`k = df`): the wash now fades fully to zero with distance, so flying out genuinely goes silent.
+  (Superseded the same-day 36/2.2 and 48/1.25 passes.)
+- **More directional stereo** — the HRTF panner output now runs through the mid-side `widener` (1.35)
+  before the master bus, boosting the inter-aural (L↔R) difference so left/right car positions swing
+  harder across the field. Mono-safe (mid untouched); kept moderate so the center stays solid.
+
 ## 2026-07-22 — Interactive smoke physics, density merge, collision, light fixes — PARTLY UNTESTED
 
 ### Added

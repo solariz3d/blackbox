@@ -226,6 +226,13 @@ function skidIntensity(s) { return Math.max(0, Math.min(1, (s - SKID_ON) / SKID_
 const SMOKE_ON = 9;       // deg of slip below this makes NO smoke
 const SMOKE_RANGE = 14;
 function smokeIntensity(s) { return Math.max(0, Math.min(1, (s - SMOKE_ON) / SMOKE_RANGE)); }
+// Real AC wheelSlip → equivalent "smoke degrees" so it feeds the same tuned pipeline.
+// Calibrated from a clean PB lap: grip sits <2, p95≈7, real slides run ~20–80+ (spiking to
+// thousands on a lockup). ON sits just above the grip band; full by +42. This is PER-WHEEL,
+// so rear wheelspin or a locked front tyre smoke on their own — things the car-wide slip
+// ANGLE can't see. ON/SPAN are the tuning knobs.
+const REAL_SLIP_ON = 8, REAL_SLIP_SPAN = 42;
+function realSlipToDeg(s) { return SMOKE_ON + Math.max(0, Math.min(1, (s - REAL_SLIP_ON) / REAL_SLIP_SPAN)) * SMOKE_RANGE; }
 // Fills two signals per wheel [frame*4 + k], k = 0:FL 1:FR 2:RL 3:RR, both in degrees:
 //   slip      — slip angle × outer-wheel weight (marks: outer tyres scrub more)
 //   smokeSlip — the car-wide slip angle (smoke; rear bias is applied at emit time)
@@ -244,10 +251,15 @@ function computeWheelSlip(ex) {
     const latV = vx*rx + vy*ry + vz*rz, alongV = vx*hx + vy*hy + vz*hz;
     const slipDeg = Math.abs(Math.atan2(latV, alongV)) * 180 / Math.PI;   // sideways-slide angle
     const outerRight = latV > 0;                                   // the side sliding outward scrubs more
+    const hasReal = ex.tel && ex.tel.has && ex.tel.has.slip;       // real per-wheel wheelSlip available?
     for (let k = 0; k < 4; k++) {
       const right = (k === 1 || k === 3);
       slip[i*4 + k] = slipDeg * (right === outerRight ? 1.0 : 0.6); // marks: outer wheels weighted
-      smokeSlip[i*4 + k] = slipDeg;                                // smoke: car-wide (rear bias at emit)
+      // smoke: car-wide slip ANGLE (drift), blended with REAL per-wheel wheelSlip (wheelspin /
+      // lockup) when telemetry is present — whichever signal calls for more smoke wins.
+      let sm = slipDeg;                                            // kinematic drift angle
+      if (hasReal) sm = Math.max(sm, realSlipToDeg(ex.tel.slip[i*4 + k]));
+      smokeSlip[i*4 + k] = sm;                                     // rear bias still applied at emit
     }
   }
   return { slip, smokeSlip };
@@ -341,18 +353,32 @@ function driverPose(fp, carMat) {
   // head faces THE LINE, like the wheels: yaw by the slip angle so the driver
   // looks where the car is going — but capped at a realistic neck range (~49°).
   const yawT = clamp(carSteerAngle * DRIVER_HEAD_SIGN, DRIVER_HEAD_YAW_MAX);
-  const hrollT = clamp(-latG * 0.05, 0.10);          // a little head tilt with the G
+  const hrollT = clamp(-latG * 0.035, 0.08);         // a little head tilt with the G (body leans too now)
   const k = 1 - Math.exp(-3.0 / 60);                 // slow settle (~3/s)
   driverRig.headYaw += (yawT - driverRig.headYaw) * k;
   driverRig.headRoll += (hrollT - driverRig.headRoll) * k;
+  // subtle head BOB from G-load — nudged opposite the acceleration (inertia): sideways with lateral G,
+  // fore/aft with braking/accel. Small + smoothed so it reads as weight, not wobble.
+  const longG = (dvx * hx + dvy * hy + dvz * hz) / 9.81;
+  // SLIGHT body lean — he's belted in snug, so the torso/shoulders only shift a little with the G
+  // (roll into lateral G, pitch forward under braking) about the hips. The head rides on top.
+  const bRollT = clamp(-latG * 0.009, 0.02), bPitchT = clamp(-longG * 0.008, 0.016);
+  driverRig.bodyRoll = (driverRig.bodyRoll || 0) + (bRollT - (driverRig.bodyRoll || 0)) * k;
+  driverRig.bodyPitch = (driverRig.bodyPitch || 0) + (bPitchT - (driverRig.bodyPitch || 0)) * k;
   // The body is a RIGID seated pose (the car's own driver_base_pos.knh, in car
   // space) — hands already on the wheel. Only the head moves, pivoting about the
   // real neck joint (also in car space), then everything rides carMat to world.
   const pv = (carDriver && carDriver.neckPivot) || [0, 1.08, 0.09];
+  // head yaw (looks to the line) + a little roll with G — but NO separate positional bob: the head's
+  // shift is now purely the CONSEQUENCE of the torso lean it rides on (a separate bob = moonwalk).
   const headExtra = mMul(rotP(1, driverRig.headYaw, pv[0], pv[1], pv[2]), rotP(2, driverRig.headRoll, pv[0], pv[1], pv[2]));
+  // torso lean about the hips; the head rides ON the leaned body so shoulders + head move together
+  const hip = [0, 0.4, 0.02];
+  const bodyExtra = mMul(rotP(2, driverRig.bodyRoll, hip[0], hip[1], hip[2]), rotP(0, driverRig.bodyPitch, hip[0], hip[1], hip[2]));
+  const bodyMat = mMul(carMat, bodyExtra);
   return {
-    body: new Float32Array(carMat),
-    head: new Float32Array(mMul(carMat, headExtra)),
+    body: new Float32Array(bodyMat),
+    head: new Float32Array(mMul(bodyMat, headExtra)),
   };
 }
 
@@ -391,21 +417,27 @@ function driverSeatedSkin(spin) {
   for (let i = 0; i < N; i++) world[i] = D.poseWorld[skel.name[i]] || skel.bindWorld[i];
   if (spin && D.arms && D.wheelAxis) {
     const C = D.wheelC, ax = D.wheelAxis;
-    const cs = Math.cos(spin), sn = Math.sin(spin), one = 1 - cs;
-    const orbit = p => {   // Rodrigues: rotate point p about axis `ax` through C by spin
+    const A0 = ax[0], A1 = ax[1], A2 = ax[2];
+    const rotPt = (p, c, s, o) => {   // Rodrigues: rotate point p about axis `ax` through C by angle (c,s,o)
       const v = v3sub(p, C), d = v3dot(ax, v), cx = v3cross(ax, v);
-      return [C[0] + v[0]*cs + cx[0]*sn + ax[0]*d*one,
-              C[1] + v[1]*cs + cx[1]*sn + ax[1]*d*one,
-              C[2] + v[2]*cs + cx[2]*sn + ax[2]*d*one];
+      return [C[0] + v[0]*c + cx[0]*s + ax[0]*d*o, C[1] + v[1]*c + cx[1]*s + ax[1]*d*o, C[2] + v[2]*c + cx[2]*s + ax[2]*d*o];
     };
+    const rotMat = (c, s, o) => new Float32Array([   // row-vector rotation MATRIX about `ax` (for the grip roll)
+      c + A0*A0*o, A0*A1*o + A2*s, A0*A2*o - A1*s, 0,
+      A0*A1*o - A2*s, c + A1*A1*o, A1*A2*o + A0*s, 0,
+      A0*A2*o + A1*s, A1*A2*o - A0*s, c + A2*A2*o, 0,
+      0, 0, 0, 1]);
     for (const arm of D.arms) {
-      const S = arm.S0, W = orbit(arm.W0);
-      const { E } = ik2bone(S, W, arm.L1, arm.L2, arm.pole);      // elbow for the orbited grip
+      const ang = spin + (arm.gripBase || 0);   // steer + this hand's base grip-height offset
+      const c = Math.cos(ang), s = Math.sin(ang), o = 1 - c;
+      const S = arm.S0, W = rotPt(arm.W0, c, s, o);              // grip point on the rim (raised + steered)
+      const { E } = ik2bone(S, W, arm.L1, arm.L2, arm.pole);      // elbow for the grip
       const Rup = rvFromTo(v3sub(arm.E0, S), v3sub(E, S));        // upper arm swings about S
       const W1 = v3add(S, mRot(v3sub(arm.W0, S), Rup));          // wrist after only Rup
       const Rfore = rvFromTo(v3sub(W1, E), v3sub(W, E));          // forearm swings about E
       for (const b of arm.armSub)  world[b] = rvRotAbout(world[b], Rup, S);
       for (const b of arm.foreSub) world[b] = rvRotAbout(world[b], Rfore, E);
+      if (arm.handSub) for (const b of arm.handSub) world[b] = rvRotAbout(world[b], rotMat(c, s, o), W);   // grip rolls to match
     }
   }
   driverSkinUpload(world);

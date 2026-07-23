@@ -4,6 +4,8 @@
   "description": "Core permissions for the main window. Custom commands (list_replays, read_file, find_track) are allowed by default; the app reads local files only.",
   "windows": ["main"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "core:window:allow-set-fullscreen",
+    "core:window:allow-is-fullscreen"
   ]
 }

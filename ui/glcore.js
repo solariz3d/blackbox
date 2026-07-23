@@ -205,6 +205,38 @@ const tLoc = {
   headOccOn: gl.getUniformLocation(progT, "uHeadOccOn"),
 };
 
+/* program 2b: reflective GLASS (windscreen) — fresnel rim + fake sky/ground reflection + a sharp
+ * sun specular glint that slides across as the car moves. Semi-transparent, HDR out (the glint blooms). */
+const progGlass = gl.createProgram();
+gl.attachShader(progGlass, shader(gl.VERTEX_SHADER,
+  "attribute vec3 aPos; attribute vec3 aNrm; uniform mat4 uMVP, uModel; varying vec3 vN, vW;" +
+  "void main(){ vec4 wp = uModel*vec4(aPos,1.0); vW = wp.xyz; vN = mat3(uModel)*aNrm; gl_Position = uMVP*wp; }"));
+gl.attachShader(progGlass, shader(gl.FRAGMENT_SHADER,
+  "precision highp float; varying vec3 vN, vW;" +
+  "uniform vec3 uEye, uSunDir, uSunCol, uSkyCol, uGroundCol, uFogColor, uTint; uniform float uFogDensity, uOpacity;" +
+  "void main(){" +
+  "  vec3 N = normalize(vN); vec3 V = normalize(uEye - vW); if (dot(N,V) < 0.0) N = -N;" +
+  "  float ndv = max(dot(N,V), 0.0);" +
+  "  float fres = pow(1.0 - ndv, 4.0);" +                                   // rim reflection, strong at grazing
+  "  vec3 R = reflect(-V, N); float up = clamp(R.y*0.5+0.5, 0.0, 1.0);" +
+  "  vec3 env = mix(uGroundCol, uSkyCol, up);" +                            // fake environment reflection
+  "  float spec = pow(max(dot(R, normalize(uSunDir)), 0.0), 200.0);" +      // sharp sun glint
+  "  vec3 col = mix(uTint, env, clamp(fres + 0.12, 0.0, 1.0)) + uSunCol * spec * 4.0;" +
+  "  float alpha = clamp(uOpacity + fres*0.65 + spec, 0.0, 0.95);" +
+  "  float depth = gl_FragCoord.z / gl_FragCoord.w; float fog = clamp(exp(-uFogDensity*depth), 0.0, 1.0);" +
+  "  gl_FragColor = vec4(mix(uFogColor, col, fog), alpha);" +
+  "}"));
+gl.linkProgram(progGlass);
+const gLoc = {
+  pos: gl.getAttribLocation(progGlass, "aPos"), nrm: gl.getAttribLocation(progGlass, "aNrm"),
+  mvp: gl.getUniformLocation(progGlass, "uMVP"), model: gl.getUniformLocation(progGlass, "uModel"),
+  eye: gl.getUniformLocation(progGlass, "uEye"), sun: gl.getUniformLocation(progGlass, "uSunDir"),
+  sunCol: gl.getUniformLocation(progGlass, "uSunCol"), sky: gl.getUniformLocation(progGlass, "uSkyCol"),
+  ground: gl.getUniformLocation(progGlass, "uGroundCol"), fogC: gl.getUniformLocation(progGlass, "uFogColor"),
+  fogD: gl.getUniformLocation(progGlass, "uFogDensity"), tint: gl.getUniformLocation(progGlass, "uTint"),
+  opacity: gl.getUniformLocation(progGlass, "uOpacity"),
+};
+
 /* depth-only caster: renders the car from the light's view into the shadow map */
 const progDepth = gl.createProgram();
 gl.attachShader(progDepth, shader(gl.VERTEX_SHADER,

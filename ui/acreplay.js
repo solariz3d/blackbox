@@ -71,7 +71,88 @@ function parseReplay(arrayBuffer) {
       break;
     }
   }
-  return { version, intervalMs, weather, track, trackConfig, numCars, numFrames, recIndex, cars, dv };
+  return { version, intervalMs, weather, track, trackConfig, numCars, numFrames, recIndex, cars, dv,
+           telemetry: parseTelemetry(arrayBuffer) };
+}
+
+/* ---- BLACKBOX telemetry tail (real engine data, appended by telemetry_logger) ----
+ * Layout, from the end of the file:
+ *   [ …replay… ][ "BBTL" u16ver u16schema u32count u32bytesPerSample | samples ][ u32 blobLen ][ "BBX1" ]
+ * The replay parser above reads the file byte-identical and ignores this tail; here we
+ * find the blob from the footer. Returns a lazy reader (no per-sample copy) or null. */
+function parseTelemetry(arrayBuffer) {
+  const dv = new DataView(arrayBuffer);
+  const n = dv.byteLength;
+  if (n < 24) return null;
+  // footer "BBX1"
+  if (dv.getUint8(n-4)!==0x42 || dv.getUint8(n-3)!==0x42 || dv.getUint8(n-2)!==0x58 || dv.getUint8(n-1)!==0x31) return null;
+  const blobLen = dv.getUint32(n-8, true);
+  const blobStart = n - 8 - blobLen;
+  if (blobStart < 0 || blobStart + 16 > n) return null;
+  // magic "BBTL"
+  if (dv.getUint8(blobStart)!==0x42 || dv.getUint8(blobStart+1)!==0x42 || dv.getUint8(blobStart+2)!==0x54 || dv.getUint8(blobStart+3)!==0x4c) return null;
+  const ver = dv.getUint16(blobStart+4, true);
+  const schema = dv.getUint16(blobStart+6, true);
+  const count = dv.getUint32(blobStart+8, true);
+  const bps = dv.getUint32(blobStart+12, true);
+  const dataOff = blobStart + 16;
+  if (count < 1 || bps < 4 || dataOff + count*bps > n) return null;
+  // field index (in f32 units) within one sample, per schema; -1 = channel absent.
+  const F = { time:-1, rpm:-1, gear:-1, gas:-1, brake:-1, speed:-1, slip:-1, boost:-1, susp:-1 };
+  if (schema === 5)      { F.time=0; F.rpm=1; F.gear=2; F.gas=3; F.brake=4; F.speed=5; F.slip=6; F.boost=10; F.susp=11; }
+  else if (schema === 4) { F.rpm=0; F.gear=1; F.gas=2; F.brake=3; F.speed=4; F.slip=5; F.boost=11; F.susp=12; }
+  else if (schema === 3) { F.rpm=0; F.gear=1; F.gas=2; F.brake=3; F.speed=4; F.slip=5; F.boost=11; }
+  else return null; // schema 1/2 were experimental (position-based) — no engine channels to use
+  const get = (i, fi) => dv.getFloat32(dataOff + i*bps + fi*4, true);
+  return { ver, schema, count, bps, F, get };
+}
+
+/* Resample the telemetry onto the replay's N frames. Both streams END at the save
+ * moment, so we TAIL-align: frame i (time-before-end = (N-1-i)*dt) maps to the sample
+ * with the matching time-before-end. Schema 5 carries per-sample ms → exact even with a
+ * session-long buffer or mid-session pauses. Older schemas (no timestamps) fall back to a
+ * uniform-rate tail assumption (AC physics ≈ 333 Hz) — good for a clean continuous lap,
+ * approximate if the buffer had gaps. Returns per-frame arrays or null. */
+function alignTelemetry(tel, N, dt) {
+  if (!tel || N < 1) return null;
+  const C = tel.count, F = tel.F, get = tel.get;
+  const out = {
+    schema: tel.schema,
+    rpm: new Float32Array(N), gear: new Float32Array(N), gas: new Float32Array(N),
+    brake: new Float32Array(N), speed: new Float32Array(N), boost: new Float32Array(N),
+    slip: new Float32Array(N*4), susp: new Float32Array(N*4),
+    has: { boost: F.boost>=0, slip: F.slip>=0, susp: F.susp>=0 },
+    mode: F.time>=0 ? "time" : "count",
+  };
+  let sampleForFrame;
+  if (F.time >= 0) {
+    const tEnd = get(C-1, F.time);           // ms at the last sample = the save moment
+    const t0 = get(0, F.time);
+    sampleForFrame = (i) => {
+      const target = tEnd - (N-1-i)*dt*1000;  // ms this frame wants (measured from the end)
+      if (target <= t0) return 0;
+      if (target >= tEnd) return C-1;
+      let lo = 0, hi = C-1;                    // timeMs is monotonic → binary search
+      while (lo < hi) { const mid = (lo+hi)>>1; if (get(mid, F.time) < target) lo = mid+1; else hi = mid; }
+      if (lo>0 && Math.abs(get(lo-1,F.time)-target) <= Math.abs(get(lo,F.time)-target)) return lo-1;
+      return lo;
+    };
+  } else {
+    const RATE = 333;                          // assume AC physics tick
+    const M = Math.min(C, Math.max(1, Math.round(N*dt*RATE)));
+    const base = C - M;                        // last M samples ≈ the replay window
+    const span = Math.max(1, M-1), fden = Math.max(1, N-1);
+    sampleForFrame = (i) => Math.min(C-1, base + Math.round((i/fden)*span));
+  }
+  for (let i = 0; i < N; i++) {
+    const j = sampleForFrame(i);
+    out.rpm[i]=get(j,F.rpm); out.gear[i]=get(j,F.gear); out.gas[i]=get(j,F.gas);
+    out.brake[i]=get(j,F.brake); out.speed[i]=get(j,F.speed);
+    if (F.boost>=0) out.boost[i]=get(j,F.boost);
+    if (F.slip>=0) for (let k=0;k<4;k++) out.slip[i*4+k]=get(j,F.slip+k);
+    if (F.susp>=0) for (let k=0;k<4;k++) out.susp[i*4+k]=get(j,F.susp+k);
+  }
+  return out;
 }
 
 function detectStride(bytes, start, end) {
@@ -335,5 +416,5 @@ function runStats(ex) {
   };
 }
 
-if (typeof module !== "undefined") module.exports = { parseReplay, extractCar, runStats };
-if (typeof window !== "undefined") window.ACReplay = { parseReplay, extractCar, runStats };
+if (typeof module !== "undefined") module.exports = { parseReplay, extractCar, runStats, parseTelemetry, alignTelemetry };
+if (typeof window !== "undefined") window.ACReplay = { parseReplay, extractCar, runStats, parseTelemetry, alignTelemetry };
