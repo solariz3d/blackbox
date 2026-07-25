@@ -36,10 +36,37 @@ which is a bigger change than adding a parameter.
 | effect | what blocks it | shape of the fix |
 |---|---|---|
 | ~~**driver**~~ **DONE** | was `driverRig`, one object of smoothed values shared by every car — two drivers would both chase whichever car was posed last, at a rate neither was turning. | `driverPose(fp, carMat, steer, src, rig)`; each run carries its own rig. Note the skinned mesh is a **vertex upload per car per frame**, which is the real cost of a full-fidelity ghost. |
+| ~~**thruster / backfire / lamp glow**~~ **DONE** | the draw functions already took a car matrix; only the *intensity readings* (`turbineIntensity`, `backfireAt`, `carGForces`) read the global run. | all three take `src`. Ghosts fire their turbine on their own thrust/afterburner channel, pop on their own upshifts, and — the one that matters most — **brake on their own deceleration**. A ghost flashing its brake lights when the *reference* car braked would be the most actively misleading pixel on screen. |
 | **brake / head lights** | `setHeadlights(cm, 0, headVP)` and `setBrakelights(cm, 0)` set **scene** uniforms — the shader carries two lamps (`uHeadA`, `uHeadB`) belonging to one car. A second car's lamps have nowhere to go. | either an array of lamps in the shader (real, costs a uniform loop), or draw ghost lamp glow as emissive geometry only and accept it doesn't light the road. The second is much cheaper and probably enough. |
 | **smoke** | `smoke.accum` is a `Float32Array(4)` — one car's four wheels. The puff pool and the `AIR` field are world-space and already shared correctly, so **only the accumulator is per-car.** | per-run accumulator. This is the smallest fix of the three and the most visible. Note `BODY_WAKE_K` was set to 0 *because* there was one car; with ghosts it becomes meaningful again. |
 | **tyre marks** | `markVBO` / `markCount` — one prebuilt ribbon per loaded run. | build one per run; draw them all. |
-| **sound** | `BBAudio` is one engine instance mapped to the reference car's telemetry. | out of scope for a while: N engines is a mixing problem, not a plumbing one, and two identical cars at slightly different RPM will beat against each other unpleasantly. Ghost sound may be a bad idea even when possible. |
+| **sound** | `BBAudio` is one engine instance mapped to the reference car's telemetry. | **needs a decision before any code.** See below — this is the one item where doing it as asked is probably wrong. |
+
+## Sound: why four engines is likely the wrong goal
+
+Everything else on this list gets *better* with four cars. Sound gets worse, and it is worth saying
+plainly rather than discovering it after the work.
+
+The engine is AC's authored FMOD event — 12–15 instruments sounding at once at speed. Four cars means
+four of those, sixty-odd voices, and here is the problem: they are **the same car driving the same
+track within a few seconds of each other.** Their rpm ladders sit a few Hz apart, which is precisely
+the condition for audible beating — a slow throbbing warble that sounds like a fault in the mix, not
+like a grid.
+
+Real broadcast does not do this either. A race feed follows *one* car's onboard, or a trackside mic
+where distance and doppler separate the cars. Both are selection, not summation.
+
+So the useful shapes, in order of preference:
+
+1. **Sound follows one car** — a "listen to" selector in the legend. Cheap, and it's what a viewer
+   actually wants: hear the car you're watching.
+2. **Distance-attenuated ghosts** — ghost engines at low gain rolled off by distance from the camera,
+   so a car passing you is *heard* passing. Needs per-run gain and doppler, and still beats when two
+   cars are side by side, which is exactly when you most want it to work.
+3. **All four at full gain** — the literal reading of the request. Cheapest to describe, worst to
+   listen to.
+
+Recommend (1), with (2) as a later enrichment. Wanted the chair's call before spending the work.
 
 ## The other half of "the car the replay says it is"
 
