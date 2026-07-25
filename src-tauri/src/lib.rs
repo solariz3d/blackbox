@@ -353,6 +353,31 @@ fn find_car(car_id: String) -> Result<Vec<TrackFile>, String> {
     Err(format!("car '{}' not found in any Steam library", car_id))
 }
 
+/// AC's SHARED sound bank (`content/sfx/common.bank`). Tyre squeal and every surface sound
+/// (grass/gravel/dirt/sand/kerb) live here, not in the car's bank — a car's own `skid_ext` is an
+/// empty stub. Same parser, different file.
+#[tauri::command]
+fn find_common_bank() -> Result<String, String> {
+    let mut checked: Vec<String> = Vec::new();
+    for lib in steam_libraries() {
+        let p = lib
+            .join("steamapps")
+            .join("common")
+            .join("assettocorsa")
+            .join("content")
+            .join("sfx")
+            .join("common.bank");
+        if p.is_file() {
+            return Ok(p.to_string_lossy().to_string());
+        }
+        checked.push(p.display().to_string());
+    }
+    Err(format!(
+        "common.bank not found (checked: {})",
+        if checked.is_empty() { "no Steam library found".into() } else { checked.join(" ; ") }
+    ))
+}
+
 /* ---- the CSP bridge: install it into the user's Assetto Corsa -------------------
  *
  * The turbine's afterburner is a BUTTON in CSP's extended physics, invisible to AC's stock shared
@@ -1664,6 +1689,7 @@ pub fn run() {
             find_track,
             find_car,
             find_car_bank,
+            find_common_bank,
             bridge_status,
             install_bridge,
             find_driver,

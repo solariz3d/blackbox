@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-07-25 — TLNB decoded: timeline instruments, and tyre squeal
+
+### Added
+- **`TLNB` (timeline-placed instruments) is decoded**, which unlocked events that had been reading as
+  empty stubs. The key: every inline array in this format is `u16 tagged (= 2n+1), u16 stride`, a
+  timeline holds **five** of them back to back, and an empty one occupies two bytes — which is why
+  nothing ever sat at a fixed offset. `TLNB` = `guid[16]` timeline, `guid[16]` owner event, then those
+  five arrays; stride-24 elements are `guid[16], u32 startMs, u32 lengthMs`. **26/26 timelines in the
+  car bank and 17/17 in `common.bank` consume exactly, zero misparses**, and the same rule then
+  explained the previously-unexplained count words in `CURV`, `PMLB`, `PLST` and `EVTB`.
+  - T-180 bank gained **15 instruments across 11 events** — `limiter`, `backfire_ext`/`_int`,
+    `gear_grind`, `horn`, `jumpjack`, `jumpjack_charge`, `tractioncontrol_ext`/`_int`, `skid_ext`/`_int`.
+  - `common.bank` gained **10** — `grass`, `gravel`, `kerb`, `sand`, `old`, `extraturf`, `screw`,
+    `unscrew`, `ambience`, `ds_protection`. (`dirt` was already visible: it is the one surface AC
+    authored on parameter sheets.)
+- **Tyre squeal**, from the car's own `Tire Skid LowFreq` with its authored −3 semitone detune.
+- **`find_common_bank`** (Rust) — AC's shared bank, where the surface sounds live.
+
+### What the decode settled, that guessing would have got wrong
+- **Skid rides nothing.** `skid_ext`/`skid_int` declare **zero parameters**, zero instrument
+  automation, and zero bus automation — AC drives skid volume from game code. So mapping our slip
+  signal to gain is not a shortcut around an authored curve; it is the only thing the format leaves
+  to the consumer. Stated in the source so it is not "fixed" later by someone hunting for the curve.
+- **Surfaces are different** and do declare `speed [0..500]` and `decay [0..1]`, with volume on the
+  **group bus** (dB) rather than the instrument — e.g. `kerb` −42 dB @ 5 km/h → 0 dB @ 100. Bus
+  automation is resolved now (`INST +83` → `GBSB` → `CTRL +16`), flagged `bus: true`. Not yet played:
+  it needs per-wheel surface detection we do not have.
+- **A curve's x-axis can be a TIMELINE, not a parameter — and then x is `u32` milliseconds, not
+  float.** Read as float those bytes are denormals that all round to 0.0, so a real 0→4800 ms fade-in
+  decodes as `[[0,0],[0,1]]`: parses cleanly, looks like data, entirely wrong. Timeline curves now
+  carry `t: true` with `param: null`.
+
+### Fixed
+- **Timeline layers were silently mute.** They carry no parameter and no trigger box (`from`/`to` are
+  `null`), and the runtime gated every layer on `x >= L.from` — which compares `false` against null,
+  so every timeline instrument would have been skipped without a word.
+- **The skid signal was the wrong one, caught by measuring before listening.** The first pass used
+  the kinematic slide angle (body heading vs velocity) and would have squealed through **70% of the
+  lap**: the T-180 has four-wheel steering, so its body crabs and that angle reads a median of 17°
+  with a p90 of 47° — nothing like tyre scrub. Skid now uses AC's real per-wheel `wheelSlip`
+  (>1 = sliding, car-agnostic; measured p50 0.59, p90 1.92, p98 4.5), with the kinematic angle as a
+  clearly-labelled fallback for replays carrying no telemetry. On the sample lap the new mapping is
+  audible on 20% of moving frames and loud on 5%.
+- Skid is driven **separately from the engine**, because slip is kinematic: `centrifuge.acreplay`,
+  which has no telemetry and therefore no engine voice, still squeals through its corners.
+- `make_eventmap.js` searched for the FSB5 chunk from a hardcoded `0x2e000` — fine for the T-180's
+  188 KB metadata region, a crash on any other bank. And short event names collide (AC's shared
+  `GUIDs.txt` lists a `skid_ext` for every stock car), so the populated event now wins instead of
+  whichever came last.
+
 ## 2026-07-25 — Turbine telemetry: a CSP bridge, schema 6, and a flame that fires when you fired it
 
 ### The problem

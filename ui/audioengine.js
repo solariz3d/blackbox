@@ -212,6 +212,67 @@ window.BBAudio = (function () {
    * sound designer's. It is the only invented element left in the engine, and it is stated here
    * rather than buried so it can be judged as such.
    */
+  /* SKID — the one car sound the bank does not author.
+   *
+   * Decoding `skid_ext`/`skid_int` settled this rather than leaving it to taste: they declare ZERO
+   * parameters, carry zero instrument automation, and their bus carries none either. The bank
+   * supplies only the sample, a static −3 semitone detune and a loop flag — Assetto Corsa drives
+   * skid volume from game code, not from the event. So there is no authored curve to honour here,
+   * and mapping our own slip signal to gain is not a shortcut, it is the only thing the format
+   * leaves to the consumer.
+   *
+   * The signal is the same per-wheel slide angle that already draws the tyre marks and feeds the
+   * smoke (`computeWheelSlip`), which blends AC's real per-wheel `wheelSlip` when the replay
+   * carries telemetry — so squeal, marks and smoke can never disagree about what the tyres did.
+   */
+  /* WHICH slip signal, and why it matters more than the thresholds:
+   *
+   * AC's own per-wheel `wheelSlip` (telemetry) is the honest one — >1 means that tyre is sliding,
+   * and it is car-agnostic. Measured on the T-180 sample: p50 0.59, p90 1.92, p98 4.5, so onset
+   * just above 1 and full by ~5 gives scrub in fast corners and a howl in a real slide.
+   *
+   * The kinematic angle (body heading vs velocity) is only a FALLBACK for replays with no
+   * telemetry, and it is a poor one for this car specifically: the T-180 has four-wheel steering,
+   * so the body crabs and that angle reads a median of 17° with a p90 of 47° — nothing like tyre
+   * scrub. Thresholds for it are set high on purpose. Measuring this is what caught a first pass
+   * that would have squealed through 70% of the lap.
+   */
+  const SKID_REAL_ON = 1.15, SKID_REAL_FULL = 5.0;    // AC wheelSlip units
+  const SKID_KIN_ON = 25, SKID_KIN_FULL = 65;         // degrees, fallback only
+  const SKID_MIN_KPH = 15;        // no squeal from a car that is barely rolling
+  const SKID_LEVEL = 0.55;
+  let skidVoice = null, skidGain = null;
+
+  function buildSkid(bank, map) {
+    const ev = (map.events && (map.events.skid_ext || map.events.skid_int)) || null;
+    const L = ev && ev.layers && ev.layers.find(x => bank.samples[x.sample]);
+    if (!L) return 0;
+    if (skidVoice) { try { skidVoice.src.stop(); } catch (e) { /* stopped */ } skidVoice.g.disconnect(); }
+    if (!skidGain) { skidGain = gain(1); skidGain.connect(engineMix); }   // from the car → spatialized
+    try {
+      const src = ctx.createBufferSource();
+      src.buffer = bufFromSample(bank, bank.samples[L.sample]);
+      src.loop = true;
+      const g = gain(0);
+      src.connect(g); g.connect(skidGain); src.start();
+      // honour the authored detune even though the gain curve is ours to write
+      skidVoice = { src, g, base: Math.pow(10, (L.db || 0) / 20), rate: Math.pow(2, (L.semitones || 0) / 12), name: L.name };
+      return 1;
+    } catch (e) { console.warn("[BBAudio] skid layer", L.name, e); return 0; }
+  }
+
+  function driveSkid(real, kinDeg, kph, now, TC) {
+    if (!skidVoice) return;
+    const n = real >= 0
+      ? clamp((real - SKID_REAL_ON) / (SKID_REAL_FULL - SKID_REAL_ON), 0, 1)
+      : clamp((kinDeg - SKID_KIN_ON) / (SKID_KIN_FULL - SKID_KIN_ON), 0, 1);
+    const rolling = clamp((kph - SKID_MIN_KPH) / 20, 0, 1);
+    const lvl = Math.pow(n, 1.2) * rolling * SKID_LEVEL * skidVoice.base;
+    skidVoice.g.gain.setTargetAtTime(lvl, now, TC);
+    // a harder slide scrubs brighter; the authored −3 semitones stays underneath
+    skidVoice.src.playbackRate.setTargetAtTime(skidVoice.rate * (0.94 + 0.22 * n) * doppler, now, 0.08);
+  }
+
   const WIND_FULL_KPH = 320;      // camera speed at which wind reaches full level
   const WIND_FLOOR_KPH = 25;      // below this the air is still
   const WIND_LEVEL = 0.30;
@@ -235,6 +296,16 @@ window.BBAudio = (function () {
       } catch (e) { console.warn("[BBAudio] wind layer", L.name, e); }
     }
     return windVoices.length;
+  }
+
+  /* Per-frame slip (worst wheel, degrees) and road speed. Separate from update() on purpose: slip
+   * is kinematic, so a replay carrying no telemetry at all still squeals through the corners even
+   * though it has no engine voice. */
+  /// `real` = AC's worst-wheel wheelSlip, or -1 when the replay has no telemetry (then `kinDeg`,
+  /// the kinematic slide angle, is used — see the thresholds above for why it is a weak proxy).
+  function setSlip(real, kinDeg, kph) {
+    if (!enabled || !ready || !ctx) return;
+    driveSkid(real == null ? -1 : real, kinDeg || 0, kph || 0, ctx.currentTime, 0.04);
   }
 
   /* Camera airspeed in km/h, from the viewer's own motion. Called per frame by the renderer. */
@@ -270,7 +341,9 @@ window.BBAudio = (function () {
     acEvent = name;
     const wind = buildWind(bank, map);
     if (wind) extra.push("wind:" + wind + "(listener)");
-    return { event: name, voices: acVoices.length, engine: engineN, extra, wind };
+    const skid = buildSkid(bank, map);
+    if (skid) extra.push("skid:1(slip-driven)");
+    return { event: name, voices: acVoices.length, engine: engineN, extra, wind, skid };
   }
 
   function update(snap) {
@@ -291,6 +364,10 @@ window.BBAudio = (function () {
     };
     for (const v of acVoices) {
       const L = v.L;
+      // timeline-placed layers carry no parameter and no trigger box (from/to are null). They are
+      // driven elsewhere (skid) or not at all — never gate them on a null, which compares false and
+      // would silence them without a word.
+      if (L.param == null || L.from == null) continue;
       const x = P[L.param] != null ? P[L.param] : rpm;
       let g = 0;
       if (x >= L.from && x <= L.to) {          // outside the trigger box AC plays nothing
@@ -380,5 +457,5 @@ window.BBAudio = (function () {
 
   return { update, toggle, setEnabled, isOn, resumeIfNeeded, setListener, setCarPos, setSourceDir,
            setDistance, setDoppler, setVolume, backfire, dbg, setCarBank, getCarBank: () => carBankId,
-           sourceInfo, setWind };
+           sourceInfo, setWind, setSlip };
 })();

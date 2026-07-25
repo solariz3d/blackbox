@@ -29,7 +29,10 @@ const ch = [], waitGroups = [], muitGroups = [];
 const by = (re) => ch.filter((c) => re.test(c.p));
 
 // ---- FSB5 name table: BARE u32 offset array, NO count field ----
-const fsbOff = b.indexOf(Buffer.from("FSB5"), 0x2e000);
+// search from the START, not from a fixed offset: the metadata region is 188 KB in the T-180's car
+// bank but a different size in every other bank, and AC's shared common.bank puts FSB5 somewhere
+// else entirely (a hardcoded 0x2e000 start made it read a bogus name table and crash).
+const fsbOff = b.indexOf(Buffer.from("FSB5"), 0);
 const nSamples = b.readUInt32LE(fsbOff + 8);
 const ntStart = fsbOff + 0x3c + b.readUInt32LE(fsbOff + 12);
 const nameTableSize = b.readUInt32LE(fsbOff + 16);
@@ -42,14 +45,67 @@ const wavIndex = new Map(); for (const c of by(/WAV $/)) wavIndex.set(guid(c.o),
 const params = new Map();
 for (const c of by(/PARM\/PRMB$/)) { const L = b.readUInt16LE(c.o + 21);
   params.set(guid(c.o), { name: asc(c.o + 23, L), min: b.readFloatLE(c.o + 23 + L), max: b.readFloatLE(c.o + 27 + L) }); }
-const curves = new Map();
-for (const c of by(/CURV$/)) { const stride = b.readUInt16LE(c.o + 34), n = (c.sz - 36) / stride, pts = [];
-  for (let i = 0; i < n; i++) { const o = c.o + 36 + i * stride; pts.push({ x: b.readFloatLE(o), y: b.readFloatLE(o + 4), shape: b.readFloatLE(o + 8) }); }
-  curves.set(guid(c.o), pts); }
+/* A curve's x axis is read TWO ways because the bank stores it two ways, and the choice is not
+ * cosmetic. When the automation hangs off a parameter, x is a float in parameter units (rpm,
+ * throttle 0..1). When it hangs off the TIMELINE, x is a u32 of MILLISECONDS — reading those
+ * bytes as a float yields denormals that all round to 0.0, so a real 0→4800 ms fade-in decodes
+ * as the meaningless point list [[0,0],[0,1]]. Keep both and pick by the source (below). */
+const curves = new Map(), curvesMs = new Map();
+for (const c of by(/CURV$/)) { const stride = b.readUInt16LE(c.o + 34), n = (c.sz - 36) / stride, pts = [], ms = [];
+  for (let i = 0; i < n; i++) { const o = c.o + 36 + i * stride;
+    pts.push({ x: b.readFloatLE(o), y: b.readFloatLE(o + 4), shape: b.readFloatLE(o + 8) });
+    ms.push({ x: b.readUInt32LE(o), y: b.readFloatLE(o + 4), shape: b.readFloatLE(o + 8) }); }
+  curves.set(guid(c.o), pts); curvesMs.set(guid(c.o), ms); }
 const ctrlByTarget = new Map();
 for (const c of by(/CTRL$/)) { const t = guid(c.o + 16);
   if (!ctrlByTarget.has(t)) ctrlByTarget.set(t, []);
   ctrlByTarget.get(t).push({ curveId: guid(c.o), paramId: guid(c.o + 32), prop: b.readUInt32LE(c.o + 64) }); }
+
+/* Every inline array in this format is `u16 tagged, u16 stride, element[]` where tagged == 2n+1.
+ * (tagged == 0 means "no list at all"; an even non-zero tag introduces a u16 byte-length blob
+ * whose interior is not decoded.) The same rule governs CURV, PMLB, PLST and EVTB — TLNB is
+ * where it had to be worked out, because a timeline holds FIVE of these arrays back to back and
+ * an empty one occupies two bytes, so nothing sits at a fixed offset. */
+function readArray(o, end) {
+  if (o + 2 > end) return null;
+  const tagged = b.readUInt16LE(o);
+  if (tagged === 0) return { kind: "null", count: 0, next: o + 2 };
+  if (tagged & 1) {
+    const count = (tagged - 1) / 2;
+    if (count === 0) return { kind: "empty", count: 0, next: o + 2 };
+    if (o + 4 > end) return null;
+    const stride = b.readUInt16LE(o + 2);
+    if (o + 4 + count * stride > end) return null;
+    return { kind: "array", count, stride, at: o + 4, next: o + 4 + count * stride };
+  }
+  if (o + 4 > end) return null;
+  const len = b.readUInt16LE(o + 2);
+  if (o + 4 + len > end) return null;
+  return { kind: "blob", count: 0, len, at: o + 4, next: o + 4 + len };
+}
+
+/* TLNB = guid[16] timelineId, guid[16] ownerEventId, then exactly 5 arrays.
+ * Instrument placements are the stride-24 arrays: guid[16], u32 startMs, u32 lengthMs.
+ * Verified: 26/26 timelines in the T-180 bank and 17/17 in AC's common.bank consume exactly,
+ * and every stride-24 element resolves to a real WAIT/MUIT instrument. */
+const timelineByEvent = new Map(), timelineIds = new Set();
+let tlnbExact = 0, tlnbBad = 0;
+for (const c of by(/TMLN\/TLNB$/)) {
+  timelineIds.add(guid(c.o));
+  let o = c.o + 32; const end = c.o + c.sz, arrs = []; let broke = false;
+  for (let i = 0; i < 5; i++) { const a = readArray(o, end); if (!a) { broke = true; break; } arrs.push(a); o = a.next; }
+  if (broke || o !== end) { tlnbBad++; continue; }
+  tlnbExact++;
+  const owner = guid(c.o + 16);
+  for (const a of arrs) {
+    if (a.kind !== "array" || a.stride !== 24) continue;
+    for (let k = 0; k < a.count; k++) {
+      const at = a.at + k * 24;
+      if (!timelineByEvent.has(owner)) timelineByEvent.set(owner, []);
+      timelineByEvent.get(owner).push({ iid: guid(at), startMs: b.readUInt32LE(at + 16), lengthMs: b.readUInt32LE(at + 20), timelineId: guid(c.o) });
+    }
+  }
+}
 
 // ---- instruments: id -> decoded INST fields + waveform / playlist ----
 const instruments = new Map();
@@ -90,12 +146,37 @@ function evalCurve(pts, x) {
 const PROP = { 0: { name: "bus_volume", units: "dB" }, 1: { name: "pitch", units: "semitones" },
   4: { name: "instrument_gain", units: "linear_0_1" } };
 
+/* Automation on one object. CTRL +32 names the curve's x axis, and it is NOT always a parameter:
+ * for timeline-placed instruments it is the TIMELINE, in which case x is milliseconds and the
+ * curve is a fade envelope over the instrument's own duration, not a response to anything the
+ * game feeds in. Those two cases must stay distinguishable downstream or a 0→4800 ms fade-in
+ * gets mistaken for a parameter ramp. */
+function automationOf(iid) {
+  return (ctrlByTarget.get(iid) || []).map((a) => {
+    const onTimeline = timelineIds.has(a.paramId);
+    const ap = params.get(a.paramId);
+    return {
+      property: PROP[a.prop] ? PROP[a.prop].name : "unknown_prop_" + a.prop,
+      property_enum: a.prop, units: PROP[a.prop] ? PROP[a.prop].units : "unknown",
+      vs_parameter: onTimeline ? null : (ap ? ap.name : null),
+      vs_parameter_guid: a.paramId,
+      vs_timeline: onTimeline,
+      x_units: onTimeline ? "milliseconds_on_timeline" : "parameter_units",
+      points: (onTimeline ? curvesMs.get(a.curveId) : curves.get(a.curveId)) || []
+    };
+  });
+}
+
 // ---- build events from GUIDs.txt ----
 const guidsTxt = fs.readFileSync(BANK.replace(/[^\\/]+$/, "GUIDs.txt"), "latin1");
 const eventPaths = guidsTxt.split(/\r?\n/).map((l) => l.match(/\{([^}]+)\}\s+(event:\S+)/)).filter(Boolean)
   .map((m) => ({ guid: m[1], path: m[2], short: m[2].split("/").pop() }));
 
-const WANT = ["engine_ext", "engine_int", "turbine", "engine_ext_old", "engine_int_old", "engine_custom", "transmission", "gear_ext", "gear_grind", "skid_ext", "wheel", "wind", "turbo", "tractioncontrol_ext", "limiter", "backfire_ext", "turbine_fuelpump"];
+/* Surfaces and skids are timeline-placed, so they were invisible until TLNB was decoded and are
+ * listed here now: running this against AC's shared content/sfx/common.bank yields the whole
+ * surface set. Override with BB_EVENTS=a,b,c. */
+const WANT = process.env.BB_EVENTS ? process.env.BB_EVENTS.split(",") : ["engine_ext", "engine_int", "turbine", "engine_ext_old", "engine_int_old", "engine_custom", "transmission", "gear_ext", "gear_grind", "skid_ext", "skid_int", "wheel", "wind", "turbo", "tractioncontrol_ext", "limiter", "backfire_ext", "turbine_fuelpump", "jumpjack_charge",
+  "grass", "gravel", "kerb", "sand", "dirt", "old", "extraturf", "screw", "unscrew", "ambience"];
 const out = { events: {} };
 
 for (const ev of eventPaths) {
@@ -115,14 +196,8 @@ for (const ev of eventPaths) {
       const o = sh.o + 52 + i * 24, iid = guid(o);
       const start = b.readFloatLE(o + 16), len = b.readFloatLE(o + 20);
       const inst = instruments.get(iid) || { kind: "unknown", note: "instrument GUID not found among WAIT/MUIT records" };
-      const autos = (ctrlByTarget.get(iid) || []).map((a) => {
-        const ap = params.get(a.paramId), pts = curves.get(a.curveId) || [];
-        return { property: PROP[a.prop] ? PROP[a.prop].name : "unknown_prop_" + a.prop,
-          property_enum: a.prop, units: PROP[a.prop] ? PROP[a.prop].units : "unknown",
-          vs_parameter: ap ? ap.name : null, vs_parameter_guid: a.paramId, points: pts };
-      });
-      const gainCurves = autos.filter((a) => a.property_enum === 4).map((a) => curves.get(
-        (ctrlByTarget.get(iid) || []).find((c) => c.curveId && curves.get(c.curveId) === curves.get(c.curveId) && c.prop === 4 && c.paramId === a.vs_parameter_guid).curveId));
+      const autos = automationOf(iid);
+      const gainCurves = autos.filter((a) => a.property_enum === 4).map((a) => a.points);
       // effective audible window over the trigger box, product of all prop#4 curves
       let audFrom = null, audTo = null;
       if (p) { const lo = start, hi = start + len, steps = 400;
@@ -149,12 +224,51 @@ for (const ev of eventPaths) {
     }
     if (n) rec.parameter_sheets.push(sheet);
   }
-  if (rec.instrument_count === 0) {
-    const tl = by(/TMLN\/TLNB$/).filter((c) => guid(c.o + 16) === ev.guid).map((c) => c.sz);
-    rec.note = "EMPTY EVENT in this bank: no parameter-sheet instruments. Timeline chunk sizes " +
-      JSON.stringify(tl) + " (42 = minimum/empty). This event is a stub; it produces no sound from this bank.";
+  /* Timeline-placed instruments. AC leans on these far more than the parameter sheets for
+   * anything that is not the engine: in common.bank every surface (grass, gravel, kerb, sand,
+   * old, extraturf) and in a car bank the skids, limiter and jumpjack live here and nowhere
+   * else, so a sheets-only reader reports them as silent stubs. */
+  rec.timeline_instruments = [];
+  for (const t of timelineByEvent.get(ev.guid) || []) {
+    const inst = instruments.get(t.iid);
+    if (!inst) { rec.timeline_instruments.push({ instrument_guid: t.iid, kind: "unknown",
+      note: "timeline placement references an instrument GUID absent from WAIT/MUIT" }); continue; }
+    const autos = automationOf(t.iid);
+    rec.timeline_instruments.push({
+      instrument_guid: t.iid, kind: inst.kind,
+      sample_index: inst.sample_index ?? null, sample_name: inst.sample_name ?? null,
+      playlist: inst.playlist ?? null,
+      placement: { start_ms: t.startMs, length_ms: t.lengthMs, timeline_guid: t.timelineId },
+      parameter: null,
+      parameter_note: "timeline-placed: position is time, not a parameter value. Any gain curve " +
+        "below with vs_timeline=true is a fade envelope over this instrument's own duration.",
+      static_volume_db: inst.volume_db ?? null,
+      static_pitch_semitones: inst.pitch_semitones ?? null,
+      pitch_automated: autos.some((a) => a.property_enum === 1),
+      loop_mode: inst.loop_mode ?? "unknown",
+      autopitch_root: inst.float_at_69 ?? null,
+      automation: autos,
+      /* Surface volume does not live on the instrument — it lives on the group bus the
+       * instrument feeds (prop#0, dB, vs speed/decay). Resolved here because an instrument-only
+       * reader concludes, wrongly, that these events respond to nothing. */
+      bus_automation: inst.output_bus_ref ? automationOf(inst.output_bus_ref) : [],
+      output_bus_guid: inst.output_bus_ref ?? null
+    });
   }
-  out.events[ev.short] = rec;
+  rec.timeline_instrument_count = rec.timeline_instruments.length;
+
+  if (rec.instrument_count === 0 && rec.timeline_instrument_count === 0) {
+    const tl = by(/TMLN\/TLNB$/).filter((c) => guid(c.o + 16) === ev.guid).map((c) => c.sz);
+    rec.note = "EMPTY EVENT in this bank: no parameter-sheet and no timeline instruments. " +
+      "Timeline chunk sizes " + JSON.stringify(tl) + " (42 = minimum/empty). This event is a stub; " +
+      "it produces no sound from this bank.";
+  }
+  /* Short names collide: AC's shared GUIDs.txt lists a `skid_ext` for every stock car, and only the
+   * ones whose data lives in THIS bank decode to anything. Keep the populated one rather than
+   * whichever happened to come last, or a real event reads as an empty stub. */
+  const total = (r) => r.instrument_count + (r.timeline_instrument_count || 0);
+  const prev = out.events[ev.short];
+  if (!prev || (total(prev) === 0 && total(rec) > 0)) out.events[ev.short] = rec;
 }
 
 // ---- simultaneity sweep ----
@@ -199,7 +313,13 @@ out._meta = {
       "CTRL 1:1 with CURV; +16 target, +32 parameter, +64 property enum": "188/188 curve ids matched",
       "INST +16 float = volume dB": "clean dB values (0, 1, 3, 5, 7, -8, -10.5)",
       "INST +20 float = pitch semitones": "exact semitone values (-12.00 = one octave, +10.00)",
-      "INST +24 u32 == 0xFFFFFFFF with +28 == 1 -> looping": "65 loop / 102 oneshot; every loop is a sustained engine/wind/tyre bed, every oneshot is a backfire/pop/door - 100% semantically coherent"
+      "INST +24 u32 == 0xFFFFFFFF with +28 == 1 -> looping": "65 loop / 102 oneshot; every loop is a sustained engine/wind/tyre bed, every oneshot is a backfire/pop/door - 100% semantically coherent",
+      "inline array header = u16 (2n+1), u16 stride": "one rule governs CURV, PMLB, PLST, EVTB and TLNB; consumes every one of those chunks exactly, in both the T-180 bank and AC common.bank. tagged 0 = no list; even non-zero = u16 byte-length blob",
+      "TLNB = guid[16] timelineId, guid[16] ownerEventId, then exactly 5 inline arrays": "26/26 timelines exact in the T-180 bank, 17/17 in common.bank, zero misparses",
+      "TLNB stride-24 element = guid[16] instrument, u32 startMs, u32 lengthMs": "every element resolved to a real WAIT/MUIT instrument in both banks (21/21)",
+      "CTRL +32 is the curve's x-axis SOURCE and may be a TIMELINE, not a parameter": "common.bank: 33 parameter-sourced, 12 timeline-sourced, 0 unresolved",
+      "timeline-sourced curve x is u32 milliseconds, not float": "reads as 0..4800 ms fade-ins and e.g. 355200..362660 ms fade-outs that land exactly at the end of the instrument's own 362660 ms length; as float the same bytes are denormals that all print as 0.0",
+      "INST +0 guid = owning timeline (when timeline-placed)": "matches the TLNB timelineId for timeline instruments and is zero for parameter-sheet ones - this was previously listed as an unknown"
     },
     inferred: {
       "property enum 0 = bus volume dB": "targets group buses, y in -42..+10",
@@ -214,7 +334,8 @@ out._meta = {
       "curve 'shape' field semantics": "third float per point; 0.0 in most curves; interpolation curvature assumed but not decoded",
       "CURV point 4th u32 ('Type' in FModBankParser)": "not decoded",
       "playlist selection mode": "PLST holds guid+weight per entry; random vs sequential vs shuffle flag not located",
-      "TLNB child array": "timeline-placed instruments (82 of 186) not decoded; base offset varies (42/68) so the array header is not at a fixed offset",
+      "TLNB array slot meanings": "the 5 arrays are decoded structurally, but WHICH slot means what (master track vs sub-track vs markers) is not established; instruments were found in slots 0 and 1 and are collected from any stride-24 array",
+      "TLNB even-tagged blob contents": "an even non-zero array tag introduces a u16 byte-length blob (seen at stride-22-ish sizes, never containing instrument GUIDs); interior not decoded - likely markers or tempo",
       "EVTB trailing fields": "polyphony, priority, min/max distance not decoded",
       "INST +0..15 GUID": "zero for 154/167 records; purpose unknown",
       "INST +99..122": "small counters, not decoded",
@@ -230,7 +351,9 @@ out._meta = {
 };
 fs.writeFileSync(OUT, JSON.stringify(out, null, 2));
 console.log("wrote " + OUT + "  (" + fs.statSync(OUT).size + " bytes)");
-for (const [k, v] of Object.entries(out.events)) console.log("  " + k.padEnd(16) + " instruments=" + v.instrument_count + (v.note ? "  << " + v.note.slice(0, 60) : ""));
+for (const [k, v] of Object.entries(out.events)) console.log("  " + k.padEnd(16) + " sheet=" + String(v.instrument_count).padStart(2) +
+  " timeline=" + String(v.timeline_instrument_count || 0).padStart(2) + (v.note ? "  << stub" : ""));
+console.log(`  TLNB timelines parsed: ${tlnbExact} exact, ${tlnbBad} misparsed`);
 
 /* ---------------------------------------------------------------------------
  * Compact map for the runtime.
@@ -281,8 +404,33 @@ if (JSOUT) {
         });
       }
     }
+    /* Timeline-placed loops, in the same layer shape but explicitly NOT parameter-keyed.
+     * `param: null` is load-bearing: the runtime keys layers by parameter name, and these
+     * respond to no parameter at all — a skid loop is gated by the game setting the event's
+     * volume, not by anything in the bank. Handing it `param: "rpms"` with from/to in
+     * milliseconds would make it sound at every rpm forever. `from`/`to` stay null for the
+     * same reason; the real extent is carried separately as fromMs/toMs. */
+    for (const I of ev.timeline_instruments || []) {
+      if (I.sample_index == null || I.loop_mode !== "loop") { oneshots++; continue; }
+      const auto = (I.automation || []).filter(a => a.property_enum === 4 || a.property_enum === 0);
+      // bus curves ride a real parameter (surfaces: dB vs speed/decay) and are the only thing
+      // the game actually modulates these with, so they are the ones worth carrying
+      const busAuto = (I.bus_automation || []).filter(a => a.property_enum === 0 && !a.vs_timeline);
+      layers.push({
+        sample: I.sample_index, name: I.sample_name,
+        root: I.autopitch_root && I.autopitch_root > 1 ? I.autopitch_root : 0,
+        param: null, from: null, to: null,
+        place: "timeline", fromMs: I.placement.start_ms, toMs: I.placement.start_ms + I.placement.length_ms,
+        db: I.static_volume_db || 0,
+        semitones: I.static_pitch_semitones || 0,
+        // `t: true` marks an x axis in milliseconds along this instrument's own timeline
+        curves: auto.map(a => ({ db: a.property_enum === 0, t: !!a.vs_timeline, pts: a.points.map(p => [p.x, p.y]) }))
+          .concat(busAuto.map(a => ({ db: true, t: false, bus: true, pts: a.points.map(p => [p.x, p.y]) }))),
+        curveParams: auto.map(a => a.vs_timeline ? null : a.vs_parameter).concat(busAuto.map(a => a.vs_parameter)),
+      });
+    }
     // the parameter each event's sheets ride, so the runtime knows what to feed it
-    if (layers.length) compact.events[name] = { layers, oneshots, params: [...new Set(layers.map(l => l.param))] };
+    if (layers.length) compact.events[name] = { layers, oneshots, params: [...new Set(layers.map(l => l.param).filter(Boolean))] };
   }
   fs.writeFileSync(JSOUT, "/* eventmap.js — GENERATED by make_eventmap.js. Do not hand-edit.\n" +
     " *\n * Assetto Corsa's own engine recipe for one car, decoded from its FMOD bank: which samples each\n" +

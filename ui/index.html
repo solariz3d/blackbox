@@ -3839,7 +3839,17 @@ function loop(ts) {
       (T ? ` <span style="opacity:.5">[real·${T.mode}]</span>` : "");
     // telemetry-driven engine soundscape (silent unless toggled on with M, needs telemetry)
     if (window.BBAudio) {
+      // Slip for the squeal, worst wheel — one tyre scrubbing is audible. AC's real per-wheel
+      // wheelSlip when the replay carries it (>1 = sliding, car-agnostic); otherwise -1 and the
+      // engine falls back to the kinematic angle, which for a four-wheel-steer car like this one
+      // reads the body crabbing rather than the tyres scrubbing.
+      let realSlip = -1, kinSlip = 0;
+      if (T && T.has.slip) { realSlip = 0; for (let k = 0; k < 4; k++) { const s = T.slip[i * 4 + k]; if (s > realSlip) realSlip = s; } }
+      if (ex.smokeSlip) for (let k = 0; k < 4; k++) { const s = ex.smokeSlip[i * 4 + k]; if (s > kinSlip) kinSlip = s; }
       BBAudio.update(T ? { rpm: T.rpm[i], gas: T.gas[i], brake: T.brake[i], boost: T.has.boost ? T.boost[i] : 0, speed: T.speed[i] } : null);
+      // skid is driven SEPARATELY from the engine: slip is kinematic, so a replay with no telemetry
+      // at all (centrifuge) still squeals in the corners even though it has no engine voice.
+      BBAudio.setSlip(realSlip, kinSlip, T ? T.speed[i] : (ex.speed[i] || 0));
       if (BBAudio.isOn()) {
         // show the REAL rpm first (that's the car); the expanded figure only when the knob is off 1,
         // so the readout can never be mistaken for the telemetry itself
