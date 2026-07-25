@@ -504,6 +504,9 @@ let lapOnly = true;
 let lapCompare = false;
 let lapRefIndex = null;   // null = the fastest lap; the reference every overlay is measured against
 let currentReplayName = "";   // the loaded run, so the compare picker never offers it against itself
+// the reference lap's distance table, built once with the overlays. Rebuilding it per
+// frame would allocate a few thousand doubles every frame to answer the same question.
+let refAligned = null;
 
 /* the rendered/played frame window: the timed lap when known, else everything */
 function frameRange() {
@@ -1571,6 +1574,7 @@ function buildLapOverlays() {
   const { wins, refI, ref } = info;
 
   const refDists = Ghosts.lapDistances(ex, ref);
+  refAligned = { ex, win: ref, dists: refDists };
 
   // every comparison lap: the extra laps inside this replay, plus every loaded run
   const laps = [
@@ -1612,6 +1616,95 @@ function buildLapOverlays() {
     bufs.lapOverlays.push({ buf, n: arr.length / 7, color: col, timeMs: win.timeMs, label: run.label });
   }
   renderLapLegend(info);
+}
+
+/* ===================== ghost cars =====================
+ * Each comparison lap gets the SAME car, drawn from the same uploaded model — one upload,
+ * N draws, which is what the carId→model cache in ghosts.js exists for. Nothing here
+ * re-uploads geometry per ghost.
+ *
+ * Placed by DISTANCE, not by clock. At the reference car's current position round the lap,
+ * each ghost is drawn at the frame where IT was at that same distance — so a ghost ahead
+ * on screen is a ghost that was genuinely quicker to that point, and the gap you see IS
+ * the time delta. Playing them on a common clock would put them side by side forever and
+ * show nothing.
+ *
+ * It carries its own telemetry: its own steer (carModelMatrix returns per-run steer since
+ * the multi-ghost refactor), its own recorded wheel positions, its own roll distance. A
+ * ghost wearing the reference car's wheel data would be a puppet, not a lap. */
+/** how far round the reference lap we currently are, in metres (NaN outside it) */
+function refDistanceNow(refFrame) {
+  if (!refAligned) return NaN;
+  const rel = Math.round(refFrame) - refAligned.win.start;
+  if (rel < 0 || rel >= refAligned.dists.length) return NaN;
+  return refAligned.dists[rel];
+}
+
+function ghostFrameAt(run, refFrame) {
+  const d = refDistanceNow(refFrame);
+  if (!isFinite(d)) return NaN;
+  const f = Ghosts.frameAtDistance(run.dists, d);
+  return isFinite(f) ? run.win.start + f : NaN;               // ghost hasn't reached here
+}
+
+/* Live telemetry per ghost, at the SAME PLACE on track rather than the same moment:
+ * its speed there, and the running time delta. Both are only meaningful distance-aligned —
+ * "he was 8 km/h faster than you" is a fact about a corner, not about a clock reading. */
+function updateLapLegendLive() {
+  const el = document.getElementById("lapcmp");
+  if (!el || !lapCompare || !refAligned || el.style.display === "none") return;
+  const refFrame = tCur / ex.dt;
+  const d = refDistanceNow(refFrame);
+  const rs = speedAtFrame(refFrame);
+  const refEl = document.getElementById("lcref");
+  if (refEl) refEl.textContent = isFinite(d) ? `${isFinite(rs) ? rs.toFixed(0) : "—"} km/h · ${(d / 1000).toFixed(2)} km in` : "outside the lap";
+  for (const span of el.querySelectorAll(".lclive")) {
+    const run = compareRuns[+span.dataset.i];
+    if (!run) continue;
+    const f = ghostFrameAt(run, refFrame);
+    if (!isFinite(f) || !isFinite(d)) { span.textContent = "not here yet"; continue; }
+    const gi = Math.max(0, Math.min(run.ex.N - 1, Math.round(f)));
+    const gs = run.ex.speed[gi];
+    const dt = Ghosts.deltaAtDistance(refAligned, run, d);    // + = this run slower to here
+    const dv = isFinite(gs) && isFinite(rs) ? gs - rs : NaN;
+    const sign = (v, unit, dp) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(dp)}${unit}`;
+    span.innerHTML = `${isFinite(gs) ? gs.toFixed(0) : "—"} km/h ` +
+      (isFinite(dv) ? `<span style="color:${dv >= 0 ? "#7fdc8a" : "#e08b7f"}">${sign(dv, "", 0)}</span> ` : "") +
+      (isFinite(dt) ? `· <span style="color:${dt <= 0 ? "#7fdc8a" : "#e08b7f"}">${sign(dt, "s", 2)}</span>` : "");
+  }
+}
+
+function drawGhostCars(mvp) {
+  if (!lapCompare || !carGroups || !compareRuns.length) return;
+  const refFrame = tCur / ex.dt;
+  for (const run of compareRuns) {
+    const f = ghostFrameAt(run, refFrame);
+    if (!isFinite(f)) continue;
+    const gi = Math.max(0, Math.min(run.ex.N - 1, Math.floor(f)));
+    if (run.ex.gap[gi]) continue;
+    const r = carModelMatrix(f, run.ex);                       // this run's pose AND its own steer
+    const gm = r.mat, gsteer = r.steer;
+    drawCarGroups(carGroups, gm);
+    if (carWheels) {
+      const rollDist = wheelRollDistance(f, run.ex);
+      for (const w of carWheels) {
+        const roll = WHEEL_ROLL_SIGN * rollDist / (w.radius || 0.35);
+        const kIdx = (/F$/i.test(w.corner) ? 0 : 2) + (/^L/i.test(w.corner) ? 0 : 1);
+        const W = wheelWorldAt(f, kIdx, run.ex);               // this run's recorded suspension
+        if (W) {
+          const tyre = wheelSteerModel(gm, w.pivot, gsteer, roll, 0);
+          const cage = wheelSteerModel(gm, w.pivot, gsteer, 0, 0);
+          const pw = mXfPt(w.pivot, gm), dx = W[0]-pw[0], dy = W[1]-pw[1], dz = W[2]-pw[2];
+          tyre[12] += dx; tyre[13] += dy; tyre[14] += dz;
+          cage[12] += dx; cage[13] += dy; cage[14] += dz;
+          drawCarGroups(w.rollGroups, tyre); drawCarGroups(w.staticGroups, cage);
+        } else {
+          drawCarGroups(w.rollGroups, wheelSteerModel(gm, w.pivot, gsteer, roll, 0));
+          drawCarGroups(w.staticGroups, wheelSteerModel(gm, w.pivot, gsteer, 0, 0));
+        }
+      }
+    }
+  }
 }
 
 function buildGeometry() {
@@ -2704,6 +2797,8 @@ function render() {
     gl.uniform1f(tLoc.alpha, 1.0);
     gl.activeTexture(gl.TEXTURE0);
     drawCarGroups(carGroups, cm);                              // body — keeps its crab
+    drawGhostCars(mvp);                                        // comparison laps, same car, own telemetry
+    updateLapLegendLive();                                     // and their speed / delta, at this point on track
     if (carWheels) {                                           // wheels steer + roll, and sit at their REAL recorded positions
       const fp = tCur / ex.dt;
       const rollDist = wheelRollDistance(fp);
@@ -3047,9 +3142,11 @@ function renderLapLegend(info) {
     return `<div>${swatch(c)}${label} · ${fmt(ms)} <span style="opacity:.6">${d}</span></div>`;
   };
   const rows = [
-    row([1, 1, 1], `lap ${info.refI + 1}`, refMs, true),
+    row([1, 1, 1], `lap ${info.refI + 1}`, refMs, true) +
+      `<div style="margin:0 0 3px 15px;opacity:.75"><span id="lcref">—</span></div>`,
     ...info.extra.map(o => row(LAP_COLORS[(o.k + 1) % LAP_COLORS.length], `lap ${o.k + 1}`, o.w.timeMs, false)),
-    ...compareRuns.map(r => row(r.color, r.label, r.win.timeMs, false)),
+    ...compareRuns.map((r, i) => row(r.color, r.label, r.win.timeMs, false) +
+      `<div style="margin:0 0 3px 15px;opacity:.75"><span class="lclive" data-i="${i}">—</span></div>`),
   ].join("");
   const hint = (info.extra.length + compareRuns.length) === 0
     ? '<div style="opacity:.6;margin-top:5px">nothing to compare yet — click <b>compare laps</b> again to add another replay</div>'

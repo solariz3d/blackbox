@@ -193,23 +193,25 @@ function wheelLift(w, g) {
 }
 // travelled distance (m) at fractional frame `fp`, interpolated — drives the wheel
 // roll-spin so it's scrub-safe (scrub back → wheels roll back, pause → they stop).
-function wheelRollDistance(fp) {
-  const cd = ex && ex.cumDist; if (!cd) return 0;
-  const i = Math.max(0, Math.min(ex.N - 1, Math.floor(fp)));
-  const j = Math.min(ex.N - 1, i + 1);
+function wheelRollDistance(fp, src) {
+  const E = src || ex;
+  const cd = E && E.cumDist; if (!cd) return 0;
+  const i = Math.max(0, Math.min(E.N - 1, Math.floor(fp)));
+  const j = Math.min(E.N - 1, i + 1);
   return cd[i] + (cd[j] - cd[i]) * (fp - i);
 }
 // recorded wheel-centre WORLD position at fractional frame `fp` for wheel k (0=FL,1=FR,
 // 2=RL,3=RR). This is the real per-wheel position from the replay — placing each wheel
 // here makes it track the actual banked/bumpy surface (real suspension), no floating.
 // Returns null when the frame's wheel quad is invalid (gap / unsupported replay).
-function wheelWorldAt(fp, k) {
-  const W = ex && ex.wheels, ok = ex && ex.wheelsOk; if (!W) return null;
-  const N = ex.N;
+function wheelWorldAt(fp, k, src) {
+  const E = src || ex;
+  const W = E && E.wheels, ok = E && E.wheelsOk; if (!W) return null;
+  const N = E.N;
   const i0 = Math.max(0, Math.min(N - 1, Math.floor(fp)));
   const i1 = Math.min(N - 1, i0 + 1);
   if (!ok[i0] || !ok[i1]) return null;
-  const f = ex.gap[i1] ? 0 : Math.max(0, Math.min(1, fp - i0));   // snap across a discontinuity, like the body
+  const f = E.gap[i1] ? 0 : Math.max(0, Math.min(1, fp - i0));   // snap across a discontinuity, like the body
   const at = (i, o) => W[i * 12 + k * 3 + o];
   const lin = o => at(i0, o) + (at(i1, o) - at(i0, o)) * f;
   // Catmull-Rom through the recorded centres when a clean 4-frame stencil exists
@@ -217,7 +219,7 @@ function wheelWorldAt(fp, k) {
   // (curb strikes) that plain lerp would ramp linearly; identical to lerp otherwise.
   const im1 = i0 - 1, ip2 = i1 + 1;
   const clean = im1 >= 0 && ip2 < N && ok[im1] && ok[ip2]
-    && !ex.gap[i0] && !ex.gap[i1] && !ex.gap[ip2];
+    && !E.gap[i0] && !E.gap[i1] && !E.gap[ip2];
   if (!clean) return [lin(0), lin(1), lin(2)];
   const f2 = f * f, f3 = f2 * f;
   const cr = o => {
