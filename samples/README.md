@@ -58,6 +58,13 @@ against. The T-180 test track is the ordinary case: flat-ish, grandstands castin
 bands across the road, several clean laps. Between them they cover the two ways the
 renderer tends to break.
 
-The test-track replay contains multiple complete laps, which makes it the one to use for
-lap-vs-lap ghost comparison — you can load it twice and align two of your own laps
-without needing a second file.
+## Lap comparison needs two files
+
+Measured across every replay in a real AC replay folder: **each one holds exactly one timed
+lap.** AC saves a replay per session, and a hotlap session is one flying lap. So `compare
+laps` overlays a *second replay file*, not a second lap inside this one — click it, then
+pick another `.acreplay` of the same track.
+
+(An earlier version of this file claimed the test-track replay held several laps and could
+be loaded twice against itself. It does not, and it cannot. `Ghosts.lapWindows()` reports 1
+complete lap for it: two line crossings, one lap between them.)

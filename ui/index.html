@@ -349,6 +349,7 @@
   <button id="btnTyres" class="on" title="skid marks + smoke — click to cycle: lap · keep · off">tyres · lap</button>
   <span id="volCtl" title="Volume" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85"><span id="volIcon" title="mute / unmute" style="cursor:pointer">🔊</span><input id="volSlider" type="range" min="0" max="100" value="100" style="width:78px;vertical-align:middle"></span>
   <button id="btnLap" class="on">lap only</button>
+  <button id="btnLapCmp" title="overlay every other timed lap's line, coloured by speed difference at the same point on track">compare laps</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
     <option value="1" selected>1×</option>
@@ -403,6 +404,7 @@
 
 <input type="file" id="filepick" accept=".acreplay" class="hidden">
 <input type="file" id="trackpick" accept=".kn5" class="hidden">
+<input type="file" id="lapcmppick" accept=".acreplay" class="hidden">
 
 <!-- intro: clean title card — wordmark + a speed-line draw, on a warm sound motif -->
 <div id="intro">
@@ -475,6 +477,7 @@
 <script src="mathutil.js"></script>
 <script src="glcore.js"></script>
 <script src="acreplay.js"></script>
+<script src="ghosts.js"></script>
 <script src="kn5.js"></script>
 <script src="kn5tex.js"></script>
 <script src="carrender.js"></script>
@@ -494,6 +497,12 @@ let audioAutoStarted = false;   // engine sound spawns on with the first replay
 ["pointerdown", "keydown"].forEach(ev => addEventListener(ev, () => { if (window.BBAudio) BBAudio.resumeIfNeeded(); }));
 let colorMode = "speed";
 let lapOnly = true;
+// Lap comparison: overlay every other timed lap's driven line on the reference lap, each
+// coloured by how much FASTER or SLOWER it was at that point on track. Distance-aligned,
+// not time-aligned — two laps on a common clock stop describing the same corner after the
+// first one you took differently, which is the whole reason a delta bar exists.
+let lapCompare = false;
+let lapRefIndex = null;   // null = the fastest lap; the reference every overlay is measured against
 
 /* the rendered/played frame window: the timed lap when known, else everything */
 function frameRange() {
@@ -1486,6 +1495,124 @@ function bankRGB(deg) {
 }
 
 /* build GPU geometry from extracted car */
+/* ===================== lap comparison =====================
+ * Every timed lap except the reference gets its driven line drawn, coloured by the SPEED
+ * DIFFERENCE against the reference at the same point on track: green where this lap was
+ * quicker, red where it was slower, grey where they matched.
+ *
+ * Aligned by DISTANCE around the lap, never by time (Ghosts.lapDistances /
+ * frameAtDistance). Two laps played from a common clock start describing different corners
+ * the moment one driver is quicker, so a time-aligned comparison answers a question nobody
+ * asked. At equal distance they stay side by side the whole way round, which is what makes
+ * "you were 4 km/h slower HERE" a true statement about a place.
+ *
+ * The lines are drawn, not ribbons: several speed-coloured ribbons over the same corner
+ * z-fight and hide each other, and the thing being compared is the LINE anyway. */
+const LAP_COLORS = [
+  [1.00, 0.28, 0.20], [0.30, 0.85, 1.00], [0.65, 1.00, 0.35],
+  [1.00, 0.80, 0.25], [0.85, 0.45, 1.00], [1.00, 0.45, 0.75],
+];
+const LAP_DV_FULL = 12;   // km/h difference that saturates the colour
+
+/* Comparison runs. Measured on every replay in the folder: each holds exactly ONE timed
+ * lap (81.85, 82.50, 82.85, 86.06, 86.32 — five different times, five separate files). So
+ * lap-vs-lap lives ACROSS replays, not inside one. A second lap found inside a single
+ * replay is handled by the same path; there just aren't any yet. */
+let compareRuns = [];   // [{ ex, label, win, dists, color }]
+
+/** the reference: the loaded replay's own best lap */
+function lapOverlayInfo() {
+  if (!ex || !window.Ghosts) return null;
+  const wins = Ghosts.lapWindows(ex);
+  if (!wins.length) return null;
+  const refI = (lapRefIndex != null && wins[lapRefIndex]) ? lapRefIndex : (Ghosts.bestLapIndex(ex) ?? 0);
+  const extra = wins.map((w, k) => ({ w, k })).filter(o => o.k !== refI);
+  return { wins, refI, ref: wins[refI], extra };
+}
+
+/** Add another replay's best lap as a comparison run. */
+function addCompareRun(ab, name) {
+  const rep = ACReplay.parseReplay(ab);
+  const cex = ACReplay.extractCar(rep, 0);
+  const wins = Ghosts.lapWindows(cex);
+  if (!wins.length) throw new Error("that replay has no completed lap to compare");
+  const win = wins[Ghosts.bestLapIndex(cex) ?? 0];
+  compareRuns.push({
+    ex: cex,
+    label: String(name || "run").replace(/\.acreplay$/i, "").slice(-28),
+    win,
+    dists: Ghosts.lapDistances(cex, win),
+    color: LAP_COLORS[(compareRuns.length + 1) % LAP_COLORS.length],
+  });
+  lapCompare = true;
+  const btn = document.getElementById("btnLapCmp");
+  if (btn) btn.classList.add("on");
+  buildGeometry();
+}
+
+/** speed (km/h) at a fractional frame, linearly interpolated; NaN-safe */
+function speedAtFrame(f) {
+  if (!isFinite(f)) return NaN;
+  const i0 = Math.max(0, Math.min(ex.N - 1, Math.floor(f)));
+  const i1 = Math.min(ex.N - 1, i0 + 1);
+  const a = ex.speed[i0], b = ex.speed[i1];
+  if (!isFinite(a)) return isFinite(b) ? b : NaN;
+  if (!isFinite(b)) return a;
+  return a + (b - a) * (f - i0);
+}
+
+function buildLapOverlays() {
+  for (const o of (bufs.lapOverlays || [])) gl.deleteBuffer(o.buf);
+  bufs.lapOverlays = [];
+  if (!lapCompare) return;
+  const info = lapOverlayInfo();
+  if (!info) return;
+  const { wins, refI, ref } = info;
+
+  const refDists = Ghosts.lapDistances(ex, ref);
+
+  // every comparison lap: the extra laps inside this replay, plus every loaded run
+  const laps = [
+    ...info.extra.map(o => ({ ex, win: o.w, dists: Ghosts.lapDistances(ex, o.w),
+                              color: LAP_COLORS[(o.k + 1) % LAP_COLORS.length],
+                              label: `lap ${o.k + 1}` })),
+    ...compareRuns,
+  ];
+
+  for (const run of laps) {
+    const { ex: cex, win, dists, color: col } = run;
+    const P = cex.pos, NM = cex.nrm;
+    const v = [];
+    for (let i = win.start + 1; i <= win.end; i++) {
+      if (cex.gap[i] || cex.gap[i - 1]) continue;
+      // where on the lap is this frame, and what was the reference doing at that same place?
+      const d = dists[i - win.start];
+      const rf = Ghosts.frameAtDistance(refDists, d);
+      const dv = isFinite(rf) ? (cex.speed[i] - speedAtFrame(ref.start + rf)) : NaN;
+      // green faster, red slower, the run's own colour where there is nothing to compare
+      let c;
+      if (!isFinite(dv)) c = col;
+      else {
+        const t = Math.max(-1, Math.min(1, dv / LAP_DV_FULL));
+        c = t >= 0 ? [0.25 + 0.15 * t, 0.55 + 0.45 * t, 0.30 + 0.10 * t]
+                   : [0.65 - 0.35 * t, 0.30 + 0.10 * t, 0.28 + 0.08 * t];
+      }
+      // lifted a little more than the centre line so the overlay never z-fights it
+      const L = 0.9;
+      for (const j of [i - 1, i]) {
+        v.push(P[j*3] + NM[j*3]*L, P[j*3+1] + NM[j*3+1]*L, P[j*3+2] + NM[j*3+2]*L, c[0], c[1], c[2], 1);
+      }
+    }
+    if (!v.length) continue;
+    const arr = new Float32Array(v);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
+    bufs.lapOverlays.push({ buf, n: arr.length / 7, color: col, timeMs: win.timeMs, label: run.label });
+  }
+  renderLapLegend(info);
+}
+
 function buildGeometry() {
   const N = ex.N, P = ex.pos, NM = ex.nrm;
   // the ribbon is ALWAYS the driven line, never a road stand-in — that costume
@@ -1560,6 +1687,8 @@ function buildGeometry() {
   gl.bindBuffer(gl.ARRAY_BUFFER, bufs.line);
   gl.bufferData(gl.ARRAY_BUFFER, larr, gl.STATIC_DRAW);
   bufs.lineN = larr.length / 7;
+
+  buildLapOverlays();
 
   // ground grid at minY - 20
   let minX = 1e30, maxX = -1e30, minY = 1e30, minZ = 1e30, maxZ = -1e30, maxY = -1e30;
@@ -2555,6 +2684,8 @@ function render() {
   if (showLine) {
     bindAndDraw(bufs.ribbon, bufs.ribbonN, gl.TRIANGLES);
     bindAndDraw(bufs.line, bufs.lineN, gl.LINES);
+    // comparison laps last, so they sit over the reference ribbon rather than inside it
+    for (const o of (bufs.lapOverlays || [])) bindAndDraw(o.buf, o.n, gl.LINES);
   }
 
   // the car model on the cursor (its meshes are local-space → uModel = carMatrix).
@@ -2887,6 +3018,69 @@ document.getElementById("btnPlay").addEventListener("click", togglePlay);
 document.getElementById("rate").addEventListener("change", function () { rate = +this.value; });
 document.getElementById("modeSpeed").addEventListener("click", () => setMode("speed"));
 document.getElementById("modeBank").addEventListener("click", () => setMode("bank"));
+/* Lap comparison legend — the lap times, and which colour is which lap. Facts only:
+ * the line colour says where each lap was faster or slower, this says which lap it is
+ * and what it cost. Hidden entirely when comparison is off. */
+function renderLapLegend(info) {
+  let el = document.getElementById("lapcmp");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "lapcmp";
+    el.style.cssText = "position:absolute;left:12px;top:96px;z-index:6;font:12px/1.5 Cascadia Mono,Consolas,monospace;" +
+      "background:rgba(8,10,14,.82);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:8px 10px;color:#cfd6e4;pointer-events:none";
+    document.body.appendChild(el);
+  }
+  if (!lapCompare || !info) { el.style.display = "none"; return; }
+  el.style.display = "block";
+  const fmt = (ms) => {
+    if (!ms) return "—";
+    const s = ms / 1000;
+    return `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, "0")}`;
+  };
+  const refMs = info.ref.timeMs;
+  const swatch = (c) => `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;` +
+    `background:rgb(${c.map(x => Math.round(x * 255)).join(",")})"></span>`;
+  const row = (c, label, ms, isRef) => {
+    const d = isRef ? "reference"
+      : (ms && refMs ? `${ms >= refMs ? "+" : "−"}${(Math.abs(ms - refMs) / 1000).toFixed(3)}` : "");
+    return `<div>${swatch(c)}${label} · ${fmt(ms)} <span style="opacity:.6">${d}</span></div>`;
+  };
+  const rows = [
+    row([1, 1, 1], `lap ${info.refI + 1}`, refMs, true),
+    ...info.extra.map(o => row(LAP_COLORS[(o.k + 1) % LAP_COLORS.length], `lap ${o.k + 1}`, o.w.timeMs, false)),
+    ...compareRuns.map(r => row(r.color, r.label, r.win.timeMs, false)),
+  ].join("");
+  const hint = (info.extra.length + compareRuns.length) === 0
+    ? '<div style="opacity:.6;margin-top:5px">nothing to compare yet — click <b>compare laps</b> again to add another replay</div>'
+    : "";
+  el.innerHTML = `<div style="opacity:.55;margin-bottom:4px">lap comparison · green = faster here</div>${rows}${hint}`;
+}
+
+/* First click turns comparison on; with it already on, another click adds a replay to
+ * compare against. Measured: every replay in the folder holds exactly one timed lap, so
+ * the second lap almost always comes from a second FILE — making "add a run" the primary
+ * action rather than a buried one. */
+document.getElementById("lapcmppick").addEventListener("change", function () {
+  const f = this.files && this.files[0];
+  this.value = "";
+  if (!f) return;
+  f.arrayBuffer().then(ab => addCompareRun(ab, f.name)).catch(err => {
+    const el = document.getElementById("lapcmp");
+    if (el) { el.style.display = "block"; el.innerHTML = `<div style="opacity:.7">${err.message || err}</div>`; }
+  });
+});
+
+document.getElementById("btnLapCmp").addEventListener("click", function () {
+  if (!ex) return;
+  const info = lapOverlayInfo();
+  const have = info ? info.extra.length + compareRuns.length : 0;
+  if (lapCompare && have === 0) { document.getElementById("lapcmppick").click(); return; }  // on, but empty → pick a run
+  lapCompare = !lapCompare;
+  this.classList.toggle("on", lapCompare);
+  buildGeometry();
+  if (!lapCompare) renderLapLegend(null);
+});
+
 document.getElementById("btnLap").addEventListener("click", function () {
   lapOnly = !lapOnly;
   this.classList.toggle("on", lapOnly);
