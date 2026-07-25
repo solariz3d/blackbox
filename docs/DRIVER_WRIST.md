@@ -1,8 +1,18 @@
-# The driver's wrist — open problem
+# The driver's wrist — SOLVED (attempt 4, 2026-07-25)
 
-**Status: attempts 1–3 all worked the wrong component (measured 2026-07-25). See "The twist/bend
-split" below before attempting anything else.** Attempt 3's twist fix is correct on its own terms and
-stays; it simply cannot address what is visible.
+**Status: fixed and confirmed by eye.** `WRIST_POLE = 1.0` — the wrist bend goes into the **elbow**,
+because geometrically nothing else can take it. Attempts 1–3 all worked the wrong component; attempt
+3's twist fix is correct on its own terms and stays alongside it.
+
+The one-line version, for anyone arriving here later: **twist and bend are different halves of a
+rotation. Pronation (`WRIST_FOLLOW`) takes the twist. Only the elbow can take the bend.**
+
+A prediction I got wrong, recorded because it matters for trusting the numbers: from the synthetic
+rig I expected attempt 4 to do almost nothing below 90° of lock (0.1° at zero). By eye on the real
+rig it fixed the visible problem. So the synthetic rig's *relative* behaviour was a good guide to the
+mechanism and its *absolute* angles were not — the real arm's proportions and grip placement differ
+enough to change the reachable elbow circle. Measure the mechanism synthetically; judge the result on
+the real thing.
 
 ## The twist/bend split — read this first
 
@@ -35,12 +45,21 @@ without moving the wrist or the grip — exactly the free variable the bend need
 driver's elbow does. `arm.pole` is currently the bind-pose upper-arm direction (`v3sub(E0, S0)`,
 `index.html`), i.e. a constant that knows nothing about where the hand is pointing.
 
-**Attempt 4 (proposed, not built):** drive the pole from the hand's own axis — aim the elbow at
-`W − L2·handAxis`, the position that would make the forearm collinear with the hand, and let
-`ik2bone` snap it to the nearest reachable point on the circle. Blend by a tunable so it can be dialled
-back if the elbow silhouette reads badly. Note attempt 1 measured that the pole's perpendicular
-component never degenerates on this geometry (bottoms out at 0.573) — that finding says the pole is
-*well-conditioned*, which is what makes it safe to steer.
+**Attempt 4 — SHIPPED AND CONFIRMED (`WRIST_POLE`, default 1.0).** Drive the pole from the hand's own
+axis: aim the elbow at `W − L2·handAxis`, the position that makes the forearm collinear with the hand,
+and let `ik2bone` snap it to the nearest reachable point on the circle. Blended by `WRIST_POLE`, so
+`0` is exactly the old bind-pose pole if the elbow silhouette ever reads wrong.
+
+Attempt 1's measurement turned out to be the thing that made this safe: it found the pole's
+perpendicular component never degenerates on this geometry (bottoms out at 0.573). Read as a failure
+at the time — it disproved attempt 1's hypothesis — it is exactly the proof that the pole is
+well-conditioned and can be steered without the elbow flipping. A negative result three attempts
+earlier is what licensed the fix.
+
+`test_wristbend.js` guards it: `WRIST_FOLLOW` must move the bend by 0.000° (the tautology that
+invalidated three attempts is now a failing test), the pole fix must never make any angle worse, and
+the grip target, shoulder and both bone lengths must not move — a wrist straightened by lifting the
+hand off the rim would be a regression wearing a success.
 
 ---
 
