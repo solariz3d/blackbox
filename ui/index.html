@@ -549,6 +549,19 @@ let carSteerAngle = 0;  // front-wheel steer this frame (radians), set by carMod
 // procedural driver rig: the body is a rigid seated pose (the car's own
 // driver_base_pos.knh) and only the head turns into corners — smoothed so it
 // settles slowly. Tunables up top for easy feel work.
+/* The cockpit shot: the eye sits BEHIND the steering wheel, at about the driver's eyeline, and
+ * looks FORWARD down the road — so the rim, the hands and the arms fill the lower frame with the
+ * track running away ahead. Aiming back at the wheel instead gives a rear-facing view, which is
+ * disorienting when the chase cam you zoomed in from was looking forward.
+ * Offsets are relative to the wheel's own pivot in the car's basis (m); BACK is toward the driver.
+ * The _DEEP pair is the final squeeze of the zoom — tighter onto the hands. */
+let COCKPIT_FWD = 0.34, COCKPIT_UP = 0.26, COCKPIT_SIDE = 0.60, COCKPIT_FOV = 1.35;
+let COCKPIT_FWD_DEEP = 0.22, COCKPIT_UP_DEEP = 0.20, COCKPIT_SIDE_DEEP = 0.44, COCKPIT_FOV_DEEP = 1.45;
+let COCKPIT_ORBIT_R = 0.52, COCKPIT_ORBIT_UP = 0.05;   // max zoom: drag orbits a sphere of this radius about the wheel, full 360°
+let COCKPIT_AIM_UP = 10 * Math.PI / 180;   // at max zoom the aim tilts up by this much off the rim
+let HEAD_HIDE_DIST = 0.34;   // hide the driver head inside this radius of the neck pivot (m) — a helmet surrounds the lens at that range
+let DRIVER_CLEAR = 0.26;     // camera keep-out radius around the chest→wheel capsule (torso, shoulders, arms)
+let DRIVER_CLEAR_FROM = 0.35;   // where the keep-out starts along neck→wheel: 0 = at the head, 1 = at the wheel
 let DRIVER_HEAD_YAW_MAX = 0.85;   // neck isn't a swivel — cap the head turn (~49°)
 let DRIVER_HEAD_SIGN = 1;         // flip if the head turns the wrong way
 // hands stay GLUED to the wheel's grip points at any steer: one spin drives the
@@ -980,6 +993,67 @@ const follow = {
   on: false, yawOff: 0, distMul: 1, saved: null, prevTs: 0,
   rig: { ready: false, dist: 160, height: 60, side: 0, la: 30, up: [0, 1, 0], eye: null, look: null },
 };
+// clamped smoothstep — eased 0..1, so a blend starts and ends without a visible kink
+function smooth01(t) { const x = t < 0 ? 0 : t > 1 ? 1 : t; return x * x * (3 - 2 * x); }
+
+/* Keep the close camera out of the driver, in CAR MODEL SPACE — which is the only place this is
+ * simple, because the driver, the wheel and the cabin are all fixed there while the car flies
+ * around the world. Two constraints, both cheap:
+ *
+ *   1. a CAPSULE from the head down to the wheel, radius DRIVER_CLEAR. That segment is the torso,
+ *      shoulders and arms — everything the camera can bury itself in while orbiting the wheel. The
+ *      eye gets pushed radially out to the capsule's surface, so the arms stay visible rather than
+ *      being hidden, which is the whole point of the shot.
+ *   2. a CEILING on how far it may sit from the wheel, so pushing out of the driver cannot shove
+ *      the eye through the bodywork into open air.
+ *
+ * Returns the corrected model-space point. Nothing here needs the car's mesh: a helmet, a torso and
+ * a cabin are well described by a capsule and a radius, and a mesh collider for a moving car is a
+ * far bigger machine for the same result.
+ */
+function cockpitClear(p, wheelC, neckPivot, maxR) {
+  /* The keep-out starts BELOW the head, not at it. Spanning the full head→wheel line blocked the
+   * region the camera used to sit in and moved the shot; the head does not need protecting here
+   * anyway, because it is hidden once the eye is inside HEAD_HIDE_DIST. What must stay clear is
+   * the chest, shoulders and arms — the part you want to keep SEEING rather than fly through. */
+  const B = wheelC;
+  const A = [neckPivot[0] + (wheelC[0] - neckPivot[0]) * DRIVER_CLEAR_FROM,
+             neckPivot[1] + (wheelC[1] - neckPivot[1]) * DRIVER_CLEAR_FROM,
+             neckPivot[2] + (wheelC[2] - neckPivot[2]) * DRIVER_CLEAR_FROM];
+  const abx = B[0] - A[0], aby = B[1] - A[1], abz = B[2] - A[2];
+  const ab2 = abx * abx + aby * aby + abz * abz || 1;
+  const out = [p[0], p[1], p[2]];
+  const pushOut = () => {
+    let t = ((out[0] - A[0]) * abx + (out[1] - A[1]) * aby + (out[2] - A[2]) * abz) / ab2;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;                     // nearest point ON the segment
+    const cx = A[0] + abx * t, cy = A[1] + aby * t, cz = A[2] + abz * t;
+    let dx = out[0] - cx, dy = out[1] - cy, dz = out[2] - cz;
+    let d = Math.hypot(dx, dy, dz);
+    if (d >= DRIVER_CLEAR) return false;
+    if (d < 1e-4) { dx = 0; dy = 1; dz = 0; d = 1; }   // dead centre: pop straight up rather than NaN
+    const s = DRIVER_CLEAR / d;
+    out[0] = cx + dx * s; out[1] = cy + dy * s; out[2] = cz + dz * s;
+    return true;
+  };
+  const pullIn = () => {
+    const wx = out[0] - wheelC[0], wy = out[1] - wheelC[1], wz = out[2] - wheelC[2];
+    const wd = Math.hypot(wx, wy, wz);
+    if (wd <= maxR || wd < 1e-4) return false;
+    const s = maxR / wd;
+    out[0] = wheelC[0] + wx * s; out[1] = wheelC[1] + wy * s; out[2] = wheelC[2] + wz * s;
+    return true;
+  };
+  /* The two constraints genuinely conflict in some directions — behind the head there is NO point
+   * that is both clear of the driver and inside the cabin radius, so one has to win. Relaxing a
+   * couple of times settles the easy cases, and the keep-out is applied LAST so the unsatisfiable
+   * ones end up slightly outside the cabin rather than inside the driver's shoulder. Sitting a few
+   * centimetres proud of the bodywork is invisible; sitting inside an arm is not.
+   * (Applying them in the other order silently re-buried the camera — the pull-in undid the push,
+   * landing 0.165 m from the capsule against a 0.30 m limit.) */
+  for (let i = 0; i < 3; i++) { pushOut(); if (!pullIn()) break; }
+  pushOut();
+  return out;
+}
 function followActive() { return follow.on && follow.rig.ready && !!follow.rig.eye; }
 function camEye() {
   if (followActive()) return follow.rig.eye;
@@ -1191,7 +1265,11 @@ function followUpdate(fp, dt) {
   // the eye must also DROP to the car's level, or it ends up above the car looking
   // down at the ground; low + behind lets the framing tilt up the road instead.
   const zoomN = Math.max(0, Math.min(1, (1 - (follow.distMul || 1)) / 0.88));
-  const distT = (DMIN + (DMAX - DMIN) * speedN * (1 - 0.55 * curveN)) * (follow.distMul || 1);
+  /* The chase eye stops at the bodywork. The zoom range now runs below 0.12 so the last stretch
+   * can carry the camera into the cockpit, but the CHASE pose must not follow it in — unfloored it
+   * ends up centimetres behind the car's origin, buried inside the panels. Going further in is the
+   * cockpit blend's job, below. */
+  const distT = Math.max(1.5, (DMIN + (DMAX - DMIN) * speedN * (1 - 0.55 * curveN)) * (follow.distMul || 1));
   const heightT = (HMIN + (HMAX - HMIN) * speedN * (1 - 0.5 * curveN)) * (1 - 0.8 * zoomN);
   const sideT = distT * 0.34 * curveN * turnSign * FOLLOW_SWING;   // swing into the corner
   const bankT = 0.16 * curveN * speedN * turnSign * FOLLOW_SWING;  // drone roll into the turn
@@ -1281,6 +1359,102 @@ function followUpdate(fp, dt) {
   // drone bank: roll the VIEW up around the heading (view only — doesn't move eye)
   const bc = Math.cos(R.bank || 0), bs = Math.sin(R.bank || 0);
   R.viewUp = [R.up[0] * bc - rx * bs, R.up[1] * bc - ry * bs, R.up[2] * bc - rz * bs];  // up' = up·cos + (H×up)·sin
+  /* THE COCKPIT SHOT — where the zoom keeps going after the chase cam has run out of room.
+   *
+   * `enter` carries the eye from the chase pose to a point just ahead of the steering wheel, aimed
+   * back at it, so you end up looking at the rim, the driver's hands and the arms behind them.
+   * `deep` is the last squeeze: keep scrolling and it pushes closer and narrows the lens onto the
+   * hands themselves. Both are anchored on `carDriver.wheelC` — the wheel's own pivot from the car
+   * model — so it lands correctly on any car instead of on numbers tuned for this one.
+   *
+   * The pose is LOCKED to the car: fixed eye, fixed aim, no drone bank. Everything that makes the
+   * chase cam feel alive — the swing into corners, the framing solve, the roll — is exactly what
+   * ruins a close shot, because at half a metre those corrections read as camera shake. Rigid to
+   * the car means the cockpit sits still while the world tears past, which is the shot worth having.
+   */
+  const enter = smooth01((0.26 - (follow.distMul || 1)) / (0.26 - 0.07));
+  follow.enter = enter;
+  if (enter > 0.001 && ex) {
+    const wc = (carDriver && carDriver.wheelC) ? carDriver.wheelC
+             : (carDriver && carDriver.neckPivot) ? [carDriver.neckPivot[0], carDriver.neckPivot[1] - 0.16, carDriver.neckPivot[2] + 0.40]
+             : [0, 0.92, 0.55];
+    const deep = smooth01((0.07 - (follow.distMul || 1)) / (0.07 - 0.03));
+    const fwdOff = COCKPIT_FWD - (COCKPIT_FWD - COCKPIT_FWD_DEEP) * deep;   // final squeeze onto the hands
+    const up = COCKPIT_UP - (COCKPIT_UP - COCKPIT_UP_DEEP) * deep;
+    /* Which side to shoot from: whichever side the user has orbited to. `yawOff` is their own drag
+     * around the car, so its sine gives both the side and how committed they are — tanh saturates
+     * it quickly, so a small nudge off dead-astern already picks a side and holds it rather than
+     * creeping. Orbit through the back and the shot crosses over to the other shoulder. */
+    const sideAmt = Math.tanh(Math.sin(follow.yawOff || 0) * 3);
+    const sideOff = (COCKPIT_SIDE - (COCKPIT_SIDE - COCKPIT_SIDE_DEEP) * deep) * sideAmt;
+    /* Use the CAR'S OWN MODEL MATRIX, not a basis rebuilt here. `wheelC` is in the car model's
+     * space, and the rig's H is the CHASE direction — it points from the car back toward the
+     * camera, not forward — so mapping model coordinates through it put the eye behind the car
+     * looking out the back. carModelMatrix is the same transform the wheel, the driver and the
+     * hands are drawn with, so anchoring to it is correct by construction on any car. */
+    const cmr = carModelMatrix(fp);
+    const M = cmr && cmr.mat;
+    const xf = (a, b, c) => M
+      ? [M[0] * a + M[4] * b + M[8] * c + M[12],
+         M[1] * a + M[5] * b + M[9] * c + M[13],
+         M[2] * a + M[6] * b + M[10] * c + M[14]]
+      : [px + rx * a + R.up[0] * b + Hx * c, py + ry * a + R.up[1] * b + Hy * c, pz + rz * a + R.up[2] * b + Hz * c];
+    /* Which way is "ahead of the wheel" in this model's space? Don't assume ±Z — measure it. The
+     * driver's neck sits BEHIND the wheel, so wheel-minus-neck points toward the nose. Self-
+     * calibrating, so a car authored along the other axis still gets the camera on the right side
+     * of the wheel instead of buried in the driver's chest. */
+    const nkp = carDriver && carDriver.neckPivot;
+    const dz = nkp ? wc[2] - nkp[2] : 1;
+    const fs = Math.abs(dz) > 0.02 ? Math.sign(dz) : 1;
+    // eye off to the chosen side and slightly ahead, aimed at the wheel: a diagonal look INTO the
+    // cockpit at the hands working the rim. Diagonal rather than straight-on is the difference
+    // between an action shot and a rear-facing view.
+    // build the eye in MODEL space first, so the keep-out volumes below are simple fixed shapes
+    let eM = [wc[0] + sideOff, wc[1] + up, wc[2] + fwdOff * fs];
+    // aim lifts as the zoom deepens: pointing dead at the rim buries the frame in dashboard, and a
+    // few degrees up puts the hands low in shot with the road beyond them
+    const aimUp = 0.02 + COCKPIT_ORBIT_R * Math.tan(COCKPIT_AIM_UP) * deep;
+    const tW = xf(wc[0] + sideOff * 0.15, wc[1] + aimUp, wc[2]);
+    /* At MAX zoom the shot becomes a full orbit of the wheel — drag all the way round it, over the
+     * top, under it, from the driver's side or the far side. The side-offset framing above
+     * saturates on purpose (it commits to a shoulder rather than creeping), which is right for the
+     * approach but would cap you at ±60 cm here. So the last of the zoom blends that into a true
+     * sphere around the wheel, driven by the same drag: yaw goes all the way round, pitch lifts and
+     * drops the eye. Aim stays pinned to the rim, so the hands hold the frame from every angle. */
+    if (deep > 0.001) {
+      const yaw = follow.yawOff || 0;
+      const pit = Math.max(-1.15, Math.min(1.15, cam.pitch || 0));
+      const hr = COCKPIT_ORBIT_R * Math.cos(pit);
+      // the sphere is centred on the WHEEL (plus a token lift toward the hands), not on the eye
+      // height — centring it higher makes the radius shrink as you pitch down, which walks the
+      // camera into the rim at the bottom of the arc
+      const om = [wc[0] + Math.sin(yaw) * hr,
+                  wc[1] + COCKPIT_ORBIT_UP + COCKPIT_ORBIT_R * Math.sin(pit),
+                  wc[2] + Math.cos(yaw) * hr * fs];
+      eM = [eM[0] + (om[0] - eM[0]) * deep, eM[1] + (om[1] - eM[1]) * deep, eM[2] + (om[2] - eM[2]) * deep];
+    }
+    // push the eye out of the driver (head, torso, arms) and keep it inside the cabin
+    const nkC = (carDriver && carDriver.neckPivot) ? carDriver.neckPivot : [wc[0], wc[1] + 0.16, wc[2] - 0.46 * fs];
+    eM = cockpitClear(eM, wc, nkC, COCKPIT_ORBIT_R + 0.10);
+    const eW = xf(eM[0], eM[1], eM[2]);
+    const exW2 = eW[0], eyW2 = eW[1], ezW2 = eW[2];
+    const txW = tW[0], tyW = tW[1], tzW = tW[2];
+    /* NO world-space smoothing here, deliberately. Filtering the world position of a camera that is
+     * rigidly bolted to a moving car makes the pose TRAIL the car while it drives — and the instant
+     * you pause, the filter catches up and the camera glides forward into the cockpit. That is the
+     * "momentum lag" artifact. The pose is exact each frame; it is steady because it is expressed in
+     * the car's own frame, and any residual jitter belongs to the car matrix, where it should be
+     * fixed rather than papered over here. */
+    R.shotEye = [exW2, eyW2, ezW2]; R.shotAt = [txW, tyW, tzW];
+    for (let k = 0; k < 3; k++) {
+      R.eye[k] += (R.shotEye[k] - R.eye[k]) * enter;
+      R.look[k] += (R.shotAt[k] - R.look[k]) * enter;
+    }
+    R.fov += ((COCKPIT_FOV - (COCKPIT_FOV - COCKPIT_FOV_DEEP) * deep) - R.fov) * enter;
+    R.bank = (R.bank || 0) * (1 - enter);   // locked orientation: the shot does not roll into corners
+  } else {
+    R.shotEye = null; R.shotAt = null;      // re-seed the filter next time instead of easing in from a stale pose
+  }
   cam.dist = R.dist;   // fog scales with chase distance
   cam.target[0] = R.look[0]; cam.target[1] = R.look[1]; cam.target[2] = R.look[2];
 }
@@ -2177,7 +2351,19 @@ function render() {
   // shrink the near-clip as it zooms in → the camera reads "smaller" and can sit closer to geometry
   // (and the driver) without the near plane slicing through it.
   const zN = fa ? Math.max(0, Math.min(1, (1 - (follow.distMul || 1)) / 0.88)) : 0;
-  const zNear = fa ? (0.3 - 0.2 * zN) : 2, zFar = 60000;
+  /* Free-fly used a FIXED 2 m near plane, which is why the camera clipped into anything you tried
+   * to approach: two metres of world in front of the lens was being cut away, so you could never
+   * get near a wall, a kerb or the car itself. It now scales with how far out you are zoomed —
+   * close in you get 8 cm and can nose right up to geometry; zoomed way out it returns to 2 m,
+   * where depth precision matters more than proximity and nothing is near the lens anyway.
+   * For reference, follow mode has always run 0.1 m against a 60 km far plane (a 600,000:1 ratio)
+   * with no z-fighting in this scene, so 0.08 here is not new territory. */
+  const zNear = fa ? (0.3 - 0.2 * zN) : 0.05;
+  /* Depth precision follows the near:far RATIO, so the way to buy a tiny near plane is to stop
+   * paying for a far one nothing uses: 60 km was rendering an empty horizon. 20 km still clears
+   * any Assetto Corsa track by a wide margin, and 0.05:20000 is a 400,000:1 ratio — LESS than the
+   * 600,000:1 that follow mode has always shipped without z-fighting in this scene. */
+  const zFar = fa ? 60000 : 20000;
   const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, zNear, zFar);
   const view = mLookAt(camEye(), fa ? follow.rig.look : cam.target, fa ? (follow.rig.viewUp || follow.rig.up) : [0, 1, 0]);
   const mvp = new Float32Array(mMul(proj, view));
@@ -2411,7 +2597,21 @@ function render() {
       if (animS) driverSkinUpload(driverAnimWorlds(animS, animT(animS, wheelSpin * DRIVER_GRIP_SPIN_SIGN)));
       else driverSeatedSkin(wheelSpin * DRIVER_GRIP_SPIN_SIGN);   // hands ride the SAME spin as the wheel
       for (const sm of carDriver.skinned) drawCarGroups([sm.grp], dp.body);
-      drawCarGroups(carDriver.headGroups, dp.head);
+      /* Drop the head when the camera is right on top of it. A helmet is ~20 cm across, so once the
+       * eye is inside that radius the mesh straddles the near plane and you see its interior across
+       * the frame — it reads as the helmet "clipping in from behind the camera". No near-plane value
+       * fixes this: the geometry genuinely surrounds the lens. Measured against the neck pivot in
+       * world space, so it applies to any camera that gets that close, not just one named mode. */
+      let headOK = true;
+      if (cm && carDriver.neckPivot) {
+        const nk = carDriver.neckPivot;
+        const hx = cm[0]*nk[0] + cm[4]*nk[1] + cm[8]*nk[2] + cm[12];
+        const hy = cm[1]*nk[0] + cm[5]*nk[1] + cm[9]*nk[2] + cm[13];
+        const hz = cm[2]*nk[0] + cm[6]*nk[1] + cm[10]*nk[2] + cm[14];
+        const eye = camEye();
+        headOK = Math.hypot(eye[0]-hx, eye[1]-hy, eye[2]-hz) > HEAD_HIDE_DIST;
+      }
+      if (headOK) drawCarGroups(carDriver.headGroups, dp.head);
     }
     // reflective WINDSCREEN — a transparent pass over the car: fresnel rim + sky/ground reflection +
     // a sharp sun glint that slides across as the car turns. Depth-tested but no depth-write, blended.
@@ -2491,19 +2691,11 @@ addEventListener("mousemove", e => {
   dragging.x = e.clientX; dragging.y = e.clientY;
   if (Math.abs(dx) + Math.abs(dy) > 1) dragging.moved = true;
   if (dragging.btn === 0) {
-    if (follow.on) {
-      follow.yawOff += dx * 0.005;
-      cam.pitch = Math.max(-1.5, Math.min(1.55, cam.pitch + dy * 0.005));
-    } else {
-      // first-person look: rotate the view about the FIXED eye (not orbit a point)
-      const eye = camEye();
-      cam.yaw += dx * 0.005;
-      cam.pitch = Math.max(-1.5, Math.min(1.55, cam.pitch + dy * 0.005));
-      const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
-      cam.target[0] = eye[0] - cam.dist * cp * Math.cos(cam.yaw);
-      cam.target[1] = eye[1] - cam.dist * sp;
-      cam.target[2] = eye[2] - cam.dist * cp * Math.sin(cam.yaw);
-    }
+    /* Look deltas are ACCUMULATED here and applied once per frame (lookStep), never per event.
+     * A mouse reports at ~125 Hz in uneven bursts while the frame renders at 60: applied
+     * immediately, some frames absorb three deltas and others none, which reads as stutter even
+     * though no input was lost. Buffering turns the same total motion into a smooth sweep. */
+    lookPend.dx += dx; lookPend.dy += dy;
   } else {
     // pan in camera plane
     const eye = camEye();
@@ -2521,7 +2713,9 @@ cv.addEventListener("contextmenu", e => e.preventDefault());
 cv.addEventListener("wheel", e => {
   e.preventDefault();
   if (follow.on) {
-    follow.distMul = Math.max(0.12, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
+    // the range continues past the old 0.12 floor — the rig turns that last stretch into a move
+    // into the cockpit rather than pulling the chase eye into the bodywork
+    follow.distMul = Math.max(0.03, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
   } else {
     cam.dist = Math.max(3, Math.min(50000, cam.dist * (e.deltaY > 0 ? 1.12 : 0.89)));
   }
@@ -2548,20 +2742,62 @@ addEventListener("keydown", e => {
 });
 addEventListener("keyup", e => flyKeys.delete(e.key.toLowerCase()));
 addEventListener("blur", () => flyKeys.clear());
-// advance the free-fly cam one frame (dtSec seconds)
+/* Apply buffered look motion, eased. A TIME-CONSTANT response (not a fixed fraction per frame)
+ * keeps the feel identical at 30, 60 or 144 fps. */
+const lookPend = { dx: 0, dy: 0 };
+const LOOK_TAU = 0.035;            // seconds to absorb a flick — short enough to still feel direct
+function lookStep(dtSec) {
+  if (!lookPend.dx && !lookPend.dy) return;
+  const k = 1 - Math.exp(-Math.max(0.001, dtSec) / LOOK_TAU);
+  const dx = lookPend.dx * k, dy = lookPend.dy * k;
+  lookPend.dx -= dx; lookPend.dy -= dy;
+  if (Math.abs(lookPend.dx) < 0.01) lookPend.dx = 0;
+  if (Math.abs(lookPend.dy) < 0.01) lookPend.dy = 0;
+  if (follow.on) {
+    follow.yawOff += dx * 0.005;
+    cam.pitch = Math.max(-1.5, Math.min(1.55, cam.pitch + dy * 0.005));
+    return;
+  }
+  // first-person look: rotate the view about the FIXED eye (not orbit a point)
+  const eye = camEye();
+  cam.yaw += dx * 0.005;
+  cam.pitch = Math.max(-1.5, Math.min(1.55, cam.pitch + dy * 0.005));
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  cam.target[0] = eye[0] - cam.dist * cp * Math.cos(cam.yaw);
+  cam.target[1] = eye[1] - cam.dist * sp;
+  cam.target[2] = eye[2] - cam.dist * cp * Math.sin(cam.yaw);
+}
+
+/* Free-fly with inertia. Stepping the position directly while a key is held starts and stops the
+ * camera instantly — that hard start/stop is most of what makes hand-flown footage look jerky; a
+ * real camera has mass. Velocity chases the requested direction and coasts when you let go.
+ * Behaviour is unchanged while a key is held at steady state: same top speed, same scaling. */
+const flyVel = [0, 0, 0];
+const FLY_ACCEL = 6.5;             // 1/s — how hard it chases the requested velocity
+const FLY_DAMP = 4.0;              // 1/s — coast-down when nothing is held
 function flyStep(dtSec) {
-  if (follow.on || !ex || !flyKeys.size) return;
+  if (follow.on || !ex) { flyVel[0] = flyVel[1] = flyVel[2] = 0; return; }
+  const dt = Math.max(0.001, Math.min(0.05, dtSec));
   const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
   // full 3D forward (along the actual look direction incl. pitch) + horizontal strafe
   const fwd = [-cp * cy, -sp, -cp * sy], right = [sy, 0, -cy];
-  const v = Math.max(0.1, cam.dist * 0.15) * dtSec; // speed scales with zoom; slow when close for precision
+  const v = Math.max(0.1, cam.dist * 0.15);   // speed scales with zoom; slow when close for precision
+  const want = [0, 0, 0];
+  if (flyKeys.has("w")) { want[0] += fwd[0]; want[1] += fwd[1]; want[2] += fwd[2]; }
+  if (flyKeys.has("s")) { want[0] -= fwd[0]; want[1] -= fwd[1]; want[2] -= fwd[2]; }
+  if (flyKeys.has("d")) { want[0] += right[0]; want[2] += right[2]; }
+  if (flyKeys.has("a")) { want[0] -= right[0]; want[2] -= right[2]; }
+  if (flyKeys.has("shift")) want[1] += 1;
+  if (flyKeys.has("control")) want[1] -= 1;
+  const wl = Math.hypot(want[0], want[1], want[2]);
+  if (wl > 1e-6) { want[0] = want[0] / wl * v; want[1] = want[1] / wl * v; want[2] = want[2] / wl * v; }
+  const k = 1 - Math.exp(-dt * (wl > 1e-6 ? FLY_ACCEL : FLY_DAMP));
   const T = cam.target;
-  if (flyKeys.has("w")) { T[0] += fwd[0]*v; T[1] += fwd[1]*v; T[2] += fwd[2]*v; }
-  if (flyKeys.has("s")) { T[0] -= fwd[0]*v; T[1] -= fwd[1]*v; T[2] -= fwd[2]*v; }
-  if (flyKeys.has("d")) { T[0] += right[0]*v; T[2] += right[2]*v; }
-  if (flyKeys.has("a")) { T[0] -= right[0]*v; T[2] -= right[2]*v; }
-  if (flyKeys.has("shift")) T[1] += v;
-  if (flyKeys.has("control")) T[1] -= v;
+  for (let i = 0; i < 3; i++) {
+    flyVel[i] += (want[i] - flyVel[i]) * k;
+    if (Math.abs(flyVel[i]) < 1e-4) flyVel[i] = 0;
+    T[i] += flyVel[i] * dt;
+  }
 }
 
 /* ===================== transport ===================== */
@@ -2654,6 +2890,7 @@ document.getElementById("btnFollow").addEventListener("click", function () {
     follow.yawOff = 0;
     follow.distMul = 1;
     follow.rig.ready = false; follow.rig.eye = null; follow.rig.look = null; follow.rig.fwd = null;  // snap to car, then ease
+    follow.rig.shotEye = null; follow.rig.shotAt = null;   // clear the cockpit filter too, or it eases in from a stale pose
   } else if (follow.saved) {
     cam.yaw = follow.saved.yaw; cam.pitch = follow.saved.pitch;
     cam.dist = follow.saved.dist; cam.target = follow.saved.target;
@@ -3801,12 +4038,12 @@ function loop(ts) {
     }
     lastTs = ts;
     const i = Math.max(0, Math.min(ex.N - 1, Math.floor(tCur / ex.dt)));
-    if (follow.on) {
-      const camDt = follow.prevTs ? (ts - follow.prevTs) / 1000 : 0.016;
-      followUpdate(tCur / ex.dt, camDt);
-    } else {
-      flyStep(follow.prevTs ? Math.min(0.05, (ts - follow.prevTs) / 1000) : 0.016);
-    }
+    const camDt = follow.prevTs ? (ts - follow.prevTs) / 1000 : 0.016;
+    // buffered mouse-look is applied BEFORE the rig, so the chase cam sees this frame's yaw
+    // rather than lagging a frame behind the pointer
+    lookStep(Math.min(0.05, camDt));
+    if (follow.on) followUpdate(tCur / ex.dt, camDt);
+    else flyStep(Math.min(0.05, camDt));
     follow.prevTs = ts;
     const sp = ex.speed[i], tl = ex.tilt[i];
     let edgeTxt = "";

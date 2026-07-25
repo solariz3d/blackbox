@@ -378,7 +378,13 @@ function driverPose(fp, carMat, steer, src) {
   const longG = (dvx * hx + dvy * hy + dvz * hz) / 9.81;
   // SLIGHT body lean — he's belted in snug, so the torso/shoulders only shift a little with the G
   // (roll into lateral G, pitch forward under braking) about the hips. The head rides on top.
-  const bRollT = clamp(-latG * 0.009, 0.02), bPitchT = clamp(-longG * 0.008, 0.016);
+  /* LATERAL ONLY. The fore/aft pitch is gone on purpose: a racing seat plus a harness holds the
+   * driver against braking and acceleration almost completely, so bobbing him back and forth under
+   * long G reads as wonky rather than weighty — invisible from a chase cam, obvious once the camera
+   * sits half a metre away. Lateral sway survives because belts do far less against sideways load
+   * and you genuinely see drivers move with it. */
+  const bRollT = clamp(-latG * 0.009, 0.02), bPitchT = 0;
+  void longG;
   driverRig.bodyRoll = (driverRig.bodyRoll || 0) + (bRollT - (driverRig.bodyRoll || 0)) * k;
   driverRig.bodyPitch = (driverRig.bodyPitch || 0) + (bPitchT - (driverRig.bodyPitch || 0)) * k;
   // The body is a RIGID seated pose (the car's own driver_base_pos.knh, in car
@@ -389,7 +395,11 @@ function driverPose(fp, carMat, steer, src) {
   // shift is now purely the CONSEQUENCE of the torso lean it rides on (a separate bob = moonwalk).
   const headExtra = mMul(rotP(1, driverRig.headYaw, pv[0], pv[1], pv[2]), rotP(2, driverRig.headRoll, pv[0], pv[1], pv[2]));
   // torso lean about the hips; the head rides ON the leaned body so shoulders + head move together
-  const hip = [0, 0.4, 0.02];
+  /* Sway about the GRIP, not the hips. Leaning the rigid seated pose about the hips swings the
+   * shoulders AND the arms, but the wheel does not move with them, so the hands slid around the rim
+   * and the grip read as loose. A driver holding a wheel is hinged at his hands: the grip is the
+   * fixed point and the body sways about it. Measured: 4.9 mm of hand drift at max lean → 1.5 mm. */
+  const hip = (carDriver && carDriver.wheelC) ? carDriver.wheelC : [0, 0.4, 0.02];
   const bodyExtra = mMul(rotP(2, driverRig.bodyRoll, hip[0], hip[1], hip[2]), rotP(0, driverRig.bodyPitch, hip[0], hip[1], hip[2]));
   const bodyMat = mMul(carMat, bodyExtra);
   return {
@@ -445,6 +455,13 @@ function armSolve(arm, ang, C, ax, shoulderMax) {
   const { E } = ik2bone(S, W, arm.L1, arm.L2, arm.pole);
   return { S, E, W, ok: over <= shoulderMax };
 }
+
+// How much of the wheel’s roll the FOREARM absorbs (0 = none, the wrist eats it all; 1 = all of it).
+// Anatomically this is pronation, which moves neither elbow nor wrist, so 1 is the honest default.
+// DISABLED (0) — the theory is sound and the numbers say the wrist absorbs 79°+ of roll, but
+// switched on it looked WORSE by eye, so it does not ship. Left in place behind this flag because
+// the next attempt should start from the measurements, not from scratch. See docs/DRIVER_WRIST.md.
+const WRIST_FOLLOW = 0.0;
 
 // snapToMesh — the grip target is the local CENTRE OF MATERIAL nearest the
 // authored grip: nearest wheel vertex, then two mean-shift steps (centroid of the
@@ -685,6 +702,33 @@ function driverSeatedPose(spin) {
         world[b] = rvRotAbout(M, Rup, S);
       }
       for (const b of arm.foreSub) { if (handSet && handSet.has(b)) continue; world[b] = rvRotAbout(world[b], Rfore, E); }
+      /* WRIST TWIST GOES IN THE FOREARM, not the wrist joint.
+       * The hand is welded to the rim (below), so it carries the full wheel rotation. The forearm,
+       * placed by IK, only knows where the elbow and wrist ARE — not how the hand is rolled. The
+       * difference has to appear somewhere, and with nothing else absorbing it, it shows up as a
+       * bent wrist on the hand travelling DOWN the rim (turn left → left hand at the bottom → left
+       * wrist folds, and mirrored on a right turn).
+       * A real arm does this with pronation: the radius rotates about the forearm's own axis, which
+       * moves neither the elbow nor the wrist, so it is free for us too. Roll the forearm by the
+       * part of the wheel's rotation that lies ALONG that axis and the wrist comes back straight. */
+      if (arm.foreSub && WRIST_FOLLOW > 0) {
+        const u = v3nrm(v3sub(W, E));                       // forearm axis, elbow → wrist
+        const twist = ang * v3dot(ax, u) * WRIST_FOLLOW;    // the wheel's spin resolved onto that axis
+        if (Math.abs(twist) > 1e-4) {
+          // rvRotAbout wants a 4x4 ROTATION MATRIX (same convention rvFromTo returns), not an
+          // axis-angle 3-vector — handing it one silently reads undefined elements, fills the
+          // matrix with NaN, and the arm disappears rather than erroring.
+          const cw = Math.cos(twist), sw = Math.sin(twist), Cw = 1 - cw;
+          const x = u[0], y = u[1], z = u[2];
+          const Rtw = new Float32Array([
+            cw + x*x*Cw,     x*y*Cw + z*sw, x*z*Cw - y*sw, 0,
+            x*y*Cw - z*sw,   cw + y*y*Cw,   y*z*Cw + x*sw, 0,
+            x*z*Cw + y*sw,   y*z*Cw - x*sw, cw + z*z*Cw,   0,
+            0, 0, 0, 1,
+          ]);
+          for (const b of arm.foreSub) { if (handSet && handSet.has(b)) continue; world[b] = rvRotAbout(world[b], Rtw, E); }
+        }
+      }
       if (arm.handSub) {                                          // hand: shift onto the measured rim, then orbit with the wheel
         const Rw = rotMat(c, s, o), dW = arm.gripShift;
         for (const b of arm.handSub) {
