@@ -2713,6 +2713,13 @@ document.getElementById("btnLine").addEventListener("click", function () {
    * means writing into the user's Assetto Corsa folder, which is theirs — so this asks, states
    * exactly where it will write, and does nothing until clicked. Nothing here affects existing
    * replays; it changes what future ones record. */
+  /* Deferred to a task, NOT run at parse time: `inTauri` is a `const` declared further down this
+   * same script, so touching it from here during parse throws a temporal-dead-zone ReferenceError —
+   * which aborts the WHOLE inline script and takes the track browser down with it (symptom: the app
+   * opens on the bare drop-a-file screen instead of the track menu). Anything added near the top
+   * that reads app state must wait until the script has finished running. */
+  setTimeout(bridgeChip, 0);
+  function bridgeChip() {
   const chip = document.getElementById("chipBridge");
   if (!chip || !inTauri) return;
   const show = html => { chip.innerHTML = html; chip.classList.remove("hidden"); };
@@ -2732,6 +2739,7 @@ document.getElementById("btnLine").addEventListener("click", function () {
     });
   };
   check();
+  }
 })();
 (function () {   // auto-hide the header + the top-right "drag look" help: fade them out when the pointer is idle, bring them back on activity
   const header = document.querySelector("header");

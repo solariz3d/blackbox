@@ -44,7 +44,7 @@ window.BBAudio = (function () {
   const DIST_REF = 48, DIST_ROLLOFF = 1.4;   // LOUD car carries far, with no plateau: ~14% at 200m, ~4% at 500m
 
   let ctx, master, panner, engineMix, masterBus;
-  let windVoices = null, windBus = null, windKph = 0;
+  let windVoices = null, windBus = null, windKph = 0, windWalk = 0;
   let acVoices = null, acBus = null, acEvent = null;
   let carBank = null, carBankId = null;
   let bfBufs = [], eventGain = null;
@@ -274,26 +274,68 @@ window.BBAudio = (function () {
   }
 
   const WIND_FULL_KPH = 320;      // camera speed at which wind reaches full level
-  const WIND_FLOOR_KPH = 25;      // below this the air is still
-  const WIND_LEVEL = 0.30;
+  const WIND_FLOOR_KPH = 25;      // below this the camera's own motion adds nothing
+  /* AMBIENT AIR — audible standing still, and it grows with height.
+   * Near the ground the air is quiet but never silent; get up above the scenery and you hear the
+   * atmosphere moving, gusting harder with nothing to break it. So altitude contributes its own
+   * wind independent of camera motion, and it deepens the gusting rather than only raising level:
+   * high air is not just louder, it is less steady. */
+  const WIND_GROUND = 0.10;       // never-silent floor at track level
+  const WIND_ALT_FULL = 220;      // metres above the car at which ambient reaches full
+  let windAlt = 0;
+  /* 0.30 was too hot, and the reason is structural rather than a taste miss: the engine passes
+   * through `engineTrim` (0.72) AND the panner's exhaust cone (down to 0.45 when the camera isn't
+   * behind the car), while wind goes straight to the master bus with neither. So wind was arriving
+   * ~2-3× hotter than the same nominal level on the engine, and only a turbine at full could out-
+   * shout it. Judged by ear at speed; the curve is eased too, so mid-speed cruising stays quieter
+   * and wind climbs mainly where it should — near the top. */
+  const WIND_LEVEL = 0.055;
 
+  /* Source matters more than level here. AC's `wind` event is authored for the DRIVER'S EAR inside
+   * the cabin, so `wind_mid`/`wind_deep` carry road roar — played under a free-flying camera they
+   * read as tyres rolling on tarmac, which is what they are. A camera in open air hears airflow, so
+   * that is what this builds: broadband noise shaped by speed, two bands — a low rush that arrives
+   * early and a high hiss that only really turns up near the top, which is how airflow behaves.
+   * The noise itself is the bank's own `PinkNoise` sample where the car has one (it is a real
+   * recording, used as a bed by the engine event), else a generated buffer.
+   */
   function buildWind(bank, map) {
-    const ev = map.events && map.events.wind;
-    if (!ev || !ev.layers.length) return 0;
+    void map;   // the authored wind event is deliberately unused — see above
     if (windVoices) { for (const v of windVoices) { try { v.src.stop(); } catch (e) { /* stopped */ } v.g.disconnect(); } }
     windVoices = [];
     if (!windBus) { windBus = gain(1); windBus.connect(masterBus); }   // listener-local: NOT through the panner
-    for (const L of ev.layers) {
-      const s = bank.samples[L.sample];
-      if (!s) continue;
+
+    let buf = null;
+    const noiseSample = bank.samples.find(s => /^pinknoise$/i.test(s.name)) || bank.samples.find(s => /pinknoise|whitenoise/i.test(s.name));
+    if (noiseSample) { try { buf = bufFromSample(bank, noiseSample); } catch (e) { buf = null; } }
+    if (!buf) {
+      buf = ctx.createBuffer(1, ctx.sampleRate * 3, ctx.sampleRate);
+      const d = buf.getChannelData(0);
+      let last = 0;
+      for (let i = 0; i < d.length; i++) { const w = Math.random() * 2 - 1; last = (last + 0.02 * w) / 1.02; d[i] = last * 3.5; }  // pinkish
+    }
+    /* THREE bands, weighted hard toward the bottom. The first cut used a lowpass at 520 Hz plus a
+     * HIGHPASS at 1800 — and a highpass passes everything above it, so most of the energy sat in
+     * open hiss with no body underneath: "sand continuously moving". Airflow you feel is mostly
+     * low-frequency roar with a mid presence and only a trace of top, so:
+     *   low   — the roar, carries the weight, present from the start
+     *   mid   — presence, half the level
+     *   high  — a trace only, squared against speed so it barely exists until you are really moving
+     * `gs` scales each band's contribution; `exp` is how hard it waits for speed.
+     */
+    for (const band of [
+      { type: "lowpass",  hz: 150,  q: 0.7,  gs: 1.00, exp: 1, lead: 1 },
+      { type: "bandpass", hz: 430,  q: 0.5,  gs: 0.45, exp: 1, lead: 0 },
+      { type: "bandpass", hz: 1900, q: 0.45, gs: 0.10, exp: 2, lead: 0 },
+    ]) {
       try {
         const src = ctx.createBufferSource();
-        src.buffer = bufFromSample(bank, s);
-        src.loop = true;
+        src.buffer = buf; src.loop = true;
+        const f = biq(band.type, band.hz, band.q);
         const g = gain(0);
-        src.connect(g); g.connect(windBus); src.start();
-        windVoices.push({ L, src, g, base: Math.pow(10, (L.db || 0) / 20) });
-      } catch (e) { console.warn("[BBAudio] wind layer", L.name, e); }
+        src.connect(f); f.connect(g); g.connect(windBus); src.start();
+        windVoices.push({ src, g, f, band, base: 1 });
+      } catch (e) { console.warn("[BBAudio] wind band", band.type, e); }
     }
     return windVoices.length;
   }
@@ -309,19 +351,54 @@ window.BBAudio = (function () {
   }
 
   /* Camera airspeed in km/h, from the viewer's own motion. Called per frame by the renderer. */
-  function setWind(kph) {
+  function setWind(kph, altitudeM) {
     windKph = clamp(kph || 0, 0, 1200);
+    windAlt = clamp(altitudeM || 0, 0, 5000);
     if (!windVoices || !ctx) return;
     const now = ctx.currentTime;
-    const n = clamp((windKph - WIND_FLOOR_KPH) / (WIND_FULL_KPH - WIND_FLOOR_KPH), 0, 1.6);
-    // perceptual: airflow noise grows steeply then saturates, so square-root the normalised speed
-    const lvl = Math.sqrt(n) * WIND_LEVEL;
-    for (let i = 0; i < windVoices.length; i++) {
-      const v = windVoices[i];
-      // the deep layer leads at low speed, the mid layer takes over as it rises — two-band airflow
-      const share = windVoices.length > 1 ? (i === 0 ? clamp(n, 0, 1) : clamp(1.15 - n, 0, 1)) : 1;
-      v.g.gain.setTargetAtTime(lvl * share * v.base, now, 0.25);   // slow: wind should not flicker
-      v.src.playbackRate.setTargetAtTime(0.88 + 0.42 * clamp(n, 0, 1.4), now, 0.3);
+    const motion = clamp((windKph - WIND_FLOOR_KPH) / (WIND_FULL_KPH - WIND_FLOOR_KPH), 0, 1.6);
+    // altitude curve is sqrt-ish: the first hundred metres change the most, then it settles
+    const alt = Math.sqrt(clamp(windAlt / WIND_ALT_FULL, 0, 1));
+    // the two combine, they don't add: flying fast low ≈ hovering high, and doing both is only
+    // a little more than either. Standing still at ground level still leaves WIND_GROUND.
+    const n = Math.max(WIND_GROUND, motion, alt * 0.85, Math.min(1.6, 0.75 * (motion + alt)));
+    // airflow noise grows with speed and saturates, but sqrt() put most of the rise in the first
+    // third of the range — which is where the engine has to be heard. Eased to ^0.8 so wind stays
+    // out of the way through mid-speed and only really arrives up top.
+    /* TURBULENCE. Steady noise at a steady level is the giveaway that a sound is synthesized — real
+     * airflow gusts, buffets and wanders. Three slow sines at deliberately incommensurate rates
+     * (0.37 / 0.83 / 1.61 Hz — no common period, so the pattern never audibly repeats) plus a random
+     * walk give the slow swell, and a faster flutter rides on top whose depth grows with speed,
+     * because buffeting is what fast air does and still air does not. Driven here rather than with
+     * LFO nodes since this runs per frame anyway. */
+    const t = now;
+    windWalk += (Math.random() - 0.5) * 0.08;
+    windWalk = clamp(windWalk, -0.35, 0.35);
+    const swell = 0.5 * Math.sin(t * 0.37) + 0.33 * Math.sin(t * 0.83 + 1.7) + 0.17 * Math.sin(t * 1.61 + 0.4);
+    const flutter = Math.sin(t * 5.3 + 2.1) * 0.5 + Math.sin(t * 8.7) * 0.3;
+    // high air gusts harder: nothing up there to break it up, so the swell deepens with altitude
+    const gustDepth = 0.42 + 0.35 * clamp(windAlt / WIND_ALT_FULL, 0, 1);
+    const gust = clamp(1 + gustDepth * swell + windWalk + flutter * 0.18 * clamp(n, 0, 1), 0.2, 1.9);
+    const lvl = Math.pow(n, 0.8) * WIND_LEVEL * gust;
+    for (const v of windVoices) {
+      // each band waits for speed by its own exponent, so the sound gets BRIGHTER with speed rather
+      // than just louder — the roar is there from the start, the top only shows up near the limit
+      const b = v.band || { gs: 1, exp: 1 };
+      const share = b.gs * Math.pow(clamp(n, 0, 1.4), b.exp || 1);
+      // the two bands gust out of step (the hiss leads the rush slightly), so the sound moves
+      // rather than pumping as one block — lockstep modulation reads as a tremolo, not as air
+      const phase = v.band && v.band.lead ? 1 : 0.72 + 0.28 * gust;
+      v.g.gain.setTargetAtTime(lvl * share * v.base * phase, now, 0.09);
+      // sweep the filters with speed rather than pitching the noise: re-pitching a noise loop just
+      // makes it louder and thinner, while moving the corner is what actually sounds like more air.
+      // The corner wanders with the gust too, so timbre breathes instead of sitting still.
+      if (v.f) {
+        // the low band barely moves (a roar stays a roar); the upper bands sweep more, which is
+        // where the sense of speed comes from without turning the whole thing into hiss
+        const spread = b.lead ? 0.45 : 1.15;
+        const hz = v.band.hz * (1 + spread * clamp(n, 0, 1.4)) * (0.9 + 0.2 * gust);
+        v.f.frequency.setTargetAtTime(hz, now, 0.18);
+      }
     }
   }
 
