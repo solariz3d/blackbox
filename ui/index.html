@@ -750,7 +750,13 @@ function drawThruster(m, inten, mvp, lum) {
   const th = Math.tan(0.9 / 2), Hpx = cv.height;
   const t0 = performance.now();
   const flick = 0.86 + 0.14 * Math.sin(t0 * 0.05) + 0.06 * Math.sin(t0 * 0.017);  // combustion flicker
-  const len = 0.4 + inten * 1.5;                             // SHORT, girthy burst out the nozzle (not a long trail)
+  // Length is where this ran away: 0.4 + inten*1.5 put nearly two metres of flame out the
+  // back at full — longer than the car's own overhang — so max thrust read as a rocket
+  // exhaust rather than a turbine. The intent was always a SHORT girthy burst at the
+  // nozzle; the drama is meant to come from the white-hot core, the shock diamonds and the
+  // bloom, none of which need reach. ~1.1 m at full now, and the idle length is barely
+  // changed so the plume still shows when the gate holds it low.
+  const len = 0.32 + inten * 0.78;
   const KC = 32, KG = 22, K = KC + KG, arr = new Float32Array(K * 5);
   let idx = 0;
   const push = (t, r, b, jitAmp, seed) => {
@@ -4798,10 +4804,30 @@ function refreshStatsChip() {
 
 /* ===================== main loop ===================== */
 let lastTs = 0;
-let fpsEMA = 0, fpsPrev = 0;
+/* Frame rate, measured honestly.
+ *
+ * This used to smooth the INSTANTANEOUS RATE: fps += (1000/dt - fps) * k. That reads high
+ * and cannot not: rate is 1/dt, dt jitters, and mean(1/dt) > 1/mean(dt) for any
+ * non-constant dt (Jensen). Measured in test_fpsmeter.js: frames averaging a true 144 fps
+ * report 174 at +/-3 ms of jitter, and a stuttering real 48 reports as 64. A single
+ * duplicate timestamp, clamped by Math.max(0.1, dt), was one sample worth 10,000 fps and
+ * spiked the display to 932.
+ *
+ * Smoothing the FRAME TIME and inverting once at the end has no such bias. The worst frame
+ * over the last second is tracked too, because that is what the eye actually notices — a
+ * mean of 360 with a 20 ms hitch in it looks like a stutter, and a mean alone hides it. */
+let frameMsEMA = 0, fpsPrev = 0, frameMsWorst = 0, frameWorstAt = 0;
 let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on shift-frame crossings
 function loop(ts) {
-  if (fpsPrev) { const inst = 1000 / Math.max(0.1, ts - fpsPrev); fpsEMA += (inst - fpsEMA) * 0.08; }
+  if (fpsPrev) {
+    const dtMs = ts - fpsPrev;
+    // a duplicate or coalesced timestamp is not a fast frame — it is no frame. Dropping it
+    // is right; the old clamp to 0.1 ms turned it into a 10,000 fps sample.
+    if (dtMs > 0.05) {
+      frameMsEMA = frameMsEMA ? frameMsEMA + (dtMs - frameMsEMA) * 0.08 : dtMs;
+      if (dtMs > frameMsWorst || ts - frameWorstAt > 1000) { frameMsWorst = dtMs; frameWorstAt = ts; }
+    }
+  }
   fpsPrev = ts;
   if (ex) {
     const [ra, rb] = frameRange();
@@ -4889,7 +4915,7 @@ function loop(ts) {
       bfPrevFrame = i;
     }
     let _smk = 0; if (ex.smokeSlip) for (let k = 0; k < 4; k++) _smk = Math.max(_smk, ex.smokeSlip[i * 4 + k]);
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${fpsEMA.toFixed(0)} fps · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)}`;
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)}) · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)}`;
     drawScrub();
   }
   render();
