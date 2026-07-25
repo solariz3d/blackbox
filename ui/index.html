@@ -633,10 +633,62 @@ const thrBuf = gl.createBuffer();
 
 // turbine activity inferred from the driving state (the mod fires it under high
 // slip during hard cornering, per its design + our research). 0..1.
+/* How much of the turbine you actually see, as a function of what the car is doing.
+ *
+ * A jet on a car is used in two places: down a STRAIGHT, where thrust is free speed, and
+ * mid-SLIDE, where it rotates the car. Through an ordinary corner it is a liability, and a
+ * plume burning flat-out the whole lap stops meaning anything — it becomes wallpaper, and
+ * the moments that should read as dramatic read as normal.
+ *
+ * So the plume is gated: full on a straight or in a big slide, TURBINE_IDLE in between.
+ * Note it gates the DISPLAY, not the data — when a replay carries the real afterburner
+ * button (schema 6) that channel still decides when the flame fires; this only decides how
+ * much of it is shown. It never invents a plume the driver did not ask for.
+ */
+let TURBINE_IDLE = 0.18;        // floor through normal cornering (0 = plume off entirely)
+const TURBINE_SLIP_ON = 12;     // degrees of slip where "a slide" starts counting
+const TURBINE_SLIP_FULL = 34;   // ...and where it is fully open
+const TURBINE_STRAIGHT_R = 260; // path radius (m) above which the car counts as straight
+const TURBINE_CORNER_R = 90;    // ...and below which it is definitely cornering
+
+/** signed path curvature radius at frame i, in metres; Infinity on a straight */
+function pathRadius(E, i) {
+  const P = E.pos, N = E.N;
+  const w = Math.max(2, Math.round(0.25 / E.dt));            // ~quarter second each side
+  const a = Math.max(0, i - w), b = Math.min(N - 1, i + w);
+  if (b - a < 2) return Infinity;
+  const v1 = [P[i*3] - P[a*3], P[i*3+1] - P[a*3+1], P[i*3+2] - P[a*3+2]];
+  const v2 = [P[b*3] - P[i*3], P[b*3+1] - P[i*3+1], P[b*3+2] - P[i*3+2]];
+  const l1 = Math.hypot(v1[0], v1[1], v1[2]), l2 = Math.hypot(v2[0], v2[1], v2[2]);
+  if (l1 < 1e-3 || l2 < 1e-3) return Infinity;
+  const dot = Math.max(-1, Math.min(1, (v1[0]*v2[0] + v1[1]*v2[1] + v1[2]*v2[2]) / (l1 * l2)));
+  const turn = Math.acos(dot);
+  if (turn < 1e-4) return Infinity;
+  // A chord's direction is the tangent at the MIDPOINT of its segment, so the angle
+  // between the two chords is the tangent's rotation across ONE segment, not two —
+  // the arc length that corresponds to it is the average of the chords, not their sum.
+  // Using the sum reported every radius as exactly double, which the test caught.
+  return ((l1 + l2) * 0.5) / turn;
+}
+
+function turbineGate(i, E) {
+  const ramp = (v, lo, hi) => Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+  // a slide: the biggest wheel slip this frame, if the run has the signal
+  let slip = 0;
+  if (E.slip) for (let k = 0; k < 4; k++) { const s = Math.abs(E.slip[i * 4 + k] || 0); if (s > slip) slip = s; }
+  const slideF = ramp(slip, TURBINE_SLIP_ON, TURBINE_SLIP_FULL);
+  // a straight: a big path radius. Inverted ramp — tighter than CORNER_R is fully cornering.
+  const R = pathRadius(E, i);
+  const straightF = ramp(R, TURBINE_CORNER_R, TURBINE_STRAIGHT_R);
+  return Math.max(TURBINE_IDLE, Math.max(slideF, straightF));
+}
+
 function turbineIntensity(i, src) {
   const E = src || ex;
   const N = E.N;
   if (i < 1 || i >= N - 1 || E.gap[i]) return 0;
+  const gate = turbineGate(i, E);
+  const g = (v) => v * gate;
   /* BEST: the turbine's own state, as the mod itself reads it. The afterburner is a BUTTON
    * (CSP `scriptControllerInputs[12]`/`[17]`) and the plume is real thrust (`[9]`) — neither is
    * visible in AC's shared memory, so this only exists in replays recorded with the BLACKBOX CSP
@@ -645,7 +697,10 @@ function turbineIntensity(i, src) {
     const thrust = Math.max(0, Math.min(1, E.tel.thrust[i]));
     const ab = Math.max(0, Math.min(1, E.tel.afterburner[i]));
     // afterburner is the dramatic one: it forces the plume to full and past it, thrust alone idles it
-    return Math.min(1, Math.max(thrust, ab * (0.85 + 0.15 * thrust)));
+    // NOT gated: when the replay carries the real button, a deliberate press outranks any
+    // guess about what the car "should" be doing — the driver fired it, so it fires.
+    if (ab > 0.02) return Math.min(1, Math.max(thrust, ab * (0.85 + 0.15 * thrust)));
+    return g(Math.min(1, thrust));
   }
   // FALLBACK when the replay predates the bridge: infer the plume from turbo boost
   // pressure (1.0 idle → ~1.94 at load), throttle-gated so a lift collapses it. This is a
@@ -653,7 +708,7 @@ function turbineIntensity(i, src) {
   if (E.tel && E.tel.has.boost) {
     const boostN = Math.max(0, Math.min(1, (E.tel.boost[i] - 1.05) / 0.85));
     const thr = Math.max(0, Math.min(1, E.tel.gas[i]));
-    return Math.min(1, boostN * (0.4 + 0.6 * thr));
+    return g(Math.min(1, boostN * (0.4 + 0.6 * thr)));
   }
   // ---- kinematic fallback (no telemetry stamped) ----
   const P = E.pos, FW = E.fwd;
@@ -670,10 +725,11 @@ function turbineIntensity(i, src) {
     slip = Math.acos(Math.max(0, Math.min(1, d))); // radians
   }
   const slipN = Math.min(1, slip / 0.35);           // ~20° = full
-  // hard acceleration (boost) from speed rise
-  const s0 = ex.speed[i], sm = ex.speed[Math.max(0, i - 4)];
+  // hard acceleration (boost) from speed rise. E, not ex: a ghost's plume must read its
+  // own speed trace, or every car would flare on the reference car's acceleration.
+  const s0 = E.speed[i], sm = E.speed[Math.max(0, i - 4)];
   const acc = isFinite(s0) && isFinite(sm) ? Math.max(0, (s0 - sm)) / 40 : 0;
-  return Math.min(1, slipN * 0.85 + Math.min(1, acc) * 0.5);
+  return g(Math.min(1, slipN * 0.85 + Math.min(1, acc) * 0.5));
 }
 
 // blue thruster plume from the Mach 6's rear, perspective-sized point sprites — a straight
@@ -825,7 +881,7 @@ function drawBackfire(cm, mvp, th, inten, nightF) {
         const py = oy + by * t * reach + (ry * (h1 - 0.5) + uy * (h2 - 0.5)) * w;
         const pz = oz + bz * t * reach + (rz * (h1 - 0.5) + uz * (h2 - 0.5)) * w;
         const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
-        const grow = sz * (0.55 + t * 0.85) * (1 + age * 0.8);  // puffs swell as they age
+        const grow = sz * (0.55 + t * 0.85) * (1 + age * 0.45); // puffs swell as they age
         const b = Math.pow(1 - t, fade) * lum * (0.65 + 0.7 * h2);
         s.push(px, py, pz, Math.min(500, grow * Hpx / (dist * th)), b);
       }
@@ -841,22 +897,27 @@ function drawBackfire(cm, mvp, th, inten, nightF) {
   gl.useProgram(progGlow); gl.uniformMatrix4fv(glowLoc.mvp, false, mvp);
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
 
+  // Sizes are tuned SMALL on purpose. The shape work (layers, expansion, ragged edge) is
+  // what makes a pop read as flame; scale is what makes it read as a real exhaust rather
+  // than a flamethrower. A backfire out of a race pipe is a hand-sized crack of light, not
+  // a metre of fire — so the plume is short and the sprites are tight, and the drama comes
+  // from the hot core and the bloom, not from covering the back of the car.
   // body: deep orange, punches out and spreads as it ages (HDR -> blooms)
   gl.uniform3f(glowLoc.color, 1.45 * HDR_EMIT, 0.42 * HDR_EMIT, 0.08 * HDR_EMIT);
-  layer(0.9 + age * 1.9, 0.34, 0.19, 1.5, 11);
+  layer(0.52 + age * 0.85, 0.20, 0.105, 1.7, 11);
 
   // core: white-hot, short, and it dies FIRST
   const core = Math.max(0, inten - 0.25) / 0.75;
   if (core > 0.01) {
     gl.uniform3f(glowLoc.color, 2.3 * HDR_EMIT * core, 1.55 * HDR_EMIT * core, 0.85 * HDR_EMIT * core);
-    layer(0.42 + age * 0.5, 0.12, 0.115, 2.4, 29);
+    layer(0.24 + age * 0.24, 0.07, 0.062, 2.6, 29);
   }
 
   // the first instant only: raw fuel igniting blue at the pipe mouth, gone in a blink
   const flash = Math.max(0, inten - 0.72) / 0.28;
   if (flash > 0.01) {
     gl.uniform3f(glowLoc.color, 0.55 * HDR_EMIT * flash, 0.75 * HDR_EMIT * flash, 1.7 * HDR_EMIT * flash);
-    layer(0.26, 0.07, 0.085, 3.0, 47);
+    layer(0.15, 0.04, 0.046, 3.2, 47);
   }
 
   gl.depthMask(true); gl.disable(gl.BLEND);
