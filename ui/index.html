@@ -1671,6 +1671,14 @@ function refDistanceNow(refFrame) {
  *   without it four laps of the same driver launch as one car and never separate.
  */
 let lapAlign = "distance";   // "distance" | "time"
+// Cars lighting and shadowing each other. Both were single-car assumptions: the shader
+// carries one car's worth of lamps, and the car pass disabled shadow sampling outright to
+// dodge self-shadow acne. The acne guard is now a normal-offset plus a metric bias (see
+// the shadow work of 2026-07-25), so receiving shadows is worth having — set CAR_SHADOWS
+// to 0 if acne ever returns on the bodywork.
+let CAR_LIGHTS_ON = 1;
+let CAR_SHADOWS = 1;
+const CAR_LIGHT_RANGE = 40;   // metres; past this another car's lamps do nothing visible
 
 function ghostFrameAt(run, refFrame) {
   if (lapAlign === "time") {
@@ -1717,7 +1725,14 @@ function updateLapLegendLive() {
 // need to reach back for the pose rather than re-solve it.
 let ghostDraws = [];
 
-function drawGhostCars(mvp) {
+/* Solve every ghost's pose ONCE, before anything draws.
+ *
+ * It has to happen this early for two reasons that only showed up with several cars:
+ * the shadow pass runs before the colour pass, so poses solved during drawing were a
+ * frame stale in the shadow map; and one car's lamps can only light another car if both
+ * matrices exist before either body is drawn. Solving up front also stops the same
+ * carModelMatrix being computed twice per ghost per frame. */
+function solveGhostPoses() {
   ghostDraws = [];
   if (!lapCompare || !carGroups || !compareRuns.length) return;
   const refFrame = tCur / ex.dt;
@@ -1727,8 +1742,36 @@ function drawGhostCars(mvp) {
     const gi = Math.max(0, Math.min(run.ex.N - 1, Math.floor(f)));
     if (run.ex.gap[gi]) continue;
     const r = carModelMatrix(f, run.ex);                       // this run's pose AND its own steer
-    const gm = r.mat, gsteer = r.steer;
-    ghostDraws.push({ run, f, mat: gm });
+    ghostDraws.push({ run, f, mat: r.mat, steer: r.steer });
+  }
+}
+
+/* The lamps of every OTHER car, for lighting one car.
+ *
+ * The shader carries exactly two headlamps and two brake lamps — one car's worth — so a
+ * car cannot be lit by three others at once. It is lit by the NEAREST other car, which is
+ * the one that actually matters: the car right behind you is what throws your bodywork
+ * into relief, and the ones further back contribute a glow the eye would not attribute
+ * anyway. */
+function nearestOtherCar(self, cars) {
+  let best = null, bestD = Infinity;
+  for (const c of cars) {
+    if (c === self) continue;
+    const dx = c.mat[12] - self.mat[12], dy = c.mat[13] - self.mat[13], dz = c.mat[14] - self.mat[14];
+    const d = dx*dx + dy*dy + dz*dz;
+    if (d < bestD) { bestD = d; best = c; }
+  }
+  return bestD < CAR_LIGHT_RANGE * CAR_LIGHT_RANGE ? best : null;
+}
+
+function drawGhostCars(mvp, headVP, nightF, allCars) {
+  if (!ghostDraws.length) return;
+  for (const g of ghostDraws) {
+    const gm = g.mat, gsteer = g.steer, f = g.f, run = g.run;
+    // lit by whichever other car is closest — its headlights and its brake lights
+    const lit = (CAR_LIGHTS_ON && g.self) ? nearestOtherCar(g.self, allCars) : null;
+    setHeadlights(lit ? lit.mat : null, lit ? lit.headInt : 0, headVP);
+    setBrakelights(lit ? lit.mat : null, lit ? lit.brakeInt : 0);
     drawCarGroups(carGroups, gm);
     if (carWheels) {
       const rollDist = wheelRollDistance(f, run.ex);
@@ -2066,9 +2109,9 @@ function renderCarDepth(cm, dir, timeChanged) {
   gl.uniformMatrix4fv(depthLoc.lightVP, false, near.vp);
   if (sceneGroups) drawG(sceneGroups, IDENT4);
   drawG(carGroups, cm);
-  // ghosts cast too â€” a car with no shadow reads as floating above the track. These
-  // matrices are one frame old (the shadow pass runs before the colour pass that builds
-  // them), which at any real framerate is under 3 ms of lag on a shadow edge.
+  // ghosts cast too - a car with no shadow reads as floating, and with the car pass now
+  // RECEIVING shadows this is also what makes one car darken another. Poses are solved
+  // before this pass (solveGhostPoses), so they are current rather than a frame behind.
   for (const g of ghostDraws) drawG(carGroups, g.mat);
   if (carWheels) for (const w of carWheels) { const m = wheelSteerModel(cm, w.pivot, carSteerAngle, 0, 0); drawG(w.rollGroups, m); drawG(w.staticGroups, m); }
   // FAR â€” static whole-track bake, only when the sun moved (or first time this track)
@@ -2746,6 +2789,10 @@ function render() {
   // cast-shadow pass: near cascade dynamic each frame; far cascade is the whole-track bake,
   // only re-rendered when the sun moved (time changed) â€” cheap during normal playback.
   shadowsRendered = false;
+  // ghost poses BEFORE the shadow pass: they have to be in the depth map to cast onto the
+  // track and onto each other, and solving them during the colour pass left them a frame
+  // behind in the shadows.
+  solveGhostPoses();
   if (SHADOW_ON && shadowReady && cm) {
     const timeChanged = timeOfDay !== staticBakeTime;
     renderCarDepth(cm, L.dir, timeChanged);
@@ -2861,14 +2908,34 @@ function render() {
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
-    setHeadlights(cm, 0, headVP);                              // the car's lamps light the ROAD, not its own body
-    setBrakelights(cm, 0);                                     // (avoids the head/brake cones pooling on the livery)
-    gl.uniform1f(tLoc.shadowOn, 0);                            // the car doesn't self-shadow (avoids acne)
+    // A car is never lit by its OWN lamps (the cones would pool on its own livery), but
+    // with several on track it IS lit by the nearest other one — which is the entire
+    // point of a car turning up in your mirrors at night.
+    const carList = [
+      { mat: cm, headInt: nightF > 0.02 ? nightF : 0, brakeInt: brakeInt },
+      ...ghostDraws.map(g => {
+        const gg = carGForces(g.f, g.run.ex);
+        const gdec = gg ? gg.brakeG - BRAKE_SCRUB * gg.latG * gg.latG : 0;
+        const gb = Math.max(0, Math.min(1, (gdec - BRAKE_DEADZONE_G) / BRAKE_RANGE_G));
+        return { mat: g.mat, headInt: nightF > 0.02 ? nightF : 0, brakeInt: gb * nightF, ghost: g };
+      }),
+    ];
+    for (const c of carList) if (c.ghost) c.ghost.self = c;    // so the ghost pass can exclude itself
+    const litBy = CAR_LIGHTS_ON ? nearestOtherCar(carList[0], carList) : null;
+    setHeadlights(litBy ? litBy.mat : null, litBy ? litBy.headInt : 0, headVP);
+    setBrakelights(litBy ? litBy.mat : null, litBy ? litBy.brakeInt : 0);
+    // cars RECEIVE shadows now, so one body darkens another. Self-shadow acne was the
+    // original reason this was off; the normal-offset plus the metric bias handles it.
+    gl.uniform1f(tLoc.shadowOn, (CAR_SHADOWS && shadowsRendered) ? 1 : 0);
     gl.uniform1i(tLoc.tex, 0);
     gl.uniform1f(tLoc.alpha, 1.0);
     gl.activeTexture(gl.TEXTURE0);
     drawCarGroups(carGroups, cm);                              // body â€” keeps its crab
-    drawGhostCars(mvp);                                        // comparison laps, same car, own telemetry
+    drawGhostCars(mvp, headVP, nightF, carList);               // comparison laps, same car, own telemetry
+    // the ghost pass leaves whichever lamps lit the LAST ghost bound; restore the
+    // reference car's own lighting before its wheels, driver and glass are drawn
+    setHeadlights(litBy ? litBy.mat : null, litBy ? litBy.headInt : 0, headVP);
+    setBrakelights(litBy ? litBy.mat : null, litBy ? litBy.brakeInt : 0);
     updateLapLegendLive();                                     // and their speed / delta, at this point on track
     if (carWheels) {                                           // wheels steer + roll, and sit at their REAL recorded positions
       const fp = tCur / ex.dt;
