@@ -1632,12 +1632,21 @@ function buildLapOverlays() {
  * It carries its own telemetry: its own steer (carModelMatrix returns per-run steer since
  * the multi-ghost refactor), its own recorded wheel positions, its own roll distance. A
  * ghost wearing the reference car's wheel data would be a puppet, not a lap. */
-/** how far round the reference lap we currently are, in metres (NaN outside it) */
+/** How far round the reference lap we currently are, in metres (NaN outside it).
+ *
+ * INTERPOLATED, not rounded. Rounding to a whole reference frame quantised the ghost's
+ * distance to the replay's 66 Hz sample rate while the reference car moved smoothly at
+ * the display rate — so the ghost held still for several frames and then jumped, which
+ * reads as judder or, against a moving background, as a blurred double image. Every
+ * other consumer of a frame index here is fractional; this was the one that was not. */
 function refDistanceNow(refFrame) {
   if (!refAligned) return NaN;
-  const rel = Math.round(refFrame) - refAligned.win.start;
-  if (rel < 0 || rel >= refAligned.dists.length) return NaN;
-  return refAligned.dists[rel];
+  const rel = refFrame - refAligned.win.start;
+  const n = refAligned.dists.length;
+  if (rel < 0 || rel > n - 1) return NaN;
+  const i0 = Math.floor(rel), i1 = Math.min(n - 1, i0 + 1);
+  const f = rel - i0;
+  return refAligned.dists[i0] + (refAligned.dists[i1] - refAligned.dists[i0]) * f;
 }
 
 function ghostFrameAt(run, refFrame) {
@@ -1674,7 +1683,12 @@ function updateLapLegendLive() {
   }
 }
 
+// this frame's ghost body matrices, kept so the later transparent passes (glass, and
+// anything else that draws over the car) can reach them without re-solving the pose
+let ghostMats = [];
+
 function drawGhostCars(mvp) {
+  ghostMats = [];
   if (!lapCompare || !carGroups || !compareRuns.length) return;
   const refFrame = tCur / ex.dt;
   for (const run of compareRuns) {
@@ -1684,6 +1698,7 @@ function drawGhostCars(mvp) {
     if (run.ex.gap[gi]) continue;
     const r = carModelMatrix(f, run.ex);                       // this run's pose AND its own steer
     const gm = r.mat, gsteer = r.steer;
+    ghostMats.push(gm);
     drawCarGroups(carGroups, gm);
     if (carWheels) {
       const rollDist = wheelRollDistance(f, run.ex);
@@ -1999,6 +2014,10 @@ function renderCarDepth(cm, dir, timeChanged) {
   gl.uniformMatrix4fv(depthLoc.lightVP, false, near.vp);
   if (sceneGroups) drawG(sceneGroups, IDENT4);
   drawG(carGroups, cm);
+  // ghosts cast too — a car with no shadow reads as floating above the track. These
+  // matrices are one frame old (the shadow pass runs before the colour pass that builds
+  // them), which at any real framerate is under 3 ms of lag on a shadow edge.
+  for (const M of ghostMats) drawG(carGroups, M);
   if (carWheels) for (const w of carWheels) { const m = wheelSteerModel(cm, w.pivot, carSteerAngle, 0, 0); drawG(w.rollGroups, m); drawG(w.staticGroups, m); }
   // FAR — static whole-track bake, only when the sun moved (or first time this track)
   const far = SHADOW_CASCADES[1];
@@ -2867,11 +2886,16 @@ function render() {
       gl.uniform3f(gLoc.fogC, L.fog[0], L.fog[1], L.fog[2]); gl.uniform1f(gLoc.fogD, fogD);
       gl.uniform3f(gLoc.tint, 0.015, 0.02, 0.03); gl.uniform1f(gLoc.opacity, 0.10);
       gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
-      for (const g of carGlass) {
-        gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf); gl.enableVertexAttribArray(gLoc.pos); gl.vertexAttribPointer(gLoc.pos, 3, gl.FLOAT, false, 12, 0);
-        gl.bindBuffer(gl.ARRAY_BUFFER, g.nrmBuf); gl.enableVertexAttribArray(gLoc.nrm); gl.vertexAttribPointer(gLoc.nrm, 3, gl.FLOAT, false, 12, 0);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
-        gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+      // the reference car, then every ghost — same meshes, one model matrix each, so the
+      // ghosts get the same windscreen rather than reading as unglazed shells
+      for (const M of [cm, ...ghostMats]) {
+        gl.uniformMatrix4fv(gLoc.model, false, M);
+        for (const g of carGlass) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf); gl.enableVertexAttribArray(gLoc.pos); gl.vertexAttribPointer(gLoc.pos, 3, gl.FLOAT, false, 12, 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, g.nrmBuf); gl.enableVertexAttribArray(gLoc.nrm); gl.vertexAttribPointer(gLoc.nrm, 3, gl.FLOAT, false, 12, 0);
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
+          gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
+        }
       }
       gl.depthMask(true); gl.disable(gl.BLEND);
       gl.useProgram(progT);   // restore for the rest of the car pass

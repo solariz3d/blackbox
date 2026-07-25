@@ -1,3 +1,6 @@
+<!-- Related open work: docs/GHOST_FIDELITY.md — the ghost car's missing effects, and the
+     singletons standing in the way of each one. -->
+
 # The driver's wrist — SOLVED (attempt 4, 2026-07-25)
 
 **Status: fixed and confirmed by eye.** `WRIST_POLE = 1.0` — the wrist bend goes into the **elbow**,
