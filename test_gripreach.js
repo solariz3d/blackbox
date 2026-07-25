@@ -20,6 +20,8 @@
 const MU = require("./ui/mathutil.js");
 Object.assign(global, MU);
 global.DRIVER_SHOULDER_REACH = 0.15;
+global.WRIST_FOLLOW = 1.0;
+global.WRIST_RAMP = 0.3;
 
 const { gripSat, armSolve, gripLockCalib, driverSeatedPose, snapToMesh, palmGrip } = require("./ui/carrender.js");
 
@@ -240,6 +242,52 @@ check(lockTight > 0 && lockTight < lock,
   check(okW, "welded hand rides the SNAPPED grip's orbit (on the measured rim)");
   check(okChain2, "arm chain meets the snapped grip exactly (wrist = solver target, forearm length holds)");
   check(okRest, "at rest the hand is seated ON the measured rim, not the authored guess");
+  global.carDriver = null;
+}
+
+// ---- 10. wrist twist distribution (docs/DRIVER_WRIST.md attempt 3) ----
+// Five-bone chain with the distal twist bone (ForeArm_END): the pronation must
+// land ramped — proximal forearm turns WRIST_RAMP of it, END turns all of it,
+// the welded hand turns NONE of it extra — and no bone origin may move (twist
+// about the forearm's own axis is free).
+{
+  const arm0 = arms[0];
+  const FE0 = v3sc(v3add(arm0.E0, arm0.W0), 0.5);   // twist bone mid-forearm, ON the elbow→wrist axis
+  const F0 = v3add(arm0.W0, v3sc(yw, 0.03));
+  const rvAt = p => [1,0,0,0, 0,1,0,0, 0,0,1,0, p[0],p[1],p[2],1];
+  const names = ["Arm", "Fore", "ForeEnd", "Hand", "Finger"];
+  const origins = [arm0.S0, arm0.E0, FE0, arm0.W0, F0];
+  const poseWorld = {}; names.forEach((n, i) => poseWorld[n] = rvAt(origins[i]));
+  global.carDriver = {
+    poseWorld,
+    skel: { count: 5, name: names, bindWorld: names.map((n, i) => rvAt(origins[i])) },
+    arms: [{ ...arm0, armSub: [0, 1, 2, 3, 4], foreSub: [1, 2, 3, 4], foreEndSub: [2, 3, 4], handSub: [3, 4] }],
+    wheelC: C, wheelAxis: ax,
+  };
+  const ang = 1.2;
+  const runAt = f => { global.WRIST_FOLLOW = f; const w = driverSeatedPose(ang); global.WRIST_FOLLOW = 1.0; return w; };
+  const w0 = runAt(0), w1 = runAt(1);
+  const g = armSolve(carDriver.arms[0], ang, C, ax, SH);
+  const u = v3nrm(v3sub(g.W, g.E));
+  const twist = ang * v3dot(ax, u);                  // what the follow should absorb
+  const perp = (() => { let p = v3cross(u, [0, 1, 0]); if (v3len(p) < 1e-4) p = v3cross(u, [1, 0, 0]); return v3nrm(p); })();
+  const angleAbout = (Ma, Mb) => {                   // signed rotation Ma→Mb about u, via a ⊥ probe vector
+    const strip = M => { const q = mRot(perp, M); const d = v3dot(q, u); return v3nrm(v3sub(q, v3sc(u, d))); };
+    const a = strip(Ma), b = strip(Mb);
+    return Math.atan2(v3dot(v3cross(a, b), u), v3dot(a, b));
+  };
+  const dFore = angleAbout(w0[1], w1[1]), dEnd = angleAbout(w0[2], w1[2]), dHand = angleAbout(w0[3], w1[3]);
+  check(Math.abs(dEnd - twist) < 0.02, `END twist bone absorbs the full pronation (${(dEnd * 180 / Math.PI).toFixed(1)}° of ${(twist * 180 / Math.PI).toFixed(1)}°)`);
+  check(Math.abs(dFore - twist * WRIST_RAMP) < 0.02, `proximal forearm turns only its ramp share (${(dFore * 180 / Math.PI).toFixed(1)}° ≈ ${(twist * WRIST_RAMP * 180 / Math.PI).toFixed(1)}°)`);
+  check(Math.abs(dHand) < 1e-6, "the welded hand is untouched by the twist");
+  let originsOk = true;
+  for (const i of [1, 2, 3, 4]) {
+    const d = Math.hypot(w1[i][12]-w0[i][12], w1[i][13]-w0[i][13], w1[i][14]-w0[i][14]);
+    if (d > 1e-6) originsOk = false;   // float32 rotation matrices round at ~1e-7 on-axis
+  }
+  check(originsOk, "no bone origin moves — the pronation is geometrically free");
+  const r0 = Math.abs(angleAbout(w0[2], w0[3])), r1 = Math.abs(angleAbout(w1[2], w1[3]));
+  check(r1 < r0 - Math.abs(twist) * 0.8, `residual wrist twist collapses (${(r0 * 180 / Math.PI).toFixed(1)}° → ${(r1 * 180 / Math.PI).toFixed(1)}°)`);
   global.carDriver = null;
 }
 

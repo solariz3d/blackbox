@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-07-25 — Wrist attempt 3: twist-bone distribution (docs/DRIVER_WRIST.md)
+
+### Fixed
+- **Question 1 of the wrist doc answered from existing evidence**: the IK path is what's on screen —
+  the T-180's `steer.ksanim` is degenerate (25 mm hand sweep, measured in `test_steeranim.js`), so
+  `driverAnimInit` refuses it. The IK reasoning in the doc applies in full.
+- **Attempt 3 shipped**: the same free pronation as attempt 2, but distributed like a twist-bone rig
+  instead of lumped at the elbow. `RIG_ForeArm_END` is a real twist bone — mid-forearm, parent of
+  the hand, and carrying MORE skin weight than the forearm bone (348.7 vs 242.1) — so the proximal
+  forearm turns `WRIST_RAMP` (0.3) of the twist, the END subtree turns all of it, and the skin blends
+  the gradient (the elbow-crease shear that sank attempt 2 by eye). Headless: END absorbs the full
+  pronation, forearm exactly its share, hand untouched, origins fixed, residual wrist twist
+  **62.5° → 6.5°** (`test_gripreach.js` §10). `WRIST_FOLLOW`/`WRIST_RAMP` moved to the index.html
+  tunables block (they were file-scoped in carrender.js, which shadowed test control). Verdict by eye
+  pending; `WRIST_FOLLOW = 0` reverts.
+- **`test_steeranim.js` now resolves the AC install from `libraryfolders.vdf`** (any Steam library,
+  the way `find_car` does) and SKIPS with a message instead of ENOENT-crashing on machines without
+  AC — the wrist doc's environment note.
+
 ## 2026-07-25 — TLNB decoded: timeline instruments, and tyre squeal
 
 ### Added

@@ -573,6 +573,13 @@ let DRIVER_SHOULDER_REACH = 0.15; // max shoulder lean toward the grip (m) — b
 let DRIVER_GRIP_SNAP = 1.0;       // 0..1: how fully the grips snap toward the wheel's actual material — drop for a softer pull
 let DRIVER_PALM_OFFSET = -0.020;  // m: SIGNED grip-depth trim along the cup→wrist axis — positive backs the hands off the bar, negative seats hands+fingers FORWARD past it (eyes-on tuned: −20 mm ≈ 1 inch forward of the hollow+bias anchor)
 let DRIVER_GRIP_BIAS = 0.012;     // m: seats the bar DEEPER into the finger curl (toward the tips) — the hand is sculpted for a fat rim, so on a thin bar the spare finger length must poke somewhere; this sends it to the hidden palm side instead of out the wheel's face
+// how much of the wheel's roll the FOREARM absorbs as pronation (0 = none, the wrist folds; 1 = all —
+// anatomically honest). Attempt 2 applied it in one lump at the elbow and looked worse (crease shear);
+// attempt 3 ramps it down a twist-bone rig: proximal forearm turns WRIST_RAMP of it, RIG_ForeArm_END
+// (which carries MORE skin than the forearm bone, 349 vs 242) turns all of it, the skin blends the
+// gradient. docs/DRIVER_WRIST.md has the full history. Set WRIST_FOLLOW to 0 to revert by eye.
+let WRIST_FOLLOW = 1.0;
+let WRIST_RAMP = 0.3;             // the proximal forearm's share of the twist (the END twist bone always gets 100%)
 let DRIVER_GRIP_UP = 0.0;         // base grip-height offset (rad): 0 = the rig's natural symmetric grip (rim-orbit coupling made raising it lopsided — tune eyes-on)
 let DRIVER_GRIP_SPIN_SIGN = 1;    // flip if the hands orbit opposite the wheel
 const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
@@ -3530,6 +3537,7 @@ async function loadCarModel(carId) {
             if (!S0 || !E0 || !W0) continue;
             arms.push({ S0, E0, W0, side: s, L1: v3len(v3sub(E0, S0)), L2: v3len(v3sub(W0, E0)), pole: v3sub(E0, S0),
                         armSub: subtreeOf("DRIVER:RIG_Arm_"+s), foreSub: subtreeOf("DRIVER:RIG_ForeArm_"+s),
+                        foreEndSub: subtreeOf("DRIVER:RIG_ForeArm_END_"+s),   // the distal twist bone — carries most of the forearm's skin
                         handSub: subtreeOf("DRIVER:RIG_HAND_"+s),   // hand+fingers → grip rolls with the wheel
                         gripBase: (s === "L" ? 1 : -1) * DRIVER_GRIP_UP });   // raise each hand up the rim
           }

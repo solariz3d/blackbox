@@ -456,12 +456,8 @@ function armSolve(arm, ang, C, ax, shoulderMax) {
   return { S, E, W, ok: over <= shoulderMax };
 }
 
-// How much of the wheel’s roll the FOREARM absorbs (0 = none, the wrist eats it all; 1 = all of it).
-// Anatomically this is pronation, which moves neither elbow nor wrist, so 1 is the honest default.
-// DISABLED (0) — the theory is sound and the numbers say the wrist absorbs 79°+ of roll, but
-// switched on it looked WORSE by eye, so it does not ship. Left in place behind this flag because
-// the next attempt should start from the measurements, not from scratch. See docs/DRIVER_WRIST.md.
-const WRIST_FOLLOW = 0.0;
+// WRIST_FOLLOW / WRIST_RAMP (declared with the other tunables in index.html): how the wheel's roll
+// is absorbed as forearm pronation instead of a folded wrist — see docs/DRIVER_WRIST.md.
 
 // snapToMesh — the grip target is the local CENTRE OF MATERIAL nearest the
 // authored grip: nearest wheel vertex, then two mean-shift steps (centroid of the
@@ -718,15 +714,27 @@ function driverSeatedPose(spin) {
           // rvRotAbout wants a 4x4 ROTATION MATRIX (same convention rvFromTo returns), not an
           // axis-angle 3-vector — handing it one silently reads undefined elements, fills the
           // matrix with NaN, and the arm disappears rather than erroring.
-          const cw = Math.cos(twist), sw = Math.sin(twist), Cw = 1 - cw;
-          const x = u[0], y = u[1], z = u[2];
-          const Rtw = new Float32Array([
-            cw + x*x*Cw,     x*y*Cw + z*sw, x*z*Cw - y*sw, 0,
-            x*y*Cw - z*sw,   cw + y*y*Cw,   y*z*Cw + x*sw, 0,
-            x*z*Cw + y*sw,   y*z*Cw - x*sw, cw + z*z*Cw,   0,
-            0, 0, 0, 1,
-          ]);
-          for (const b of arm.foreSub) { if (handSet && handSet.has(b)) continue; world[b] = rvRotAbout(world[b], Rtw, E); }
+          const mkTw = t => {
+            const cw = Math.cos(t), sw = Math.sin(t), Cw = 1 - cw;
+            const x = u[0], y = u[1], z = u[2];
+            return new Float32Array([
+              cw + x*x*Cw,     x*y*Cw + z*sw, x*z*Cw - y*sw, 0,
+              x*y*Cw - z*sw,   cw + y*y*Cw,   y*z*Cw + x*sw, 0,
+              x*z*Cw + y*sw,   y*z*Cw - x*sw, cw + z*z*Cw,   0,
+              0, 0, 0, 1,
+            ]);
+          };
+          // twist-bone distribution: the proximal forearm turns only WRIST_RAMP of the
+          // pronation (the elbow crease barely shears), the distal ForeArm_END subtree
+          // turns all of it, and the skin weighted between the two bones blends the
+          // ramp. Rigs without the END bone fall back to the one-lump form.
+          const endSet = arm.foreEndSub && arm.foreEndSub.length ? new Set(arm.foreEndSub) : null;
+          const Rprox = mkTw(endSet ? twist * WRIST_RAMP : twist);
+          const Rfull = endSet ? mkTw(twist) : null;
+          for (const b of arm.foreSub) {
+            if (handSet && handSet.has(b)) continue;
+            world[b] = rvRotAbout(world[b], endSet && endSet.has(b) ? Rfull : Rprox, E);
+          }
         }
       }
       if (arm.handSub) {                                          // hand: shift onto the measured rim, then orbit with the wheel

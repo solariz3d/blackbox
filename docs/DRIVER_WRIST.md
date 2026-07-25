@@ -1,8 +1,12 @@
 # The driver's wrist — open problem
 
-**Status: unsolved. Two attempts, both measured, both rejected.** Written down so the next attempt
-starts from the evidence instead of re-deriving it. Nothing here is half-applied: the code is in the
-shipped state described below.
+**Status: attempt 3 shipped (2026-07-25), awaiting eyes-on verdict.** Twist-bone distribution — see
+below. Attempts 1–2 remain documented so nothing gets re-derived.
+
+**Question 1 answered (which path runs):** the **IK path** (`driverSeatedSkin`). The T-180's
+`steer.ksanim` is degenerate — its hand sweeps 25 mm lock-to-lock (measured in `test_steeranim.js`)
+— so `driverAnimInit` refuses it (authored range < 20° guard) and none of what's on screen comes
+from Kunos's animation. The IK reasoning below applies in full.
 
 ## The symptom
 
@@ -66,16 +70,29 @@ Why it may have looked worse — untested guesses, in the order worth testing:
 - **Wrong sign or wrong pivot** for one side. It is symmetric by construction, but that was never
   verified visually per-side.
 
-## What to try next
+## Attempt 3 — twist-bone distribution (SHIPPED 2026-07-25, awaiting eyes)
 
-1. **Check which path is even running.** `driverAnimWorlds` (authored `steer.ksanim`) vs
-   `driverSeatedSkin` (IK fallback). If the T-180 ships an authored steering animation, the arms may
-   be following Kunos's animation and none of the IK reasoning above applies to what is on screen.
-   This is the cheapest check and it invalidates or confirms everything else.
-2. **Distribute the twist** along the forearm chain rather than applying it at the elbow, if the rig
-   has intermediate bones.
-3. **Limit the hand's roll on the rim** and let the hand slide/regrip past the limit — what a driver
-   actually does — instead of tracking the rim 1:1 through 270°.
+Attempt 2's own top guess was right: the rig has the intermediate bone. `RIG_ForeArm_END_<s>` sits
+mid-forearm (bind: elbow z 0.307 → END z 0.422 → wrist z 0.530), is the HAND's parent, and carries
+**more skin weight than the forearm bone itself** (348.7 vs 242.1 total vertex weight) — it is a
+real twist bone, skinned exactly where pronation shows. So the same free pronation is now RAMPED
+instead of lumped: the proximal forearm turns `WRIST_RAMP` (0.3) of the twist, the END subtree turns
+all of it, and the skin weighted between the two bones blends the gradient — the elbow crease barely
+shears, which is what made attempt 2 read worse.
+
+Headless proof (`test_gripreach.js` §10, five-bone chain incl. the twist bone): END absorbs the full
+pronation (−56.1° of −56.1° at a 69° wheel test angle), forearm turns exactly its 30% share, the
+welded hand is untouched, no bone origin moves, and the residual hand-vs-forearm wrist twist
+collapses **62.5° → 6.5°**.
+
+Tunables moved to `index.html` with the rest: `WRIST_FOLLOW = 1.0` (0 reverts by eye),
+`WRIST_RAMP = 0.3` (proximal share — raise toward 0.5 if the mid-forearm skin bunches, lower toward
+0 if the elbow crease shears again). Rigs without the END bone fall back to attempt 2's one-lump form.
+
+## What to try next (if attempt 3 fails by eye)
+
+- **Limit the hand's roll on the rim** and let the hand slide/regrip past the limit — what a driver
+  actually does — instead of tracking the rim 1:1 through 270°.
 
 ## Separate, related open item
 

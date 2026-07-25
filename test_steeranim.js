@@ -27,8 +27,29 @@ Object.assign(global, MU);
 
 const { driverAnimInit, driverAnimWorlds, ksanimLocal, steerRefCalib, palmGrip, snapToMesh } = require("./ui/carrender.js");
 
-const CAR_DIR = "G:/SteamLibrary/steamapps/common/assettocorsa/content/cars/ohyeah2389_t180_mach6";
-const DRIVER_KN5 = "G:/SteamLibrary/steamapps/common/assettocorsa/content/driver/driver.kn5";
+// resolve the AC install the way find_car does: every Steam library in
+// libraryfolders.vdf, first one that actually contains assettocorsa. Skips (not
+// fails) on machines without an AC install — this suite needs the real assets.
+function findAC() {
+  const roots = [];
+  for (const steam of ["C:/Program Files (x86)/Steam", "C:/Program Files/Steam"]) {
+    const vdf = path.join(steam, "steamapps", "libraryfolders.vdf");
+    if (!fs.existsSync(vdf)) continue;
+    roots.push(steam);
+    for (const m of fs.readFileSync(vdf, "utf8").matchAll(/"path"\s+"([^"]+)"/g))
+      roots.push(m[1].replace(/\\\\/g, "/"));
+  }
+  roots.push("G:/SteamLibrary");   // last-resort hardcode (the desktop's library)
+  for (const r of roots) {
+    const ac = path.join(r, "steamapps", "common", "assettocorsa", "content");
+    if (fs.existsSync(ac)) return ac;
+  }
+  return null;
+}
+const AC = findAC();
+if (!AC) { console.log("no Assetto Corsa install found in any Steam library — skipping (real-asset suite)"); process.exit(0); }
+const CAR_DIR = path.join(AC, "cars", "ohyeah2389_t180_mach6");
+const DRIVER_KN5 = path.join(AC, "driver", "driver.kn5");
 
 let failures = 0;
 function check(cond, msg) {
