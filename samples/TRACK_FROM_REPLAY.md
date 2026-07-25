@@ -1,6 +1,12 @@
 # Rebuilding a stand-in track from the replay itself
 
-**Status: proposed, not built.** Notes for whoever picks this up.
+**Status: proposed, not built. This is a task, waiting to be picked up** — by whichever
+agent or person gets here first. Nothing depends on it, nothing is half-done, and there is
+no partial implementation to reconcile with. Start whenever.
+
+Read the whole file before writing code: the honest limits at the bottom decide whether
+this is worth doing for your purpose, and one of them (no scenery, therefore no shadow
+casters) rules out a whole category of use.
 
 ## Why
 

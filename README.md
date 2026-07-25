@@ -16,6 +16,12 @@ Open `ui/index.html` in any browser. Drop a `.acreplay` from
 - **line** — toggle the driven-line ribbon on/off
 - timeline scrubber replays the run; red ticks are lap-line crossings
 
+Sample replays ship in `samples/` — see `samples/README.md`. A replay carries the
+cars' motion, **not the world**, so you also need the matching track installed in
+Assetto Corsa or the car drives over empty space. `samples/TRACK_FROM_REPLAY.md`
+specs a way around that, rebuilding a surface from the replay's own wheel data;
+it is written up but not built, and open to anyone who wants it.
+
 Zero runtime dependencies. The viewer is `ui/index.html` + `ui/acreplay.js`
 (parser). A sample replay ships in `samples/` — run the Node smoke test on it:
 
