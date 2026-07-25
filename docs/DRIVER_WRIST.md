@@ -1,7 +1,51 @@
 # The driver's wrist — open problem
 
-**Status: attempt 3 shipped (2026-07-25), awaiting eyes-on verdict.** Twist-bone distribution — see
-below. Attempts 1–2 remain documented so nothing gets re-derived.
+**Status: attempts 1–3 all worked the wrong component (measured 2026-07-25). See "The twist/bend
+split" below before attempting anything else.** Attempt 3's twist fix is correct on its own terms and
+stays; it simply cannot address what is visible.
+
+## The twist/bend split — read this first
+
+A relative rotation between two frames decomposes into **twist** (about the shared axis) and **swing
+/ bend** (perpendicular to it). Attempts 1, 2 and 3 all address the twist. The screenshot complaint —
+*"the wrist needs to be straight with the line"* — is the **bend**: the angle between the forearm's
+direction and the hand's direction.
+
+`WRIST_FOLLOW` cannot change that angle, and the reason is a tautology once seen: it rotates the
+forearm about its **own** axis, so elbow→wrist is unmoved, and the hand is welded to the wheel, so it
+is unmoved too. The angle between two things neither of which moved cannot change.
+
+Measured across a wheel sweep (`test_wristbend.js`, synthetic rig — the absolute degrees are
+illustrative, the zero is geometry):
+
+| wheel | bend, FOLLOW=0 | bend, FOLLOW=1 | change |
+|---|---|---|---|
+| 0° | 57.9° | 57.9° | **0.00°** |
+| 90° | 105.6° | 105.6° | **0.00°** |
+| 180° | 138.3° | 138.3° | **0.00°** |
+
+So three attempts were spent on a quantity that provably cannot move the symptom. Attempt 3's headline
+number — residual wrist twist 62.5° → 6.5° — is real, and is about twist.
+
+**What can change the bend.** The hand's orientation is fixed (welded to the rim) and the wrist
+position is fixed (on the grip). The only remaining freedom is **where the elbow sits**: `ik2bone`
+places it at `S + dir·a + pp·h`, on a circle about the shoulder→wrist axis, with `arm.pole` choosing
+the point on that circle. Swinging the elbow around that circle rotates the forearm's direction
+without moving the wrist or the grip — exactly the free variable the bend needs, and exactly what a
+driver's elbow does. `arm.pole` is currently the bind-pose upper-arm direction (`v3sub(E0, S0)`,
+`index.html`), i.e. a constant that knows nothing about where the hand is pointing.
+
+**Attempt 4 (proposed, not built):** drive the pole from the hand's own axis — aim the elbow at
+`W − L2·handAxis`, the position that would make the forearm collinear with the hand, and let
+`ik2bone` snap it to the nearest reachable point on the circle. Blend by a tunable so it can be dialled
+back if the elbow silhouette reads badly. Note attempt 1 measured that the pole's perpendicular
+component never degenerates on this geometry (bottoms out at 0.573) — that finding says the pole is
+*well-conditioned*, which is what makes it safe to steer.
+
+---
+
+**Attempt 3 (2026-07-25) shipped and is live**, twist-bone distribution — see below. Attempts 1–2
+remain documented so nothing gets re-derived.
 
 **Question 1 answered (which path runs):** the **IK path** (`driverSeatedSkin`). The T-180's
 `steer.ksanim` is degenerate — its hand sweeps 25 mm lock-to-lock (measured in `test_steeranim.js`)
