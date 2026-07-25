@@ -260,6 +260,16 @@ function extractScene(arrayBuffer, opts) {
   const steerWheelByMat = new Map();   // the in-cockpit steering wheel (spins with steer)
   let steerWheelData = null;
   let meshCount = 0, skippedTransparent = 0, lodSkipped = 0, logicSkipped = 0;
+  /* Node names and their world origins, for CSP's LIGHT_SERIES.
+   *
+   * A light series does not carry coordinates — it carries MESHES = TorusLight?,
+   * StartFinishGate_SUB2 and places one light AT each matching mesh (hence "series").
+   * So the track's lights cannot be resolved without knowing where its named nodes are.
+   * The walk already computes every node's world matrix and then discards it, so this
+   * costs a push per node and nothing else. Off unless asked for: the array is one entry
+   * per node and only the lighting path wants it. */
+  const wantNodes = !!(opts && opts.collectNodes);
+  const nodes = [];
 
   function readNode(parentM, wheel, steer, hidden) {
     const cls = i32();
@@ -287,6 +297,10 @@ function extractScene(arrayBuffer, opts) {
       const t = new Float64Array(16);
       for (let i = 0; i < 16; i++) t[i] = f32();
       m = matMulRowVec(t, parentM);
+      // world origin of this node, for LIGHT_SERIES mesh lookups. Row-vector convention,
+      // so the translation is row 3. AC_* markers are kept deliberately: they are never
+      // drawn, but a light series is free to hang off one.
+      if (wantNodes && name) nodes.push({ name, pos: [m[12], m[13], m[14]] });
       // the whole per-corner assembly STEERS together: the wheel (tyre+rim) PLUS the
       // Mach6 exo-suit — its suspension (SUSP_) and hub (HUB_), which form the "M" when
       // the wheels turn sideways. But only the tyre (WHEEL_) also ROLLS on its axle; the
@@ -312,6 +326,12 @@ function extractScene(arrayBuffer, opts) {
       const lodIn = f32(); f32(); // lodIn, lodOut (lod0Only filters on lodIn)
       off += 16;        // bounding sphere center+radius
       const isRenderable = u8();
+      // MESHES = in a LIGHT_SERIES names MESHES, not transform nodes — the two are
+      // different classes in a kn5, and collecting only transforms resolved zero lights on
+      // every mesh-based track. A class-2 mesh carries no transform of its own, so its
+      // world position is its parent's origin. Recorded even when not renderable: an
+      // invisible marker mesh is a perfectly normal thing to hang a lamp on.
+      if (wantNodes && name) nodes.push({ name, pos: [m[12], m[13], m[14]] });
       if (isRenderable !== 0) {
         const mat = materials[materialId];
         if (hidden) {
@@ -415,6 +435,7 @@ function extractScene(arrayBuffer, opts) {
 
   return {
     textures, materials, groups, wheels, steerWheel,
+    nodes,   // [{name, pos}] when opts.collectNodes — empty otherwise
     stats: { meshCount, triCount: triTotal, skippedTransparent, lodSkipped, logicSkipped },
   };
 }
