@@ -1845,6 +1845,19 @@ let TRACK_LIGHTS_ON = 1;
  * a white blob, not a lamp. There is no honest conversion between CSP's units and ours,
  * so this is an explicit gain to be set by eye rather than a pretence at a formula. */
 let TRACK_LIGHT_GAIN = 0.16;
+/* Same honesty as above, for the two material terms read out of the kn5.
+ *
+ * EMISSIVE. Authors write ksEmissive well past 1 — aurora's road strips are 3.0, one of its
+ * batches 4.0 — because AC tonemaps and we do not (the HDR pass is off by decision). At 1:1
+ * a 3.0 strip clips to flat white and loses the colour that makes it read as a light rather
+ * than a hole in the geometry. This keeps them bright and still coloured.
+ *
+ * SPECULAR. ksSpecular has a sane 0-1 range already and needs no rescaling in principle;
+ * what it needs is restraint, because our key light has no roughness model behind it and a
+ * full-strength highlight on every road panel reads as wet, not glossy. Both are dials to
+ * be set by eye, and both are the first thing to reach for if a track looks overcooked. */
+let TRACK_EMISSIVE_GAIN = 0.6;
+let TRACK_SPEC_GAIN = 0.5;
 const MAX_TLIGHTS = 12;
 let trackLights = [];          // every resolved lamp, world space
 const _tlPos = new Float32Array(MAX_TLIGHTS * 3);
@@ -3098,10 +3111,25 @@ function render() {
     setCarLamps(allCarLamps(nightF, brakeInt, cm), headVP, -1);
     setShadow();                                // the car's cast shadow onto the track
     gl.uniform1i(tLoc.tex, 0);
+    gl.uniform1i(tLoc.emisTex, 1);              // the emissive mask lives on unit 1
+    gl.uniform3fv(tLoc.eye, camEye());          // for the specular half-vector
     gl.activeTexture(gl.TEXTURE0);
     for (const g of sceneGroups) {
+      gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, g.tex);
       gl.uniform1f(tLoc.alphaTest, g.alphaTested ? 1 : 0);
+      gl.uniform1f(tLoc.alphaRef, g.alphaRef);
+      gl.uniform2f(tLoc.spec, g.spec * TRACK_SPEC_GAIN, g.specExp);
+      if (g.emissive) {
+        gl.uniform3f(tLoc.emissive, g.emissive[0] * TRACK_EMISSIVE_GAIN,
+                                    g.emissive[1] * TRACK_EMISSIVE_GAIN,
+                                    g.emissive[2] * TRACK_EMISSIVE_GAIN);
+        gl.uniform1f(tLoc.emisMap, g.emisTex ? 1 : 0);
+        if (g.emisTex) { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, g.emisTex); }
+      } else {
+        gl.uniform3f(tLoc.emissive, 0, 0, 0);
+        gl.uniform1f(tLoc.emisMap, 0);
+      }
       if (g.translucent) {
         gl.enable(gl.BLEND);
         gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -3128,6 +3156,9 @@ function render() {
     gl.disableVertexAttribArray(tLoc.uv);
     gl.disable(gl.BLEND);
     gl.depthMask(true);
+    // an emissive-masked group leaves unit 1 selected, and every pass after this one binds
+    // its textures assuming unit 0 is current — put it back
+    gl.activeTexture(gl.TEXTURE0);
   }
 
   // tyre skid marks: dark ribbon on the track, revealed up to the current frame.
@@ -3187,6 +3218,14 @@ function render() {
     gl.uniform1f(tLoc.shadowOn, (CAR_SHADOWS && shadowsRendered) ? 1 : 0);
     gl.uniform1i(tLoc.tex, 0);
     gl.uniform1f(tLoc.alpha, 1.0);
+    /* progT is shared with the track, and the track pass leaves its LAST material's
+     * emissive and gloss bound. Without this reset the car inherits them — park behind
+     * aurora's glowing strips and the bodywork lights up. The car keeps its own look:
+     * these are the neutral values, so the car renders exactly as it did before. */
+    gl.uniform3f(tLoc.emissive, 0, 0, 0);
+    gl.uniform1f(tLoc.emisMap, 0);
+    gl.uniform2f(tLoc.spec, 0, 10);
+    gl.uniform1f(tLoc.alphaRef, 0.5);
     gl.activeTexture(gl.TEXTURE0);
     drawCarGroups(carGroups, cm);                              // body — keeps its crab
     drawGhostCars(mvp, headVP, nightF, carList);               // comparison laps, same car, own telemetry
@@ -4038,9 +4077,28 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
           const idxBuf = gl.createBuffer();
           gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
           gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, g.idx, gl.STATIC_DRAW);
+          /* The emissive MASK, when the material declares one. Uploaded on its own texture
+           * unit rather than folded into the diffuse, because the two are sampled with the
+           * same UVs but mean different things: one is the surface, one is where the light
+           * is. A failed decode falls back to no mask rather than to a fallback texture —
+           * a grey 1x1 in the mask slot would make the whole material glow uniformly,
+           * which is the exact failure the mask exists to prevent. */
+          let emisTex = null;
+          if (mat.emissive && mat.txEmissive) {
+            try {
+              const ee = texByName[mat.txEmissive];
+              if (ee) emisTex = await makeSceneTexture(ee.blob, ee.name);
+            } catch (e) { emisTex = null; }
+          }
           const translucent = /transparent|glass/i.test(mat.name || "");
           allGroups.push({ posBuf, nrmBuf, uvBuf, idxBuf, count: g.idx.length, tex,
-                           alphaTested: !!(mat.alphaTested), translucent });
+                           alphaTested: !!(mat.alphaTested), translucent,
+                           emissive: mat.emissive || null, emisTex,
+                           spec: mat.specular || 0, specExp: mat.specExp || 10,
+                           // 0 on disk means "unset" — 280 of 294 materials say 0, and
+                           // taking that literally would make every alpha-tested fence
+                           // opaque, since every texel passes `a < 0`.
+                           alphaRef: mat.alphaRef > 0 ? mat.alphaRef : 0.5 });
           if (!translucent) collGroups.push({ pos: g.pos, idx: g.idx }); // solid → collider
           triCount += g.triCount;
         }

@@ -229,17 +229,42 @@ function extractScene(arrayBuffer, opts) {
     const blendMode = u8();
     const alphaTested = u8();
     i32();            // depthMode (present in v5/v6)
+    /* The property block used to be stepped over wholesale — `str(); off += 40;` — and the
+     * cost of that was invisible because nothing complained: tracks simply rendered as flat
+     * unlit diffuse and looked like it was the best the data allowed. It wasn't. Every one
+     * of these materials carries ksEmissive, ksSpecular and ksSpecularEXP, and they are what
+     * tell a lit sign from a painted one and wet asphalt from felt.
+     *
+     * A record is a name followed by exactly 40 bytes = ten floats, in four fixed groups:
+     * A is one float, B is two, C is three, D is four. Scalars live in A, colours in C. */
     const props = i32();
-    for (let p = 0; p < props; p++) { str(); off += 40; } // A f + B 2f + C 3f + D 4f
+    let emissive = null, specular = 0, specExp = 10, alphaRef = 0;
+    for (let p = 0; p < props; p++) {
+      const pn = str();
+      const a = f32();                          // A: 1 float
+      off += 8;                                 // B: 2 floats
+      const c0 = f32(), c1 = f32(), c2 = f32(); // C: 3 floats
+      off += 16;                                // D: 4 floats
+      if (pn === "ksEmissive") { if (c0 > 0.001 || c1 > 0.001 || c2 > 0.001) emissive = [c0, c1, c2]; }
+      else if (pn === "ksSpecular") specular = a;
+      else if (pn === "ksSpecularEXP") specExp = a;
+      else if (pn === "ksAlphaRef") alphaRef = a;
+    }
     const maps = i32();
-    let txDiffuse = null;
+    let txDiffuse = null, txEmissive = null;
     for (let q = 0; q < maps; q++) {
       const sampler = str();
       i32();          // slot
       const texName = str();
       if (sampler === "txDiffuse") txDiffuse = texName;
+      // A MASK, not a colour: aurora's track1/2/3 declare ksEmissive 3.0 with a
+      // track*_emissive.dds beside it, and the mask is the whole point — the glow belongs
+      // to the light strips painted into it. Multiply ksEmissive by the DIFFUSE instead and
+      // the entire road surface becomes a light box.
+      else if (sampler === "txEmissive") txEmissive = texName;
     }
-    materials.push({ name, shader, blendMode, alphaTested, txDiffuse });
+    materials.push({ name, shader, blendMode, alphaTested, txDiffuse,
+                     txEmissive, emissive, specular, specExp, alphaRef });
   }
 
   // node tree — pass 1: walk, record mesh descriptors grouped by materialId

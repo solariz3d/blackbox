@@ -65,6 +65,14 @@ varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld;
 uniform sampler2D uTex;
 uniform float uAlphaTest;
 uniform float uAlpha;
+uniform vec3 uEye;               // camera position, for the specular half-vector
+// PER-MATERIAL, from the kn5's property block. Defaults (0,0 / no emissive) reproduce the
+// old flat-diffuse look exactly, which is what the car pass sets — this is a track feature.
+uniform vec3 uEmissive;          // ksEmissive * gain; self-lit, unshadowed, no night gate
+uniform float uEmisMap;          // 1 = a txEmissive mask exists on unit 1, 0 = use diffuse
+uniform sampler2D uEmisTex;
+uniform vec2 uSpec;              // x = ksSpecular, y = ksSpecularEXP
+uniform float uAlphaRef;         // ksAlphaRef; 0 in the file means "use the default 0.5"
 uniform float uFogDensity; uniform vec3 uFogColor;
 uniform vec3 uSunDir;            // direction TO the sun/moon (time-of-day driven)
 uniform vec3 uSunCol;           // key-light colour + intensity (dim/cool at night)
@@ -172,7 +180,7 @@ float shadowFactor(vec3 wp, float bias){
 }
 void main(){
   vec4 tex = texture2D(uTex, vUV);
-  if (uAlphaTest > 0.5 && tex.a < 0.5) discard;
+  if (uAlphaTest > 0.5 && tex.a < uAlphaRef) discard;
   vec3 n = normalize(vNrm);
   // directional key light + hemisphere ambient, all driven by the time of day
   float ndl = max(dot(n, normalize(uSunDir)), 0.0);
@@ -193,6 +201,17 @@ void main(){
   vec3 wpS = vWorld + n * 0.06;
   float shF = uShadowOn > 0.5 ? shadowFactor(wpS, sbias) : 1.0;
   vec3 col = tex.rgb * (ambient + sunCol * (0.9 * wrap) * shF);
+  /* Specular from the key light, Blinn-Phong, with the material's OWN gloss. Every track
+   * material on disk carries ksSpecular (median 0.2) and ksSpecularEXP (median 10, up to
+   * 1000) and the renderer was using neither, so asphalt, glass, painted kerbs and grass
+   * all returned light identically — which is what made surfaces read as felt. Shadowed
+   * with the same factor as the key, because a highlight from an occluded sun is a hole in
+   * the illusion far more obvious than a missing one. Only where the sun actually lands
+   * (ndl > 0), so back faces cannot pick up a rim of light from a source behind them. */
+  if (uSpec.x > 0.001 && ndl > 0.0) {
+    vec3 h = normalize(normalize(uSunDir) + normalize(uEye - vWorld));
+    col += sunCol * (uSpec.x * pow(max(dot(n, h), 0.0), max(uSpec.y, 1.0)) * shF);
+  }
   /* Track lights. Inverse-square would be physically right and looks wrong here: a lamp
    * with a declared RANGE is an artistic statement about how far it should reach, so the
    * falloff is normalised to that range and hits exactly zero at its edge. Without that a
@@ -233,6 +252,18 @@ void main(){
       col += tex.rgb * vec3(1.0, 0.05, 0.02) * (b * uBrakeInt[c] * 4.0);
     }
   }
+  /* EMISSIVE — self-lit, so it is added after all the lighting and gated by none of it: not
+   * by the shadow map, not by the night factor, not by N.L. That is the whole point of a
+   * lit sign. It IS still fogged below, because distance haze sits between the eye and the
+   * light no matter what made the light.
+   *
+   * The mask is what makes this correct rather than merely bright. Aurora's road materials
+   * declare ksEmissive 3.0 with a txEmissive beside them, and the glow lives only where
+   * that mask paints it — the strips. Without the mask the same number turns the entire
+   * racing surface into a light box. Materials with no mask (thunderhead's LED panels) fall
+   * back to the diffuse, which keeps their texture detail instead of flooding a flat colour. */
+  vec3 emis = uEmisMap > 0.5 ? texture2D(uEmisTex, vUV).rgb : tex.rgb;
+  col += uEmissive * emis;
   // aerial fog for depth (blend toward the sky colour). NOTE: output is UNCLAMPED HDR —
   // the ACES tonemap in the post pass owns the final tone; bright bits (> 1) bloom.
   float depth = gl_FragCoord.z / gl_FragCoord.w;
@@ -252,6 +283,12 @@ const tLoc = {
   tex: gl.getUniformLocation(progT, "uTex"),
   alphaTest: gl.getUniformLocation(progT, "uAlphaTest"),
   alpha: gl.getUniformLocation(progT, "uAlpha"),
+  eye: gl.getUniformLocation(progT, "uEye"),
+  emissive: gl.getUniformLocation(progT, "uEmissive"),
+  emisMap: gl.getUniformLocation(progT, "uEmisMap"),
+  emisTex: gl.getUniformLocation(progT, "uEmisTex"),
+  spec: gl.getUniformLocation(progT, "uSpec"),
+  alphaRef: gl.getUniformLocation(progT, "uAlphaRef"),
   fogD: gl.getUniformLocation(progT, "uFogDensity"),
   fogC: gl.getUniformLocation(progT, "uFogColor"),
   sun: gl.getUniformLocation(progT, "uSunDir"),
