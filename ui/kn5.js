@@ -331,7 +331,14 @@ function extractScene(arrayBuffer, opts) {
       // every mesh-based track. A class-2 mesh carries no transform of its own, so its
       // world position is its parent's origin. Recorded even when not renderable: an
       // invisible marker mesh is a perfectly normal thing to hang a lamp on.
-      if (wantNodes && name) nodes.push({ name, pos: [m[12], m[13], m[14]] });
+      //
+      // The MATERIAL name comes too, because a series may select by material instead:
+      // MATERIALS = StreetLampGlow. Measured across this library the two forms are used
+      // about equally, so handling only MESHES leaves half the tracks dark.
+      if (wantNodes && name) {
+        const mm = materials[materialId];
+        nodes.push({ name, pos: [m[12], m[13], m[14]], mat: (mm && mm.name) || "" });
+      }
       if (isRenderable !== 0) {
         const mat = materials[materialId];
         if (hidden) {

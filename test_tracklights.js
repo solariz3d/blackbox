@@ -16,11 +16,11 @@ let fails = 0;
 const ok = (c, m) => { console.log(`  ${c ? "ok " : "FAIL"} - ${m}`); if (!c) fails++; };
 
 const NODES = [
-  { name: "TorusLight1", pos: [10, 5, 0] },
-  { name: "TorusLight2", pos: [20, 5, 0] },
-  { name: "TorusLightXX", pos: [30, 5, 0] },   // two chars — '?' must NOT match
-  { name: "StartFinishGate_SUB2", pos: [0, 8, 0] },
-  { name: "Grandstand", pos: [50, 3, 0] },
+  { name: "TorusLight1", pos: [10, 5, 0], mat: "TrackMetal" },
+  { name: "TorusLight2", pos: [20, 5, 0], mat: "TrackMetal" },
+  { name: "TorusLightXX", pos: [30, 5, 0], mat: "TrackMetal" },  // two chars — '?' must NOT match
+  { name: "StartFinishGate_SUB2", pos: [0, 8, 0], mat: "LampGlow" },
+  { name: "Grandstand", pos: [50, 3, 0], mat: "Concrete" },
 ];
 
 console.log("\na series places one light per matching mesh");
@@ -43,6 +43,28 @@ COLOR = 0.9, 0.95, 1.0, 3
   ok(Math.abs(g.range - 180) < 1e-6, "range carried through");
   ok(Math.abs(g.spot - 250) < 1e-6, "spot angle carried through");
   ok(g.night === true, "CONDITION = NIGHT_SHARP marks it night-gated");
+}
+
+console.log("\na series can select by MATERIAL instead of by mesh name");
+{
+  // Measured on the real library, MATERIALS and MESHES are used about equally. Handling
+  // only meshes left 11 of 15 T-180 tracks resolving nothing despite shipping a config:
+  // eagleton went 0 -> 98 lights and sakura_speedway 0 -> 143 once this was added.
+  const L = T.resolveTrackLights(`
+[LIGHT_SERIES_0]
+MATERIALS = LampGlow
+COLOR = 1, 1, 1, 2
+RANGE = 40
+`, NODES);
+  ok(L.length === 1, `one mesh carries that material (got ${L.length})`);
+  ok(L[0].pos[1] === 8, "the light lands at that mesh's position");
+
+  const wild = T.resolveTrackLights(`[LIGHT_SERIES_0]\nMATERIALS = Track*\n`, NODES);
+  ok(wild.length === 3, `wildcards work on materials too (got ${wild.length})`);
+
+  // both forms in one series must not double-count a mesh that satisfies each
+  const both = T.resolveTrackLights(`[LIGHT_SERIES_0]\nMESHES = StartFinishGate_SUB2\nMATERIALS = LampGlow\n`, NODES);
+  ok(both.length === 1, `a mesh matching by BOTH name and material yields one light, not two (got ${both.length})`);
 }
 
 console.log("\nCOLOR's fourth component is INTENSITY, not alpha");

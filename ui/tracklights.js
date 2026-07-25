@@ -105,12 +105,18 @@ function resolveTrackLights(iniText, nodes, opts) {
     const p = list(k.POSITION).map(Number);
     if (p.length >= 3) push([num(p[0], 0), num(p[1], 0), num(p[2], 0)]);
 
-    // ...and one light per matching mesh, which is the usual form
-    const pats = list(k.MESHES).map(meshPatternToRegExp);
-    if (pats.length && byName.length) {
+    /* ...and one light per matching mesh. A series selects those either by NAME
+     * (MESHES = TorusLight?) or by MATERIAL (MATERIALS = StreetLampGlow), and across this
+     * library the two forms are used about equally — handling only MESHES left eleven of
+     * fifteen T-180 tracks resolving nothing despite shipping a light config. */
+    const meshPats = list(k.MESHES).map(meshPatternToRegExp);
+    const matPats = list(k.MATERIALS).map(meshPatternToRegExp);
+    if ((meshPats.length || matPats.length) && byName.length) {
       for (const n of byName) {
         if (out.length >= max) break;
-        if (pats.some(re => re.test(n.name))) push(n.pos);
+        const hit = meshPats.some(re => re.test(n.name)) ||
+                    (n.mat && matPats.some(re => re.test(n.mat)));
+        if (hit) push(n.pos);
       }
     }
   }
