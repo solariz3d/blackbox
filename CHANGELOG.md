@@ -1,5 +1,174 @@
 # Changelog
 
+## 2026-07-24 — Shadow cascade reach, and the groundwork for multiple ghosts
+
+### Fixed
+- **A lit rectangle that travelled with the car** (screenshot-verified): the grandstand's shadow
+  bands crossed the track, stopped dead in a box centred on the car, and resumed with hard vertical
+  edges. `buildLightVP` derived its caster reach from `R` — eye at `R*1.8`, far plane at `R*4` — so
+  tightening `R` from 90 to 40 for sharpness also cut how far up-sun the near cascade looked for
+  casters, 161 m → 71 m. The grandstand fell outside the near map, so nothing cast inside it, while
+  the far cascade still had it: hence the boundary. In light space a caster shadows the same (x,y)
+  it occupies, so a tight box never loses a caster *sideways* — only one standing between the light
+  and the near plane. Reach is now an explicit argument (`SHADOW_CASTER_REACH`, 600 m) independent
+  of `R`, so `R` buys texel density and reach decides caster capture. Regression-tested in
+  `test_shadowbox.js`, which extracts the real `buildLightVP` and asserts the old box clips a 120 m
+  caster while the new one captures it.
+- **Shadow bias is now stated in metres, not NDC.** The light box got ~7.5× deeper, and a fixed NDC
+  bias means a different world distance in every box — `0.0006` is 10 cm in a 160 m box and 60 cm in
+  a 1.2 km one. Left alone the fix above would have traded missing shadows for peter-panning. The
+  shader now takes the cascade's depth range as `uShadowDepth0` and converts, so the bias is immune
+  to whatever `R` or reach are set to next.
+
+### Changed
+- **Sharper cast shadows.** Near cascade `R` 90 → 40 and size 4096 → 8192: 4.4 cm → 0.98 cm per
+  texel on the car's own shadow. Far (static whole-track) bake 4096 → 8192, which is why distant
+  shadows no longer read as absent until you approach. Near/far cascades now blend across the near
+  box border rather than switching on a hard `if`. `initShadow` clamps a cascade to
+  `MAX_TEXTURE_SIZE`, so a smaller GPU loses sharpness instead of losing shadows to an incomplete FBO.
+
+### Added
+- **`ui/ghosts.js`** — state and alignment for running several replays at once, ahead of the
+  rendering work: per-ghost holographic/full modes as one declarative effect table, a `GhostSet`
+  with a primary reference run, and a `carId`→model cache with refcounts so four cars in one Mach 6
+  upload once and draw four times. Alignment is by **distance around the lap, not time** — two laps
+  on a common clock stop showing the same piece of track after one corner, whereas at equal distance
+  they stay side by side and the time difference *is* the delta. Covered by `test_ghosts.js`.
+- **`samples/`** now carries a T-180 test-track replay so the app can be exercised without an
+  Assetto Corsa install.
+
+### Changed (internal)
+- **`carModelMatrix` is pure.** It used to assign the global `carSteerAngle` as a side effect — the
+  reason the call site was commented "call it exactly once" — so a second car would silently
+  overwrite the first car's steering. It now takes the run to operate on and returns `{mat, steer}`;
+  `driverPose` likewise takes its ghost's steer. Omitting the new arguments falls back to the primary
+  run, so the single-car path is unchanged. `test_ghostmatrix.js` pins it.
+
+## 2026-07-24 — Grip hollow + curl bias (fingers no longer clip through the wheel face)
+
+### Fixed
+- **Fingertips poked out through the wheel's far face** (screenshot-verified): the hand is sculpted
+  gripping AC's generic FAT rim (~50 mm palm-to-fingertip channel), but the T-180's bar is ~24 mm —
+  the fingers are longer than the bar is deep, so the spare length must exit somewhere, and it exited
+  the visible face. The grip anchor is now the **hollow of the whole digit ring** (knuckles + mids +
+  TIPS + thumb tips, measured from the rig) **biased deeper into the curl** (`DRIVER_GRIP_BIAS`,
+  12 mm, along the measured knuckles→tips direction), which seats the bar in the fingers and sends
+  the spare length to the hidden palm side instead. Net on the T-180: each hand sits ~33 mm further
+  back toward the driver. A true per-phalanx finger-conform (curling joints to the bar radius) is the
+  full fix if ever needed; this is the placement-only version.
+- **Final eyes-on tune**: `DRIVER_PALM_OFFSET` is now SIGNED and set to −20 mm (hands+fingers seated
+  ~1 inch forward of the hollow+bias anchor) — judged on-screen by the keeper as the landing point.
+  The full grip chain is: digit-ring hollow → +12 mm curl bias → −20 mm depth trim → bar core snap.
+
+## 2026-07-24 — Palm-cup grip placement (hands no longer overshoot the handles)
+
+### Fixed
+- **Hands reached the wheel but carried on past it** (screenshot-verified): grip placement anchored
+  the WRIST, but the actual contact — the palm cup, the hollow of the curled fingers — sits ~112 mm
+  past the wrist in the seated pose, so wrist-based placement pushed fingers beyond the bar. Now the
+  **palm cup** (centroid of the 8 proximal+middle finger joints, measured from the rig: L fingers are
+  Index/Middle/Ring/Pinkie 1–3, R fingers 4–6) is placed on the bar core via `palmGrip`
+  (`ui/carrender.js`), with `DRIVER_PALM_OFFSET` repurposed as a small grip-depth trim (5 mm).
+  On the real T-180 this pulls each hand ~26 mm back and ~24 mm inboard — the measured overshoot.
+  Verified on real assets: shifted cups land on the bar core to the millimetre, both hands.
+
+## 2026-07-24 — Linear per-run steering + steer.ksanim support (and a parser bug it exposed)
+
+### Fixed
+- **`parseKsanim` read v2 keyframes in the wrong field order** (`ui/kn5.js`): position-first instead
+  of the actual layout — **rotation (quat x,y,z,w), then position, then scale**. Nothing had ever
+  called it, so the bug was latent since the parser was written. Proof of the fix on the T-180's
+  steer.ksanim: every quat becomes exactly unit-norm and an unmoving torso bone's position matches
+  its bind translation to the millimetre. Regression-guarded in `test_steeranim.js`.
+- **The wheel visibly stalled near its lock while the car kept turning**: the saturating tanh map
+  crawls asymptotically long before the cap. Replaced with a **LINEAR per-run scale** — the wheel is
+  proportional to the car's steer the whole way, scaled so this replay's 98th-percentile steer
+  (`steerRefCalib`, computed at load from the extract) lands exactly at the lock. It only caps in the
+  top 2% wildest frames. On the T-180 the effective lock is the full ±120° (`STEER_WHEEL_MAX`), since
+  the arms' calibrated reach covers the whole orbit of its small wheel.
+
+### Added
+- **Authored steering-animation support** (`driverAnimInit`/`driverAnimWorlds`/`animT`/`ksanimLocal`
+  in `ui/carrender.js`): when a car ships `animations/steer.ksanim` (the Rust side already served it;
+  nothing had used it), the mod author's own lock-to-lock animation — clavicles, arms, hands, every
+  finger — drives the driver, palms wrapped on the grips by authorship. Anim locals compose over the
+  seated pose's local chain (verified: L0-only composition reproduces the knh worlds to 0.0 mm); the
+  wheel↔hand sync uses a sampled θ(t) arc map so they stay glued even where the anim isn't linear
+  in t. **Discovery, documented in the test: the T-180's own steer anim is degenerate** — its hand
+  sweeps 25 mm lock-to-lock, too small to express a turning wheel — so `driverAnimInit` refuses it
+  (guard: authored range < 20°) and the viewer falls back to the IK/snap path. Cars with real
+  steering anims get the authored version automatically.
+- **`test_steeranim.js`** — real-asset proof (needs the G: AC install, like `test_carscene.js`):
+  parser regression, composition exactness, anim-centre local == knh local element-for-element,
+  anim-centre hand on the authored hand at 9 mm, the degenerate-anim refusal, and `steerRefCalib`
+  recovering a synthetic run's constant slip. 7 checks, all passing.
+
+## 2026-07-24 — Glued-grip steering (wheel turns with the car; hands stay ON the grips)
+
+### Fixed
+- **Cockpit wheel no longer stops short in sharp corners** (`ui/index.html`). It was hard-clamped to
+  the driver's hand-orbit limit (±60°, `DRIVER_GRIP_SPIN_MAX`), so past that the wheel and driver froze
+  while the road wheels kept steering. `STEER_WHEEL_RATIO` also raised 3.0 → 6.0 so the rotation reads
+  like a real wheel.
+- **Hands no longer float off the rim at big angles**: `ik2bone` silently clamps an out-of-reach target
+  short of the grip, which is exactly where the hovering hands came from. The arms now always land ON
+  the grip (see below). *(An intermediate hand-over-hand re-grip approach — `gripWrap`/`gripFollow` —
+  was built and replaced the same day, uncommitted: it let wheel and hands diverge, which looked worse,
+  not better.)*
+
+### Added
+- **Glued-grip solver** (`gripSat`/`armSolve`/`gripLockCalib` in `ui/carrender.js`). One spin drives
+  the wheel AND the hands, so they can't diverge. The raw steer runs through a smooth saturating lock
+  (`lock·tanh(raw/lock)`): near-linear in normal corners, keeps creeping in hairpins — never freezes —
+  and never exceeds what the hands can hold. When the grip crosses past plain 2-bone reach, the
+  **shoulder leans toward it** (up to `DRIVER_SHOULDER_REACH`, 0.15 m), like a real driver in a
+  crossed-over turn, and the whole arm subtree translates with it. The lock itself is **calibrated at
+  load from the car's own rig** (largest orbit both hands can reach, lean included) — a guessed
+  constant replaced by measurement, in the house style.
+- **Wrist no longer twists goofily at big angles**: the hand used to get the upper-arm swing + forearm
+  swing + a wheel-roll stacked on top, which drifted its orientation off the authored grip as angles
+  grew. The hand (+fingers) is now **welded to the wheel** — its pose is exactly the authored grip
+  orbited about the wheel axis, same as the wheel mesh — and the arm swings to meet the wrist, the
+  wrist flex being whatever connects them (like a real wrist). `driverSeatedSkin` split into
+  `driverSeatedPose` (pure, testable) + upload.
+- **Grips snapped onto the wheel's actual MATERIAL** (`snapToMesh`/`gripTarget` in `ui/carrender.js`).
+  The T-180's authored hands floated ~150 mm from the spin axis but its wheel mesh ends at 127 mm —
+  the pose gripped a wheel that isn't there. A first attempt fitted an idealized rim circle
+  (`rimFit`, same-day, uncommitted), which a handled wheel defeats: the fit passes through the grip
+  HOLES. Now the grip snaps to the nearest actual material — nearest wheel vertex, then mean-shift to
+  the local centre of the handle bar (a hole has no verts to attract it) — and the wrist holds a
+  **palm offset** (`DRIVER_PALM_OFFSET`, 30 mm) back along its approach so the palm wraps the bar
+  instead of the wrist sinking into its core (fingers through the hole). Verified against the real
+  T-180: wrists land 30 mm off the bar core at the handle band's outer edge, hand mesh riding the
+  shift, arms re-solved to it even at rest. Blend tunable `DRIVER_GRIP_SNAP`.
+- **Condensed high-sensitivity steering zone** (`STEER_WHEEL_MAX`, default ±120°): the wheel still
+  tracks the car's full steer range monotonically, but compressed formula-style instead of sawing
+  through crossed-over arm territory. Effective lock = min(this, the calibrated arm reach). (First
+  cut at ±86° read as not turning enough — opened to ±120°.)
+- **`test_gripreach.js`** — headless proof on the same exported code: live grip is exactly the orbited
+  bind grip, bone lengths hold at every angle (the hand really lands on the grip), shoulder lean stays
+  in budget and fires when needed, the calibrated lock is honest (reachable inside, genuinely not just
+  past), seated pose untouched at rest, saturating map monotone/bounded, a full synthetic-skeleton
+  pass proving the hand weld (hand on the live grip, fingers rigid with it, arm chain meeting it),
+  rim recovery on a synthetic dished wheel (centre found to 0.1 mm from a pivot 28 mm off), and the
+  weld riding a snapped grip. 24 checks, all passing.
+
+## 2026-07-24 — Telemetry logger: continuous buffer (reset-heavy hotlapping no longer loses laps)
+
+### Fixed
+- **Restarts/resets no longer wipe the telemetry buffer** (`src-tauri/src/bin/telemetry_logger.rs`).
+  The stint detector cleared the whole buffer whenever `live` returned after a >2.5 s non-live gap —
+  but a "restart session" *is* such a gap, so reset-heavy hotlapping (run off → restart, repeatedly)
+  cleared the buffer on every restart. The clean lap you finally saved came out with idle-fragment or
+  no telemetry → bugged/silent audio in BLACKBOX. Root-caused from a real broken recording (2026-07-24
+  15:16: AC autosave had zero telemetry, CM save had a 2,366-sample idle fragment; the log showed three
+  back-to-back "new driving stint" clears just before).
+- **Now a continuous rolling buffer:** records the whole time AC is open, clears only on AC **close**
+  (genuine new session). BLACKBOX's existing time-based tail-align grabs the saved replay's slice, so
+  any reset pattern is fine. Capped at ~25 min (trims oldest 5 min) so a day-long session can't grow
+  unbounded — lossless for the loader, which only uses the tail. Built + deployed to
+  `%LOCALAPPDATA%\BLACKBOX\telemetry_logger.exe` and restarted live.
+
 ## 2026-07-23 — Windowed fullscreen
 
 ### Added

@@ -484,6 +484,7 @@
 "use strict";
 /* ===================== state ===================== */
 let replay = null, ex = null, stats = null;
+let carSteerRef = 0;   // 98th-pct |steer| of the current run (steerRefCalib) — the linear wheel scale's anchor
 let playing = true, rate = 1, tCur = 0;
 let audioAutoStarted = false;   // engine sound spawns on with the first replay
 // webview autoplay lock: any user gesture resumes a suspended AudioContext
@@ -522,7 +523,8 @@ let carLights = null;   // { head:[[x,y,z]...], tail:[...] } emitter points from
 let carNozzle = null;   // turbine nozzle centroid (model space) — plume + backfire emit here
 let carWheels = null;   // steerable wheels {corner, pivot, front, radius, rollGroups, staticGroups}
 let carSteerWheel = null; // in-cockpit steering wheel { pivot, ax, groups }
-let STEER_WHEEL_RATIO = 3.0;  // cockpit wheel turns this × the road-wheel angle
+let STEER_WHEEL_RATIO = 6.0;  // cockpit wheel turns this × the road-wheel angle — sets how LIVELY the wheel is early in a corner
+let STEER_WHEEL_MAX = 2.1;    // rad (~120°): condensed high-sensitivity zone (formula-style) — the wheel represents the car's whole steer range inside this; raise toward the arms' calibrated lock for more arm-crossing, lower for a tighter zone
 let STEER_WHEEL_AXIS = 2;     // which node axis it spins about (0=X,1=Y,2=Z); flip if it tumbles
 let STEER_WHEEL_SIGN = -1;    // flip if it turns the wrong way (driver was counter-steering vs the wheels)
 let WHEEL_ROLL_SIGN = 1;      // road-wheel roll-spin direction (flip if wheels spin backward)
@@ -545,10 +547,15 @@ let carSteerAngle = 0;  // front-wheel steer this frame (radians), set by carMod
 // settles slowly. Tunables up top for easy feel work.
 let DRIVER_HEAD_YAW_MAX = 0.85;   // neck isn't a swivel — cap the head turn (~49°)
 let DRIVER_HEAD_SIGN = 1;         // flip if the head turns the wrong way
-// hands orbit the rim with the wheel spin. The driver's arm is nearly straight at
-// rest, so the hand going up-and-over can't reach far — cap the orbit where both
-// hands stay on the rim (beyond it, the wheel keeps spinning under a held grip).
-let DRIVER_GRIP_SPIN_MAX = 1.05;  // max hand orbit (rad, ~60°) — pushed toward the arm's reach limit so the hands travel further round the wheel; wheel is locked to this so they stay gripped
+// hands stay GLUED to the wheel's grip points at any steer: one spin drives the
+// wheel AND the hands, run through a smooth saturating lock (gripSat) calibrated
+// at load to what BOTH arms can physically reach (gripLockCalib). Past plain arm
+// reach the shoulder leans toward the grip (armSolve) — like a real driver in a
+// crossed-over turn — so the hand lands ON the grip instead of floating short.
+let DRIVER_SHOULDER_REACH = 0.15; // max shoulder lean toward the grip (m) — buys crossed-over reach past straight-arm range
+let DRIVER_GRIP_SNAP = 1.0;       // 0..1: how fully the grips snap toward the wheel's actual material — drop for a softer pull
+let DRIVER_PALM_OFFSET = -0.020;  // m: SIGNED grip-depth trim along the cup→wrist axis — positive backs the hands off the bar, negative seats hands+fingers FORWARD past it (eyes-on tuned: −20 mm ≈ 1 inch forward of the hollow+bias anchor)
+let DRIVER_GRIP_BIAS = 0.012;     // m: seats the bar DEEPER into the finger curl (toward the tips) — the hand is sculpted for a fat rim, so on a thin bar the spare finger length must poke somewhere; this sends it to the hidden palm side instead of out the wheel's face
 let DRIVER_GRIP_UP = 0.0;         // base grip-height offset (rad): 0 = the rig's natural symmetric grip (rim-orbit coupling made raising it lopsided — tune eyes-on)
 let DRIVER_GRIP_SPIN_SIGN = 1;    // flip if the hands orbit opposite the wheel
 const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
@@ -1482,15 +1489,31 @@ const AIR_TAU = 0.6, AIR_TTL = 1.2;                    // velocity dissipation �
 // almost no forward drag (drag would carry the smoke along with the car — no trail).
 const WHEEL_DRAG_K = 0.04, WHEEL_SWIRL_K = 0.15, BODY_WAKE_K = 0.0, AIR_TURB = 0.35;  // wake off (0) — it only matters for shredding OTHER cars' smoke; with one car it disturbs its own trail
 const SLIDE_GAIN = 3.0, SLIDE_TAU = 0.5, SLIDE_MAX = 2.5;   // per-wheel slide accumulator: grow / decay-τ / cap
+// Sharpness of a cascade is (2*R)/size metres per texel, so R is as much a resolution
+// knob as size — and a free one. NEAR was spending a 180 m box to shadow a 4.5 m car.
 const SHADOW_CASCADES = [
-  { R: 90, size: 4096, dyn: true },    // NEAR: dynamic, re-rendered every frame around the car
-  { size: 4096, dyn: false },          // FAR: STATIC whole-track bake (R/centre from trackAABB)
+  // NEAR: dynamic, re-rendered every frame around the car. 80/8192 = 0.98 cm per texel
+  // (was 180/4096 = 4.4 cm) — ~4.5x finer on the car's own cast shadow. This is the only
+  // pass that costs per-frame fill; if the framerate suffers, drop size to 4096 first,
+  // which still leaves 1.95 cm from the tighter R alone.
+  { R: 40, size: 8192, dyn: true },
+  // FAR: STATIC whole-track bake (R/centre from trackAABB), re-rendered only when the sun
+  // moves — so resolution here is almost free at runtime, one bake for one memory cost.
+  // At 4096 across a whole circuit a texel was tens of centimetres, which is why distant
+  // shadows read as missing until you got close. 8192 halves that.
+  { size: 8192, dyn: false },
 ];
 (function initShadow() {
   if (!isGL2) return;
   let ok = true;
+  // A cascade larger than the GPU allows fails texImage2D, the FBO comes back incomplete,
+  // and shadows silently switch off entirely. Clamp instead: a smaller GPU should lose
+  // sharpness, not shadows.
+  const maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE);
   for (const c of SHADOW_CASCADES) {
+    if (c.size > maxTex) { console.warn(`shadow cascade ${c.size} > MAX_TEXTURE_SIZE ${maxTex}; clamped`); c.size = maxTex; }
     c.vp = new Float32Array(IDENT4);   // never null (safe to bind before first bake)
+    c.depth = 1;                       // metres; real value set with each vp (bias divisor)
     c.tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, c.tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.DEPTH_COMPONENT24, c.size, c.size, 0, gl.DEPTH_COMPONENT, gl.UNSIGNED_INT, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -1506,12 +1529,26 @@ const SHADOW_CASCADES = [
 })();
 
 // orthographic light box of half-extent R centred on `center`, looking along the sun/moon
-function buildLightVP(dir, R, center) {
-  const c = center, d = v3nrm(dir), back = R * 1.8;   // eye far enough back that the box is in frustum
+// `reach` = how far TOWARD the light the box starts capturing casters, in metres, and it
+// must NOT be derived from R. In light space a caster shadows the same (x,y) it occupies,
+// so a tight box never loses a caster sideways — the only thing it can lose is one
+// standing between the light and the near plane. Tying reach to R meant that shrinking
+// the box for sharpness also amputated tall casters (grandstands, gantries): their
+// shadows vanished inside the near cascade while the far cascade still had them, leaving
+// a lit rectangle with hard edges that tracked the car. Returns the depth range too, so
+// the shader can express its bias in metres instead of a range-dependent NDC number.
+function buildLightVP(dir, R, center, reach) {
+  const c = center, d = v3nrm(dir);
+  const back = Math.max(reach || 0, R * 1.8);          // eye distance toward the light
+  const depth = back + Math.max(reach || 0, R * 2.2);  // ...through to well below the box
   const eye = [c[0] + d[0]*back, c[1] + d[1]*back, c[2] + d[2]*back];
   const up = Math.abs(d[1]) > 0.95 ? [0, 0, 1] : [0, 1, 0];
-  return new Float32Array(mMul(mOrtho(-R, R, -R, R, 1, R * 4), mLookAt(eye, c, up)));
+  return { vp: new Float32Array(mMul(mOrtho(-R, R, -R, R, 1, depth), mLookAt(eye, c, up))), depth };
 }
+// How far above the car the near cascade still collects shadow casters. Generous on
+// purpose: it costs depth precision (24-bit over ~1.2 km is well under a millimetre) and
+// nothing else, whereas being short silently deletes shadows.
+const SHADOW_CASTER_REACH = 600;
 // Shadow casters. NEAR cascade: dynamic every frame (track + car around the car, sharp).
 // FAR cascade: the WHOLE track baked once — only re-rendered when the sun moved (time
 // changed), covering the full track bounds. Track participates (banking blocks the sun);
@@ -1529,7 +1566,10 @@ function renderCarDepth(cm, dir, timeChanged) {
   };
   // NEAR — dynamic, every frame (track + car)
   const near = SHADOW_CASCADES[0];
-  near.vp = buildLightVP(dir, near.R, [cm[12], cm[13], cm[14]]);
+  // reach is passed explicitly so a tall caster 600 m up-sun still lands in this map —
+  // without it the box only reaches R*1.8 (71 m at R=40) and deletes grandstand shadows
+  const nlv = buildLightVP(dir, near.R, [cm[12], cm[13], cm[14]], SHADOW_CASTER_REACH);
+  near.vp = nlv.vp; near.depth = nlv.depth;
   gl.bindFramebuffer(gl.FRAMEBUFFER, near.fbo); gl.viewport(0, 0, near.size, near.size); gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.uniformMatrix4fv(depthLoc.lightVP, false, near.vp);
   if (sceneGroups) drawG(sceneGroups, IDENT4);
@@ -1538,7 +1578,9 @@ function renderCarDepth(cm, dir, timeChanged) {
   // FAR — static whole-track bake, only when the sun moved (or first time this track)
   const far = SHADOW_CASCADES[1];
   if (trackAABB && (timeChanged || staticBakeTime === null)) {
-    far.vp = buildLightVP(dir, trackAABB.radius + 120, [trackAABB.cx, trackAABB.cy, trackAABB.cz]);
+    // the far box is already kilometres deep from its own radius, so it needs no extra reach
+    const flv = buildLightVP(dir, trackAABB.radius + 120, [trackAABB.cx, trackAABB.cy, trackAABB.cz]);
+    far.vp = flv.vp; far.depth = flv.depth;
     gl.bindFramebuffer(gl.FRAMEBUFFER, far.fbo); gl.viewport(0, 0, far.size, far.size); gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.uniformMatrix4fv(depthLoc.lightVP, false, far.vp);
     if (sceneGroups) drawG(sceneGroups, IDENT4);   // track only — the car is in the near cascade
@@ -2130,10 +2172,14 @@ function render() {
   const fogD = 0.35 / Math.max(cam.dist, 120);
 
   // car matrix computed up front so its headlights can light the TRACK too (not just
-  // the car). carModelMatrix also sets carSteerAngle, so call it exactly once.
+  // the car). carModelMatrix is now pure — it RETURNS {mat, steer} rather than setting
+  // carSteerAngle — so ghosts can each get their own. We publish the primary's steer to
+  // the global here, which is what the wheels, exo and HUD below still read.
   const i = Math.max(0, Math.min(ex.N - 1, Math.floor(tCur / ex.dt)));
   const carShown = carGroups && showCar && !ex.gap[i];
-  const cm = carShown ? carModelMatrix(tCur / ex.dt) : null;
+  const cmr = carShown ? carModelMatrix(tCur / ex.dt) : null;
+  const cm = cmr ? cmr.mat : null;
+  if (cmr) carSteerAngle = cmr.steer;
   // spatial audio: listener = camera, engine source = car's world position
   if (window.BBAudio && BBAudio.isOn()) {
     const aeye = camEye();
@@ -2195,6 +2241,7 @@ function render() {
       gl.uniform1i(tLoc.shadowMap0, 1); gl.uniform1i(tLoc.shadowMap1, 3);
       gl.uniformMatrix4fv(tLoc.lightVP0, false, c0.vp); gl.uniformMatrix4fv(tLoc.lightVP1, false, c1.vp);
       gl.uniform1f(tLoc.shadowTexel0, 1 / c0.size); gl.uniform1f(tLoc.shadowTexel1, 1 / c1.size);
+      gl.uniform1f(tLoc.shadowDepth0, c0.depth || 1);   // so the shader's metre-based bias converts correctly
       gl.uniform1f(tLoc.shadowOn, 1);
       gl.activeTexture(gl.TEXTURE0);
     } else gl.uniform1f(tLoc.shadowOn, 0);
@@ -2317,15 +2364,21 @@ function render() {
         }
       }
     }
-    if (carSteerWheel) {                                        // cockpit wheel spins with steer
-      // lock the wheel to the hands' reachable range so they never diverge (hands stay gripped)
-      const ang = Math.max(-DRIVER_GRIP_SPIN_MAX, Math.min(DRIVER_GRIP_SPIN_MAX, carSteerAngle * STEER_WHEEL_RATIO * STEER_WHEEL_SIGN));
-      drawCarGroups(carSteerWheel.groups, axisSpinModel(cm, carSteerWheel.ax[STEER_WHEEL_AXIS], ang, carSteerWheel.pivot));
-    }
-    if (carDriver) {                                           // driver: seated on the wheel (knh pose), hands orbit with the steer, head turns to the line
-      const dp = driverPose(tCur / ex.dt, cm);
-      const raw = carSteerAngle * STEER_WHEEL_RATIO * STEER_WHEEL_SIGN * DRIVER_GRIP_SPIN_SIGN;
-      driverSeatedSkin(Math.max(-DRIVER_GRIP_SPIN_MAX, Math.min(DRIVER_GRIP_SPIN_MAX, raw)));
+    // cockpit wheel + driver: ONE spin drives both. The car's steer maps LINEARLY
+    // (proportional the whole way — the wheel never visibly stalls while the car
+    // keeps turning), scaled per-run so this replay's wildest steer (carSteerRef)
+    // lands exactly at the lock. The lock is the authored steer animation's own
+    // range when the car ships one, else the arms' calibrated IK reach.
+    const animS = carDriver && carDriver.steerAnim;
+    const effLock = animS ? animS.lock : Math.min(STEER_WHEEL_MAX, (carDriver && carDriver.gripLock) || Infinity);
+    const kSteer = (carSteerRef > 1e-3 && isFinite(effLock)) ? effLock / carSteerRef : STEER_WHEEL_RATIO;
+    const wheelSpin = Math.max(-effLock, Math.min(effLock, carSteerAngle * kSteer * STEER_WHEEL_SIGN));
+    if (carSteerWheel)
+      drawCarGroups(carSteerWheel.groups, axisSpinModel(cm, carSteerWheel.ax[STEER_WHEEL_AXIS], wheelSpin, carSteerWheel.pivot));
+    if (carDriver) {                                           // driver: authored steer anim when present (palms wrapped on the grips), IK fallback otherwise
+      const dp = driverPose(tCur / ex.dt, cm, carSteerAngle);
+      if (animS) driverSkinUpload(driverAnimWorlds(animS, animT(animS, wheelSpin * DRIVER_GRIP_SPIN_SIGN)));
+      else driverSeatedSkin(wheelSpin * DRIVER_GRIP_SPIN_SIGN);   // hands ride the SAME spin as the wheel
       for (const sm of carDriver.skinned) drawCarGroups([sm.grp], dp.body);
       drawCarGroups(carDriver.headGroups, dp.head);
     }
@@ -3066,8 +3119,16 @@ async function loadCarModel(carId) {
     // in-cockpit steering wheel (spins with steer)
     carSteerWheel = null;
     if (scene.steerWheel) {
+      // keep a CPU copy of the wheel's vertices (downsampled if huge) — the
+      // driver's grips get snapped onto the nearest actual MATERIAL (snapToMesh)
+      // so the hands hold the physical handle, holes and all
+      let total = 0; for (const g of scene.steerWheel.groups) total += g.pos.length;
+      const step = 3 * Math.max(1, Math.ceil(total / 90000));   // ≤ ~30k verts kept
+      const verts = [];
+      for (const g of scene.steerWheel.groups) for (let i = 0; i + 2 < g.pos.length; i += step)
+        verts.push(g.pos[i], g.pos[i+1], g.pos[i+2]);
       const sg = await uploadGroups(scene.steerWheel.groups, scene, [40, 42, 48]);
-      carSteerWheel = { pivot: scene.steerWheel.pivot, ax: scene.steerWheel.ax, groups: sg };
+      carSteerWheel = { pivot: scene.steerWheel.pivot, ax: scene.steerWheel.ax, groups: sg, verts: new Float32Array(verts) };
     }
     // driver: the shared AC model, seated onto THIS car's wheel via its authored
     // driver_base_pos.knh (which repositions the skeleton so the hands grip the rim).
@@ -3082,11 +3143,12 @@ async function loadCarModel(carId) {
                        bindWorld: dscene.nodes.map(n => n.world), name: dscene.nodes.map(n => n.name),
                        nameIndex: dscene.nameIndex, count: dscene.nodes.length };
         // this car's seated pose: name -> car-space bone matrix (row-vector)
-        let poseWorld = null, neckPivot = [0, 1.08, 0.09];
+        let poseWorld = null, poseLocal = null, neckPivot = [0, 1.08, 0.09];
         if (poseFile) {
           try {
             const pab = await tinvoke("read_file", { path: poseFile.path });
-            poseWorld = KN5.parseDriverPose(pab).world;
+            const parsedPose = KN5.parseDriverPose(pab);
+            poseWorld = parsedPose.world; poseLocal = parsedPose.local;
             const nk = poseWorld["DRIVER:RIG_Nek"]; if (nk) neckPivot = [nk[12], nk[13], nk[14]];
             // reposition each RIGID (head/helmet) mesh from bind to the seated pose.
             // The helmet/face hang off non-bone nodes, so walk up to the nearest
@@ -3109,7 +3171,7 @@ async function loadCarModel(carId) {
                 const l = Math.hypot(rx, ry, rz) || 1; n[v*3] = rx/l; n[v*3+1] = ry/l; n[v*3+2] = rz/l;
               }
             }
-          } catch (e) { console.warn("driver pose load failed:", e); poseWorld = null; }
+          } catch (e) { console.warn("driver pose load failed:", e); poseWorld = null; poseLocal = null; }
         }
         // hide the HANS device (RT_HANS) — the shoulder/neck collar clips ugly on our seated pose
         const isHans = m => /hans/i.test((dscene.materials[m.materialId] || {}).name || "");
@@ -3144,14 +3206,60 @@ async function loadCarModel(carId) {
           for (const s of ["L", "R"]) {
             const S0 = originOf("DRIVER:RIG_Arm_"+s), E0 = originOf("DRIVER:RIG_ForeArm_"+s), W0 = originOf("DRIVER:RIG_HAND_"+s);
             if (!S0 || !E0 || !W0) continue;
-            arms.push({ S0, E0, W0, L1: v3len(v3sub(E0, S0)), L2: v3len(v3sub(W0, E0)), pole: v3sub(E0, S0),
+            arms.push({ S0, E0, W0, side: s, L1: v3len(v3sub(E0, S0)), L2: v3len(v3sub(W0, E0)), pole: v3sub(E0, S0),
                         armSub: subtreeOf("DRIVER:RIG_Arm_"+s), foreSub: subtreeOf("DRIVER:RIG_ForeArm_"+s),
                         handSub: subtreeOf("DRIVER:RIG_HAND_"+s),   // hand+fingers → grip rolls with the wheel
                         gripBase: (s === "L" ? 1 : -1) * DRIVER_GRIP_UP });   // raise each hand up the rim
           }
+          // put each hand's GRIP HOLLOW — the channel the curled fingers enclose,
+          // measured from the whole digit ring (knuckles, mids, TIPS, thumb tips)
+          // in the seated pose — onto the wheel's nearest actual material (the
+          // handle bar). The wrist sits ~11 cm behind the contact, and the hand is
+          // sculpted for a FAT rim, so on a thin bar the anchor is biased deeper
+          // into the curl (DRIVER_GRIP_BIAS): the spare finger length then rests
+          // on the hidden palm side instead of poking out the wheel's face.
+          // (L fingers are Index/Middle/Ring/Pinkie 1-3, R fingers 4-6; thumbs
+          // are HAND_<side>_Thumb1-3 in the shared AC rig.)
+          if (carSteerWheel.verts && carSteerWheel.verts.length) for (const arm of arms) {
+            const nums = arm.side === "L" ? [1, 2, 3] : [4, 5, 6];
+            const ringPts = [], knuckPts = [], tipPts = [];
+            for (const fam of ["Index", "Middle", "Ring", "Pinkie"]) for (let d = 0; d < 3; d++) {
+              const p = originOf("DRIVER:HAND_" + fam + nums[d]);
+              if (!p) continue;
+              ringPts.push(p);
+              if (d === 0) knuckPts.push(p);
+              if (d === 2) tipPts.push(p);
+            }
+            for (const t of [2, 3]) { const p = originOf("DRIVER:HAND_" + arm.side + "_Thumb" + t); if (p) ringPts.push(p); }
+            if (ringPts.length < 8 || !knuckPts.length || !tipPts.length) continue;   // rig without fingers → leave the authored pose alone
+            const cen = pts => v3sc(pts.reduce((a, p) => v3add(a, p), [0, 0, 0]), 1 / pts.length);
+            const hollow = cen(ringPts);
+            const curlDir = v3nrm(v3sub(cen(tipPts), cen(knuckPts)));   // deeper into the curl
+            const anchor = v3add(hollow, v3sc(curlDir, DRIVER_GRIP_BIAS));
+            const shift = palmGrip(anchor, arm.W0, carSteerWheel.verts, DRIVER_PALM_OFFSET);
+            if (!shift) continue;
+            arm.G0 = v3add(arm.W0, v3sc(shift, DRIVER_GRIP_SNAP));
+            arm.gripShift = v3sub(arm.G0, arm.W0);   // the hand mesh rides this shift onto the handle
+          }
         }
-        carDriver = { skinned, headGroups, skel, poseWorld, neckPivot, arms, wheelC, wheelAxis };
-        driverSeatedSkin(0);   // seat the body onto the wheel (neutral)
+        // the mod author's own lock-to-lock steering animation (arms + hands +
+        // every finger, authored ON this wheel — palms wrapped around the grips).
+        // When it binds, it drives the driver; the IK/snap path is the fallback.
+        let steerAnim = null;
+        const steerFile = df.find(f => f.name === "steer");
+        if (steerFile && poseWorld && wheelC) {
+          try {
+            const anim = KN5.parseKsanim(await tinvoke("read_file", { path: steerFile.path }));
+            steerAnim = driverAnimInit(anim, skel, poseWorld, poseLocal, wheelC, wheelAxis);
+            if (steerAnim) console.log(`steer.ksanim bound: ${anim.frameCount} frames, authored lock ±${(steerAnim.lock * 180 / Math.PI).toFixed(0)}°`);
+          } catch (e) { console.warn("steer anim load failed:", e); steerAnim = null; }
+        }
+        carDriver = { skinned, headGroups, skel, poseWorld, neckPivot, arms, wheelC, wheelAxis, steerAnim,
+                      // the wheel's soft lock = the largest orbit BOTH hands can physically
+                      // reach on THIS car's rig (shoulder lean included) — self-calibrated
+                      gripLock: (arms && arms.length) ? gripLockCalib(arms, wheelC, wheelAxis, DRIVER_SHOULDER_REACH) : 0 };
+        if (steerAnim) driverSkinUpload(driverAnimWorlds(steerAnim, animT(steerAnim, 0)));   // seat at anim centre
+        else driverSeatedSkin(0);   // seat the body onto the wheel (neutral)
       }
     } catch (e) { console.warn("driver load failed:", e); carDriver = null; }
   } catch (e) { console.warn("car model load failed:", e); carGroups = null; carWheels = null; carDriver = null; }
@@ -3573,6 +3681,7 @@ function selectCar(i) {
   smoke.accum[0] = smoke.accum[1] = smoke.accum[2] = smoke.accum[3] = 0;
   ensureSmokeAssets();                                 // bake noise texture + curl field once
   stats = ACReplay.runStats(ex);
+  carSteerRef = steerRefCalib(ex);   // this run's wildest sustained steer → maps to the wheel's lock
   buildGeometry();
   tCur = frameRange()[0] * ex.dt;
   refreshStatsChip();

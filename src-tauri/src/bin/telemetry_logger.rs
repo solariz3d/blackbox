@@ -192,8 +192,7 @@ fn main() {
     let mut count: u32 = 0;
     let mut last_packet: i32 = -1;
     let mut was_live = false;
-    let mut last_live: Option<std::time::Instant> = None;
-    let mut stint_start: Option<std::time::Instant> = None; // t=0 for this stint's sample timestamps
+    let mut stint_start: Option<std::time::Instant> = None; // t=0 for this session's sample timestamps
     let mut last_sample: Option<std::time::Instant> = None;  // freshness guard so we never staple a stale buffer
     let mut last_scan = std::time::Instant::now();
 
@@ -211,18 +210,16 @@ fn main() {
             let status = g.i32(GR_STATUS);
             let live = status == AC_LIVE;
 
-            // Reset the buffer only on a GENUINE new stint: live after a SUSTAINED non-live gap
-            // (left the session / long pause). A brief flicker (pause, out-lap→lap, a reset that
-            // AC keeps in the same autosave) must NOT wipe the lap — that chopped a real capture.
-            if live {
-                let fresh = last_live.map_or(true, |t| t.elapsed() > Duration::from_millis(2500));
-                if fresh {
-                    samples.clear();
-                    count = 0;
-                    stint_start = Some(std::time::Instant::now());
-                    log("new driving stint — logging telemetry.");
-                }
-                last_live = Some(std::time::Instant::now());
+            // CONTINUOUS rolling buffer — resets/restarts NEVER wipe telemetry. Reset-heavy
+            // hotlapping (run off → restart session, over and over) used to clear the buffer on
+            // every restart (a restart is a >2.5 s non-live gap), so the clean lap you finally saved
+            // came out silent. Now the logger records the whole time AC is open; BLACKBOX tail-aligns
+            // this buffer to whatever replay you save (both end at the save moment, so it grabs the
+            // last replay-length slice = your saved lap). The buffer is cleared ONLY when AC actually
+            // closes — a genuine new session — handled in the disconnect branch below.
+            if live && stint_start.is_none() {
+                stint_start = Some(std::time::Instant::now());
+                log("driving — logging telemetry (continuous; restarts/resets won't wipe it).");
             }
             was_live = live;
 
@@ -250,12 +247,26 @@ fn main() {
                     }
                     count += 1;
                     last_sample = Some(std::time::Instant::now());
+                    // cap the rolling buffer at ~25 min so a session left open all day can't grow
+                    // unbounded; trim the oldest 5 min when it fills. The loader only uses the tail
+                    // (the saved replay's length), so trimming the oldest samples is lossless for it.
+                    const CAP: u32 = 25 * 60 * 333;         // ~25 min at ~333 Hz
+                    if count > CAP {
+                        let drop = 5u32 * 60 * 333;         // trim oldest 5 min
+                        samples.drain(0..(drop as usize) * 60); // 60 bytes/sample (schema 5)
+                        count -= drop;
+                    }
                 }
             }
         } else {
-            // AC not running: drop the (now-stale) mappings and idle
+            // AC closed → genuine session boundary: drop the mappings AND clear the buffer, so the
+            // NEXT session (new car/track) starts fresh instead of tail-aligning onto old telemetry.
             phys = None;
             graf = None;
+            samples.clear();
+            count = 0;
+            stint_start = None;
+            last_sample = None;
         }
 
         // Watch for a NEW .acreplay (AC saved the session) — but scan the FOLDER at most once
@@ -279,8 +290,8 @@ fn main() {
                     if count > 0 && fresh_buf && stable(p) {
                         // Do NOT clear the buffer: one save often emits TWO files (a CM save +
                         // AC's autosave, seconds apart). Both must get the SAME telemetry; each
-                        // tail-aligns itself to its own replay length. The buffer clears when the
-                        // next driving stint starts. (already_stamped guards against re-appending.)
+                        // tail-aligns itself to its own replay length. The buffer keeps rolling and
+                        // is cleared only when AC closes. (already_stamped guards against re-appending.)
                         append_telemetry(p, &samples, count);
                     }
                 }

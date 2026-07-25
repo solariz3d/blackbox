@@ -76,6 +76,7 @@ uniform float uBrakeInt;        // brake-light spill intensity (rises under brak
 uniform sampler2D uShadowMap0, uShadowMap1;   // near + far cascade depth maps
 uniform mat4 uLightVP0, uLightVP1;            // near + far light view-projections
 uniform float uShadowOn, uShadowTexel0, uShadowTexel1;   // enable + 1/mapSize per cascade
+uniform float uShadowDepth0;                  // near cascade's light-box depth, in METRES
 uniform sampler2D uHeadDepth;   // scene depth from the headlight's view (beam occlusion)
 uniform mat4 uHeadVP;           // headlight view-projection
 uniform float uHeadOccOn;       // enable headlight occlusion
@@ -109,25 +110,35 @@ float pcf(sampler2D map, vec2 uv, float z, float bias, float texel){
   }
   return sh / 9.0;
 }
-// cascaded directional shadow: use the tight NEAR cascade where the fragment falls inside
-// it (sharp), else the wide FAR cascade (distant track). The far cascade's depth range is
-// large, so it needs a much bigger bias. 1 = fully lit.
+// cascaded directional shadow: the tight NEAR cascade carries the sharp shadow under and
+// around the car; the wide FAR cascade carries the rest of the track. The two are BLENDED
+// across the near box's border instead of switched with an if. The hard switch was the
+// pop: at a fixed radius from the car a crisp shadow snapped to the coarse whole-track
+// one in a single pixel, which reads as shadows appearing as you drive up to them.
+// 1 = fully lit.
 float shadowFactor(vec3 wp, float bias){
-  // near cascade (leave a small margin so it hands off to the far one before its edge)
+  // near cascade weight — 1 well inside the box, easing to 0 across its outer border
   vec4 lp0 = uLightVP0 * vec4(wp, 1.0);
   vec3 c0 = lp0.xyz / lp0.w * 0.5 + 0.5;
-  if (c0.x > 0.02 && c0.x < 0.98 && c0.y > 0.02 && c0.y < 0.98 && c0.z < 1.0)
-    return pcf(uShadowMap0, c0.xy, c0.z, bias, uShadowTexel0);
-  // far cascade, with a soft border fade so distant shadows don't pop at the box edge
+  float wNear = 0.0;
+  if (c0.z < 1.0) {
+    vec2 e0 = min(c0.xy, 1.0 - c0.xy);
+    wNear = smoothstep(0.02, 0.12, min(e0.x, e0.y));   // outer ~10% of the box is the fade
+  }
+  float sNear = wNear > 0.0 ? pcf(uShadowMap0, c0.xy, c0.z, bias, uShadowTexel0) : 1.0;
+  if (wNear >= 1.0) return sNear;        // fully inside the near box — skip the far sample
+  // far cascade, with its own soft fade at the very edge of the bake
   vec4 lp1 = uLightVP1 * vec4(wp, 1.0);
   vec3 c1 = lp1.xyz / lp1.w * 0.5 + 0.5;
-  if (c1.z > 1.0) return 1.0;
-  vec2 e = min(c1.xy, 1.0 - c1.xy);
-  float edge = smoothstep(0.0, 0.05, min(e.x, e.y));
-  if (edge <= 0.0) return 1.0;
-  // far cascade spans the WHOLE track, so its NDC depth is very compressed — a small
-  // fixed bias here is several metres of world offset (a big bias would peter-pan badly).
-  return mix(1.0, pcf(uShadowMap1, c1.xy, c1.z, 0.0009, uShadowTexel1), edge);
+  float sFar = 1.0;
+  if (c1.z <= 1.0) {
+    vec2 e1 = min(c1.xy, 1.0 - c1.xy);
+    float edge = smoothstep(0.0, 0.05, min(e1.x, e1.y));
+    // far cascade spans the WHOLE track, so its NDC depth is very compressed — a small
+    // fixed bias here is several metres of world offset (a big bias would peter-pan badly).
+    if (edge > 0.0) sFar = mix(1.0, pcf(uShadowMap1, c1.xy, c1.z, 0.0009, uShadowTexel1), edge);
+  }
+  return mix(sFar, sNear, wNear);
 }
 void main(){
   vec4 tex = texture2D(uTex, vUV);
@@ -144,7 +155,11 @@ void main(){
   // self-shadow acne AND the peter-panning (shadow floating off) on banked surfaces —
   // a depth-only bias slides the shadow along an angled surface, this doesn't. So the
   // depth bias can stay small (just a touch more at grazing sun for dusk stability).
-  float sbias = 0.0006 + 0.0018 * (1.0 - ndl);
+  // Bias is stated in METRES and converted to this cascade's depth range, not written as
+  // a raw NDC number. An NDC bias silently changes meaning whenever the light box gets
+  // deeper — the same 0.0006 is 10 cm in a 160 m box and 60 cm in a 1 km one, which is
+  // the difference between correct and shadows floating off their objects.
+  float sbias = (0.10 + 0.30 * (1.0 - ndl)) / max(uShadowDepth0, 1.0);
   vec3 wpS = vWorld + n * 0.06;
   float shF = uShadowOn > 0.5 ? shadowFactor(wpS, sbias) : 1.0;
   vec3 col = tex.rgb * (ambient + sunCol * (0.9 * wrap) * shF);
@@ -200,6 +215,7 @@ const tLoc = {
   shadowOn: gl.getUniformLocation(progT, "uShadowOn"),
   shadowTexel0: gl.getUniformLocation(progT, "uShadowTexel0"),
   shadowTexel1: gl.getUniformLocation(progT, "uShadowTexel1"),
+  shadowDepth0: gl.getUniformLocation(progT, "uShadowDepth0"),
   headDepth: gl.getUniformLocation(progT, "uHeadDepth"),
   headVP: gl.getUniformLocation(progT, "uHeadVP"),
   headOccOn: gl.getUniformLocation(progT, "uHeadOccOn"),

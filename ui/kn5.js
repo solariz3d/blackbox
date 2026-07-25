@@ -507,8 +507,11 @@ function parseKsanim(arrayBuffer) {
     const name = str(); const fc = i32(); frameCount = fc;
     const p = new Float32Array(fc * 3), q = new Float32Array(fc * 4), s = new Float32Array(fc * 3);
     for (let f = 0; f < fc; f++) {
-      p[f*3] = f32(); p[f*3+1] = f32(); p[f*3+2] = f32();
+      // v2 keyframe layout is ROTATION (quat x,y,z,w) first, then position, then
+      // scale — verified against the T-180's steer.ksanim: read this way the quat
+      // is unit-norm and the position matches the bone's bind translation.
       q[f*4] = f32(); q[f*4+1] = f32(); q[f*4+2] = f32(); q[f*4+3] = f32();
+      p[f*3] = f32(); p[f*3+1] = f32(); p[f*3+2] = f32();
       s[f*3] = f32(); s[f*3+1] = f32(); s[f*3+2] = f32();
     }
     nodes.push({ name, p, q, s });
