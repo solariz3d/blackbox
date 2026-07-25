@@ -1,4 +1,4 @@
-// BLACKBOX native shell (Tauri 2). Three commands give the web UI native disk
+﻿// BLACKBOX native shell (Tauri 2). Three commands give the web UI native disk
 // access: list the replay folder, read any file as raw bytes (no permission
 // prompts), and locate a track's .kn5 files from the Steam AC install by
 // parsing libraryfolders.vdf. The UI runs identically in a browser (drag-drop)
@@ -211,7 +211,19 @@ fn collect_kn5(dir: &Path, out: &mut Vec<TrackFile>, depth: u32) {
 }
 
 #[tauri::command]
-fn find_track(name: String) -> Result<Vec<TrackFile>, String> {
+/// `config` is the replay's trackConfig — the LAYOUT, when the track has several.
+///
+/// A multi-layout AC track keeps one folder with every layout's models in it, and a
+/// `models_<layout>.ini` naming which kn5 each layout actually uses. Collecting every kn5
+/// in the folder therefore loads ALL the layouts at once: on eagleton that is
+/// ertrack.kn5 AND ertrack_s.kn5 together, two complete circuits stacked through each
+/// other, 135 MB of geometry the car is not driving on. It does not fail — it renders a
+/// jumble, which is worse, because nothing says anything went wrong.
+///
+/// So when the replay names a layout and that layout's ini exists, load exactly what it
+/// lists. Everything else falls back to the old behaviour, which is right for the many
+/// tracks that have no layouts at all.
+fn find_track(name: String, config: Option<String>) -> Result<Vec<TrackFile>, String> {
     for lib in steam_libraries() {
         let tdir = lib
             .join("steamapps")
@@ -221,6 +233,34 @@ fn find_track(name: String) -> Result<Vec<TrackFile>, String> {
             .join("tracks")
             .join(&name);
         if tdir.is_dir() {
+            if let Some(cfg) = config.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+                let ini = tdir.join(format!("models_{}.ini", cfg));
+                if let Ok(txt) = std::fs::read_to_string(&ini) {
+                    let mut out = Vec::new();
+                    for line in txt.lines() {
+                        let l = line.trim();
+                        // "FILE=ertrack_s.kn5" — key case varies between authors
+                        let Some(eq) = l.find('=') else { continue };
+                        if !l[..eq].trim().eq_ignore_ascii_case("file") {
+                            continue;
+                        }
+                        let f = l[eq + 1..].trim();
+                        if f.is_empty() {
+                            continue;
+                        }
+                        let p = tdir.join(f);
+                        if p.is_file() {
+                            out.push(TrackFile {
+                                name: f.to_string(),
+                                path: p.to_string_lossy().to_string(),
+                            });
+                        }
+                    }
+                    if !out.is_empty() {
+                        return Ok(out);
+                    }
+                }
+            }
             let mut out = Vec::new();
             collect_kn5(&tdir, &mut out, 0);
             if !out.is_empty() {
@@ -543,7 +583,7 @@ mod smoke {
 
     #[test]
     fn find_track_locates_centrifuge_kn5() {
-        let r = find_track("centrifuge".to_string());
+        let r = find_track("centrifuge".to_string(), None);
         match &r {
             Ok(v) => {
                 println!("find_track(centrifuge): {} kn5 file(s)", v.len());
@@ -640,11 +680,43 @@ mod smoke {
     #[test]
     fn find_track_multi_file_track() {
         // Miandros ships several kn5s — proves multi-file collection works
-        let r = find_track("Miandros".to_string());
+        let r = find_track("Miandros".to_string(), None);
         if let Ok(v) = &r {
             println!("find_track(Miandros): {} kn5 file(s)", v.len());
         }
         assert!(r.is_ok(), "Miandros lookup failed");
+    }
+
+    /// A multi-layout track must load ONLY its layout's models.
+    ///
+    /// Without this, every layout in the folder loads at once — on eagleton that is the
+    /// long and short circuits stacked through each other, and on aurora it is 332 MB of
+    /// two courses in the same space. It never errored; it just rendered a jumble, which
+    /// is why it went unexplained for so long. 24 of the 62 tracks installed here have
+    /// layouts, so this was most of a library quietly rendering wrong.
+    #[test]
+    fn find_track_honours_the_layout() {
+        let all = match find_track("eagleton".to_string(), None) {
+            Ok(v) => v,
+            Err(_) => { println!("SKIP: eagleton not installed"); return; }
+        };
+        let short = find_track("eagleton".to_string(), Some("eagleton_short".into()))
+            .expect("layout lookup must not fail when the track resolves");
+        let names = |v: &Vec<TrackFile>| v.iter().map(|f| f.name.to_lowercase()).collect::<Vec<_>>();
+        let (a, s) = (names(&all), names(&short));
+        println!("  all layouts: {:?}", a);
+        println!("  short only : {:?}", s);
+
+        assert!(s.len() < a.len(), "the layout must load FEWER files than the whole folder");
+        assert!(s.iter().any(|n| n.contains("ertrack_s")), "short layout must include its own model");
+        assert!(!s.iter().any(|n| n == "ertrack.kn5"), "short layout must NOT drag in the long circuit");
+        assert!(s.iter().any(|n| n.contains("env")), "shared environment model is still loaded");
+
+        // an unknown layout falls back rather than returning nothing — a replay naming a
+        // layout the user does not have should still show the track it can find
+        let bogus = find_track("eagleton".to_string(), Some("no_such_layout".into()))
+            .expect("unknown layout must fall back, not fail");
+        assert_eq!(bogus.len(), a.len(), "unknown layout falls back to the whole folder");
     }
 
     #[test]
@@ -1187,7 +1259,7 @@ fn file_mtime_secs(path: &str) -> u64 {
 #[tauri::command]
 fn track_outline(folder: String) -> Result<TrackOutline, String> {
     // 1. locate the track's kn5 file(s) via the existing lookup
-    let files = find_track(folder.clone())?;
+    let files = find_track(folder.clone(), None)?;
     if files.is_empty() {
         return Err(format!("no kn5 file for track '{}'", folder));
     }
@@ -1495,7 +1567,7 @@ fn track_map_bytes(folder: &str) -> Result<Vec<u8>, String> {
     const MAP_LONG: u32 = 1024;
     const MAP_SS: u32 = 4;
 
-    let files = find_track(folder.to_string())?;
+    let files = find_track(folder.to_string(), None)?;
     if files.is_empty() {
         return Err(format!("no kn5 file for track '{}'", folder));
     }

@@ -3860,7 +3860,10 @@ async function maybeAutoLoadTrack(trackName) {
   if (inTauri) {
     try {
       chipTrack().textContent = `finding ${trackName} in your AC install…`;
-      const files = await tinvoke("find_track", { name: trackName });
+      // pass the LAYOUT. A multi-layout track keeps every layout's models in one folder,
+      // so without this the loader takes all of them — on eagleton that is the long and
+      // short circuits stacked through each other, and the car drives through a jumble.
+      const files = await tinvoke("find_track", { name: trackName, config: (replay && replay.trackConfig) || null });
       if (!files || !files.length) {
         chipTrack().textContent = `track "${trackName}" not found in your Steam AC install — load a kn5 manually`;
         return;
