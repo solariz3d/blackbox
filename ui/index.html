@@ -780,29 +780,85 @@ function backfireAt(fp, src) {
 // dual-exhaust openings relative to the turbine nozzle — measured from the Mach 6 kn5 geometry:
 // exhaust pipes flank the turbine at x≈±0.30, tips at z≈-2.4 / y≈0.48 (nozzle ≈ [0,0.50,-2.24]).
 const EXH_X = 0.30, EXH_Y = -0.02, EXH_Z = -0.16;
+/* A real backfire is not one orange blob fading in place. It is unburnt fuel igniting AT
+ * the pipe: a white-hot core for an instant, an orange body that punches out and spreads
+ * as it goes, and a ragged edge, because flame is turbulent and a straight line of
+ * identical sprites reads as a decal.
+ *
+ * Three things give it that, without touching the glow program:
+ *   1. LAYERS, as separate passes because uColor is per batch — a short white-hot core,
+ *      the orange body, and a blue flash of raw fuel in the first instant only. The core
+ *      dies first: the hottest part is the youngest.
+ *   2. AGE. inten runs 1 -> 0 across the pop, so (1 - inten) is how far through it is.
+ *      The plume lengthens and its puffs swell as it ages — an expanding cloud rather
+ *      than a dimming stick.
+ *   3. DETERMINISTIC jitter. Sprites are pushed off-axis by a hash of their index, so the
+ *      plume is ragged and the two outlets differ. A hash, never Math.random: this
+ *      renderer is scrub-safe and the same frame must draw identically every time, or a
+ *      paused timeline would shimmer.
+ */
+const bfHash = (i) => { const x = Math.sin(i * 12.9898 + 78.233) * 43758.5453; return x - Math.floor(x); };
+
 function drawBackfire(cm, mvp, th, inten, nightF) {
   const eye = camEye(), Hpx = cv.height;
   const nz = carNozzle || [0, 0.49, -2.1];
   const outlets = [[nz[0] + EXH_X, nz[1] + EXH_Y, nz[2] + EXH_Z], [nz[0] - EXH_X, nz[1] + EXH_Y, nz[2] + EXH_Z]];
   let bx = -cm[8], by = -cm[9], bz = -cm[10]; const bl = Math.hypot(bx, by, bz) || 1; bx /= bl; by /= bl; bz /= bl;   // backward
-  const lum = inten * (1.0 + nightF * 1.8);                    // pops brighter at night
-  const NB = 5, s = [];
-  for (const L of outlets) {
-    const ox = cm[0]*L[0] + cm[4]*L[1] + cm[8]*L[2] + cm[12], oy = cm[1]*L[0] + cm[5]*L[1] + cm[9]*L[2] + cm[13], oz = cm[2]*L[0] + cm[6]*L[1] + cm[10]*L[2] + cm[14];
-    for (let k = 0; k < NB; k++) { const t = k / (NB - 1);
-      const px = ox + bx * t * 1.2, py = oy + by * t * 1.2, pz = oz + bz * t * 1.2;   // shorter dual pops
-      const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
-      s.push(px, py, pz, Math.min(500, 0.20 * (1 - t * 0.4) * Hpx / (dist * th)), (1 - t) * lum);
+  const rx = cm[0], ry = cm[1], rz = cm[2];                     // car right, for lateral spread
+  const ux = cm[4], uy = cm[5], uz = cm[6];                     // car up
+  const lum = inten * (1.0 + nightF * 1.8);                     // pops brighter at night
+  const age = 1 - Math.max(0, Math.min(1, inten));              // 0 at ignition, 1 as it dies
+  const NB = 9;
+
+  const layer = (reach, spread, sz, fade, seed) => {
+    const s = [];
+    for (let o = 0; o < outlets.length; o++) {
+      const L = outlets[o];
+      const ox = cm[0]*L[0] + cm[4]*L[1] + cm[8]*L[2] + cm[12];
+      const oy = cm[1]*L[0] + cm[5]*L[1] + cm[9]*L[2] + cm[13];
+      const oz = cm[2]*L[0] + cm[6]*L[1] + cm[10]*L[2] + cm[14];
+      for (let k = 0; k < NB; k++) {
+        const t = k / (NB - 1);
+        const h1 = bfHash(seed + o * 31 + k * 7), h2 = bfHash(seed + o * 57 + k * 13 + 5);
+        const w = spread * t * (0.4 + h1);                      // flares with distance back
+        const px = ox + bx * t * reach + (rx * (h1 - 0.5) + ux * (h2 - 0.5)) * w;
+        const py = oy + by * t * reach + (ry * (h1 - 0.5) + uy * (h2 - 0.5)) * w;
+        const pz = oz + bz * t * reach + (rz * (h1 - 0.5) + uz * (h2 - 0.5)) * w;
+        const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
+        const grow = sz * (0.55 + t * 0.85) * (1 + age * 0.8);  // puffs swell as they age
+        const b = Math.pow(1 - t, fade) * lum * (0.65 + 0.7 * h2);
+        s.push(px, py, pz, Math.min(500, grow * Hpx / (dist * th)), b);
+      }
     }
-  }
+    gl.bindBuffer(gl.ARRAY_BUFFER, glowBuf);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(s), gl.DYNAMIC_DRAW);
+    gl.enableVertexAttribArray(glowLoc.pos); gl.vertexAttribPointer(glowLoc.pos, 3, gl.FLOAT, false, 20, 0);
+    gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
+    gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
+    gl.drawArrays(gl.POINTS, 0, NB * outlets.length);
+  };
+
   gl.useProgram(progGlow); gl.uniformMatrix4fv(glowLoc.mvp, false, mvp);
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
-  gl.bindBuffer(gl.ARRAY_BUFFER, glowBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(s), gl.DYNAMIC_DRAW);
-  gl.enableVertexAttribArray(glowLoc.pos); gl.vertexAttribPointer(glowLoc.pos, 3, gl.FLOAT, false, 20, 0);
-  gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
-  gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
-  gl.uniform3f(glowLoc.color, 1.3 * HDR_EMIT, 0.55 * HDR_EMIT, 0.14 * HDR_EMIT);   // orange flame (HDR → blooms)
-  gl.drawArrays(gl.POINTS, 0, NB * 2);                         // two exhaust outlets
+
+  // body: deep orange, punches out and spreads as it ages (HDR -> blooms)
+  gl.uniform3f(glowLoc.color, 1.45 * HDR_EMIT, 0.42 * HDR_EMIT, 0.08 * HDR_EMIT);
+  layer(0.9 + age * 1.9, 0.34, 0.19, 1.5, 11);
+
+  // core: white-hot, short, and it dies FIRST
+  const core = Math.max(0, inten - 0.25) / 0.75;
+  if (core > 0.01) {
+    gl.uniform3f(glowLoc.color, 2.3 * HDR_EMIT * core, 1.55 * HDR_EMIT * core, 0.85 * HDR_EMIT * core);
+    layer(0.42 + age * 0.5, 0.12, 0.115, 2.4, 29);
+  }
+
+  // the first instant only: raw fuel igniting blue at the pipe mouth, gone in a blink
+  const flash = Math.max(0, inten - 0.72) / 0.28;
+  if (flash > 0.01) {
+    gl.uniform3f(glowLoc.color, 0.55 * HDR_EMIT * flash, 0.75 * HDR_EMIT * flash, 1.7 * HDR_EMIT * flash);
+    layer(0.26, 0.07, 0.085, 3.0, 47);
+  }
+
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
