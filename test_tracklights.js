@@ -35,8 +35,12 @@ CONDITION = NIGHT_SHARP
 COLOR = 0.9, 0.95, 1.0, 3
 `;
   const L = T.resolveTrackLights(ini, NODES);
-  ok(L.length === 3, `TorusLight? matched two, plus the gate = 3 lights (got ${L.length})`);
-  ok(!L.some(x => x.pos[0] === 30), "'?' matches exactly one character — TorusLightXX excluded");
+  // Four: all three TorusLight* plus the gate. This assertion originally said THREE, on my
+  // assumption that '?' matches exactly one character. Nordic's real config disproved it —
+  // MESHES = Light.?_SUB2 has to match Light.026_SUB0, so '?' spans a run. The assertion
+  // was pinning my guess, not AC's behaviour, and it is corrected rather than the code.
+  ok(L.length === 4, `TorusLight* matched three, plus the gate = 4 lights (got ${L.length})`);
+  ok(L.some(x => x.pos[0] === 30), "'?' spans a run, so TorusLightXX is included too");
   ok(!L.some(x => x.pos[0] === 50), "an unmatched mesh contributes no light");
   const g = L.find(x => x.pos[1] === 8);
   ok(!!g, "the gate light is at the gate's world position");
@@ -65,6 +69,34 @@ RANGE = 40
   // both forms in one series must not double-count a mesh that satisfies each
   const both = T.resolveTrackLights(`[LIGHT_SERIES_0]\nMESHES = StartFinishGate_SUB2\nMATERIALS = LampGlow\n`, NODES);
   ok(both.length === 1, `a mesh matching by BOTH name and material yields one light, not two (got ${both.length})`);
+}
+
+console.log("\nwildcards, as the real configs actually use them");
+{
+  // Nordic declares MESHES = Light.?_SUB2 and its model holds Light.026_SUB0. So '?' spans
+  // three characters (a run, not one char) and _SUB2 must match _SUB0, because CSP splits
+  // meshes per material at RUNTIME and renumbers the parts. Implemented as one-character
+  // '?' and literal suffixes, nordic resolved 0 lights; corrected, it resolves 207.
+  const NODES2 = [
+    { name: "Light.026_SUB0", pos: [1, 0, 0], mat: "PlaceholderMetalGray" },
+    { name: "Light.027_SUB0", pos: [2, 0, 0], mat: "PlaceholderMetalGray" },
+    { name: "LightPole.026",  pos: [3, 0, 0], mat: "PlaceholderMetalGray" },
+  ];
+  const L = T.resolveTrackLights(`[LIGHT_SERIES_0]\nMESHES = Light.?_SUB2\n`, NODES2);
+  ok(L.length === 2, `'?' spans a multi-character run (got ${L.length} of 2 lamps)`);
+  ok(!L.some(x => x.pos[0] === 3),
+     "and the literal dot still excludes LightPole — lamps light up, their posts do not");
+}
+
+console.log("\nlights can live in CSP's config rather than the track's");
+{
+  // ks_nordschleife declares 65 light series in extension/config/tracks/loaded/, and none
+  // in its own folder. Reading only the track's config finds nothing and says nothing.
+  const trackOwn = `[LIGHT_SERIES_0]\nMESHES = Grandstand\n`;
+  const fromCSP  = `[LIGHT_SERIES_0]\nMESHES = TorusLight1\n`;
+  const merged = T.resolveTrackLights([trackOwn, fromCSP], NODES);
+  ok(merged.length === 2, `configs from both sources merge (got ${merged.length})`);
+  ok(T.resolveTrackLights(trackOwn, NODES).length === 1, "a single string still works");
 }
 
 console.log("\nCOLOR's fourth component is INTENSITY, not alpha");

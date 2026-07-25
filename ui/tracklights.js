@@ -18,10 +18,37 @@
  */
 "use strict";
 
-/** AC wildcards: ? is one character, * is any run. Case-insensitive, whole-name match. */
+/* CSP mesh-name wildcards, as the real configs actually use them.
+ *
+ * I first implemented '?' as exactly one character, which is the usual convention. The
+ * track data says otherwise. Nordic declares
+ *
+ *     MESHES = Light.?_SUB2
+ *
+ * and its model contains Light.026_SUB0, Light.027_SUB0, ... — the '?' has to span THREE
+ * characters, so it behaves as a run, like '*'. Under the one-character reading the
+ * series matched nothing and the track stayed dark.
+ *
+ * The _SUBn suffix is a second trap. CSP splits a mesh per material at RUNTIME and
+ * numbers the parts, so a config can name _SUB2 while the kn5 on disk holds _SUB0 for the
+ * same object; the numbers are not stable across that split. Matching them literally is
+ * matching an artefact. Both sides have the suffix stripped before comparison.
+ *
+ * What still discriminates correctly, and why this is not simply "match everything":
+ * Light.026 is the lamp and LightPole.026 is the post holding it. The literal dot after
+ * "Light" keeps the poles out — so nordic lights its lamps, not its scenery.
+ */
+const SUB_SUFFIX = /_SUB\d+$/i;
+
 function meshPatternToRegExp(pat) {
-  const esc = String(pat).trim().replace(/[.+^${}()|[\]\\]/g, "\\$&");
-  return new RegExp("^" + esc.replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i");
+  const base = String(pat).trim().replace(SUB_SUFFIX, "");
+  const esc = base.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  return new RegExp("^" + esc.replace(/\*/g, ".*").replace(/\?/g, ".*") + "$", "i");
+}
+
+/** the name a pattern is compared against — same suffix stripping, so both sides agree */
+function matchName(name) {
+  return String(name || "").replace(SUB_SUFFIX, "");
 }
 
 const num = (s, d) => { const v = parseFloat(s); return isFinite(v) ? v : d; };
@@ -60,16 +87,28 @@ function conditionIsNight(cond) {
 }
 
 /**
- * Resolve a track's ext_config into concrete lights.
+ * Resolve a track's light configuration into concrete world lights.
  *
- * @param iniText  contents of extension/ext_config.ini
- * @param nodes    [{name, pos}] from extractScene(..., {collectNodes:true})
+ * @param iniText  ONE config, or an ARRAY of them — see below
+ * @param nodes    [{name, pos, mat}] from extractScene(..., {collectNodes:true})
  * @param opts     { max } — cap on lights returned (a track can declare hundreds)
  * @returns [{ pos, color:[r,g,b], intensity, range, dir, spot, sharpness, night }]
+ *
+ * WHY AN ARRAY. A track's lights are not necessarily in the track's own folder. CSP ships
+ * per-track configs of its own under `extension/config/tracks/loaded/<track>.ini`, and for
+ * several circuits that is the ONLY place they exist — ks_nordschleife declares 65 light
+ * series there and none in its own folder, ks_nurburgring 34, macau 18, mugello 8. Reading
+ * only `<track>/extension/ext_config.ini` therefore finds nothing and the track stays dark
+ * with no indication anything was missed.
+ *
+ * So the caller passes every config that applies and they are merged. Order is irrelevant:
+ * each series contributes its own lights independently.
  */
 function resolveTrackLights(iniText, nodes, opts) {
   const max = (opts && opts.max) || 4096;
-  const secs = parseIni(iniText).filter(s => s.family === "LIGHT_SERIES" || s.family === "LIGHT");
+  const texts = Array.isArray(iniText) ? iniText : [iniText];
+  const secs = texts.flatMap(t => parseIni(t))
+    .filter(s => s.family === "LIGHT_SERIES" || s.family === "LIGHT");
   const byName = Array.isArray(nodes) ? nodes : [];
   const out = [];
 
@@ -114,8 +153,9 @@ function resolveTrackLights(iniText, nodes, opts) {
     if ((meshPats.length || matPats.length) && byName.length) {
       for (const n of byName) {
         if (out.length >= max) break;
-        const hit = meshPats.some(re => re.test(n.name)) ||
-                    (n.mat && matPats.some(re => re.test(n.mat)));
+        const nm = matchName(n.name);
+        const hit = meshPats.some(re => re.test(nm)) ||
+                    (n.mat && matPats.some(re => re.test(matchName(n.mat))));
         if (hit) push(n.pos);
       }
     }
