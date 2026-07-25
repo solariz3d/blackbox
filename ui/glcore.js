@@ -89,16 +89,27 @@ uniform sampler2D uHeadDepth;   // scene depth from the headlight's view (beam o
 uniform mat4 uHeadVP;           // headlight view-projection
 uniform float uHeadOccOn;       // enable headlight occlusion
 // one headlight: warm cone spotlight, distance-attenuated, cosine cone falloff
-float headlamp(vec3 p, vec3 aim){
+// nrm is the lit surface's normal, and it is not optional: without an N.L term a lamp
+// lights every surface in its cone equally, INCLUDING ones facing away from it. On flat
+// road that is invisible, which is why it survived — but put a car in another car's beam
+// and the whole body glows, far side included, as if lit from within. N.L restores the
+// terminator: a surface turned away from the lamp is dark because it is facing away.
+// (This is FORM shadow only. One car's body still does not CAST a beam shadow onto
+// another — that needs a depth map per lamp, i.e. a render pass per car.)
+float headlamp(vec3 p, vec3 aim, vec3 nrm){
   vec3 t = vWorld - p; float d = length(t);
-  float cone = smoothstep(0.85, 0.97, dot(t / max(d, 1e-3), aim));       // wider cone
-  return cone / (1.0 + 0.15 * d + 0.035 * d * d);                        // reaches further
+  vec3 dir = t / max(d, 1e-3);
+  float cone = smoothstep(0.85, 0.97, dot(dir, aim));                    // wider cone
+  float ndl = max(dot(nrm, -dir), 0.0);                                  // -dir = fragment -> lamp
+  return cone * ndl / (1.0 + 0.15 * d + 0.035 * d * d);                  // reaches further
 }
 // brake light: a wide, soft red wash spilling behind the car (not a focused beam)
-float brakelamp(vec3 p, vec3 aim){
+float brakelamp(vec3 p, vec3 aim, vec3 nrm){
   vec3 t = vWorld - p; float d = length(t);
-  float back = smoothstep(-0.15, 0.7, dot(t / max(d, 1e-3), aim));       // wide, favours behind
-  return back / (1.0 + 0.35 * d + 0.14 * d * d);                         // short reach
+  vec3 dir = t / max(d, 1e-3);
+  float back = smoothstep(-0.15, 0.7, dot(dir, aim));                    // wide, favours behind
+  float ndl = max(dot(nrm, -dir), 0.0);
+  return back * ndl / (1.0 + 0.35 * d + 0.14 * d * d);                   // short reach
 }
 // is this fragment blocked from the headlight by scene geometry? sample the beam depth map
 // (rendered from the headlight's view) so the track/banking actually occludes the beam.
@@ -178,12 +189,12 @@ void main(){
   for (int c = 0; c < MAXCARS; c++) {
     if (c >= uCarN) break;
     if (uHeadInt[c] > 0.001) {
-      float lit = headlamp(uHeadPos[2 * c], uHeadAim[c]) + headlamp(uHeadPos[2 * c + 1], uHeadAim[c]);
+      float lit = headlamp(uHeadPos[2 * c], uHeadAim[c], n) + headlamp(uHeadPos[2 * c + 1], uHeadAim[c], n);
       col += tex.rgb * vec3(1.0, 0.85, 0.60) * (lit * uHeadInt[c] * 5.5 * (c == 0 ? occ : 1.0));
     }
     // brake lights spill red onto the road + surroundings behind that car (subtle)
     if (uBrakeInt[c] > 0.001) {
-      float b = brakelamp(uBrakePos[2 * c], uBrakeAim[c]) + brakelamp(uBrakePos[2 * c + 1], uBrakeAim[c]);
+      float b = brakelamp(uBrakePos[2 * c], uBrakeAim[c], n) + brakelamp(uBrakePos[2 * c + 1], uBrakeAim[c], n);
       col += tex.rgb * vec3(1.0, 0.05, 0.02) * (b * uBrakeInt[c] * 4.0);
     }
   }

@@ -39,7 +39,16 @@ which is a bigger change than adding a parameter.
 | ~~**thruster / backfire / lamp glow**~~ **DONE** | the draw functions already took a car matrix; only the *intensity readings* (`turbineIntensity`, `backfireAt`, `carGForces`) read the global run. | all three take `src`. Ghosts fire their turbine on their own thrust/afterburner channel, pop on their own upshifts, and — the one that matters most — **brake on their own deceleration**. A ghost flashing its brake lights when the *reference* car braked would be the most actively misleading pixel on screen. |
 | **brake / head lights** | `setHeadlights(cm, 0, headVP)` and `setBrakelights(cm, 0)` set **scene** uniforms — the shader carries two lamps (`uHeadA`, `uHeadB`) belonging to one car. A second car's lamps have nowhere to go. | either an array of lamps in the shader (real, costs a uniform loop), or draw ghost lamp glow as emissive geometry only and accept it doesn't light the road. The second is much cheaper and probably enough. |
 | **smoke** | `smoke.accum` is a `Float32Array(4)` — one car's four wheels. The puff pool and the `AIR` field are world-space and already shared correctly, so **only the accumulator is per-car.** | per-run accumulator. This is the smallest fix of the three and the most visible. Note `BODY_WAKE_K` was set to 0 *because* there was one car; with ghosts it becomes meaningful again. |
-| **tyre marks** | `markVBO` / `markCount` — one prebuilt ribbon per loaded run. | build one per run; draw them all. |
+| ~~**tyre marks**~~ **DONE** | was one `markVBO` / `markCount` for the loaded run. | `drawTireMarks` takes the buffer and count; each run builds its own at load and is revealed up to *its* frame. |
+| ~~**lights**~~ **DONE** | was one car's worth of lamp uniforms, so a car could be lit by exactly one other. | arrays of `MAXCARS`; `setCarLamps(cars, headVP, skip)` where `skip` is the car being drawn. Also fixed a lighting bug that predates ghosts entirely: the lamps had **no N·L term**, so they lit surfaces facing away from them — invisible on flat road, glaring once a car sits in another car's beam. |
+
+### Still missing on the lights: cast shadow from a beam
+
+The N·L fix gives **form** shadow — a car's own bodywork shades itself from a beam. It does not give
+**cast** shadow: one car still does not throw a headlight shadow onto the car in front, and the same
+is true of tail lights. That needs a depth map rendered from each lamp — a render pass per car per
+frame, on top of the sun cascade that already exists. It is the single most expensive item left on
+this page, and worth doing only if headlight interplay becomes the point rather than a detail.
 | **sound** | `BBAudio` is one engine instance mapped to the reference car's telemetry. | **needs a decision before any code.** See below — this is the one item where doing it as asked is probably wrong. |
 
 ## Sound: why four engines is likely the wrong goal

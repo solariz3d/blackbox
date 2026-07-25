@@ -1550,10 +1550,24 @@ function addCompareRun(ab, name) {
   const wins = Ghosts.lapWindows(cex);
   if (!wins.length) throw new Error("that replay has no completed lap to compare");
   const win = wins[Ghosts.bestLapIndex(cex) ?? 0];
+  // the slip signal, then this run's own rubber. computeWheelSlip fills ex.slip /
+  // ex.smokeSlip, which buildTireMarkMesh needs — without it a ghost lays no marks at all
+  // and it looks like the feature is broken rather than the data being absent.
+  try {
+    const sl = computeWheelSlip(cex);
+    cex.slip = sl.slip; cex.smokeSlip = sl.smokeSlip;
+  } catch (_) { /* an older replay without wheel data simply lays no rubber */ }
+  let mvbo = null, mcount = 0;
+  try {
+    const mesh = buildTireMarkMesh(cex);
+    mcount = mesh.length / 8;
+    if (mcount) { mvbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, mvbo); gl.bufferData(gl.ARRAY_BUFFER, mesh, gl.STATIC_DRAW); }
+  } catch (_) { mvbo = null; mcount = 0; }
   compareRuns.push({
     ex: cex,
     label: String(name || "run").replace(/\.acreplay$/i, "").slice(-28),
     win,
+    markVBO: mvbo, markCount: mcount,
     dists: Ghosts.lapDistances(cex, win),
     color: LAP_COLORS[(compareRuns.length + 1) % LAP_COLORS.length],
     offsetS: 0,                                    // race stagger, seconds; only used in time align
@@ -2470,8 +2484,14 @@ function airStep(dt, i, fp) {
 
 // draw the prebuilt skid-mark ribbon, revealed up to curFrame (fractional). Blends
 // dark onto the track; doesn't write depth (it's a decal sitting just off the surface).
-function drawTireMarks(mvp, L, fogD, curFrame, curLap) {
-  if (TYRE_MODE === 0 || !markCount) return;
+function drawTireMarks(mvp, L, fogD, curFrame, curLap, vbo, count) {
+  // vbo/count default to the reference car's ribbon; each ghost passes its own, built from
+  // its own recorded slip. The fade is relative to THAT car's current frame — a ghost's
+  // rubber on the reference car's timeline would put skid marks in corners nobody had
+  // reached yet.
+  vbo = vbo || markVBO;
+  count = (count === undefined) ? markCount : count;
+  if (TYRE_MODE === 0 || !count) return;
   gl.useProgram(progMark);
   gl.uniformMatrix4fv(markLoc.mvp, false, mvp);
   gl.uniform1f(markLoc.curFrame, curFrame);
@@ -2482,7 +2502,7 @@ function drawTireMarks(mvp, L, fogD, curFrame, curLap) {
   gl.uniform3fv(markLoc.markColor, MARK_COLOR);
   gl.uniform3f(markLoc.fogC, L.fog[0], L.fog[1], L.fog[2]);
   gl.uniform1f(markLoc.fogD, fogD);
-  gl.bindBuffer(gl.ARRAY_BUFFER, markVBO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
   gl.enableVertexAttribArray(markLoc.pos);   gl.vertexAttribPointer(markLoc.pos, 3, gl.FLOAT, false, 32, 0);
   gl.enableVertexAttribArray(markLoc.frame); gl.vertexAttribPointer(markLoc.frame, 1, gl.FLOAT, false, 32, 12);
   gl.enableVertexAttribArray(markLoc.lap);   gl.vertexAttribPointer(markLoc.lap, 1, gl.FLOAT, false, 32, 16);
@@ -2492,7 +2512,7 @@ function drawTireMarks(mvp, L, fogD, curFrame, curLap) {
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
   gl.depthMask(false);
-  gl.drawArrays(gl.TRIANGLES, 0, markCount);
+  gl.drawArrays(gl.TRIANGLES, 0, count);
   gl.depthMask(true);
   gl.disable(gl.BLEND);
   gl.disableVertexAttribArray(markLoc.frame);
@@ -2506,6 +2526,12 @@ function drawTireMarks(mvp, L, fogD, curFrame, curLap) {
 // Motion = curl-noise advection (organic swirl) + buoyancy + drag + gentle wind. Emission
 // is driven by a per-wheel slide accumulator so smoke BUILDS UP the longer/harder a wheel
 // slides. Two classes: rising "puffs" and long-lived ground-hugging "haze" (lingering trail).
+/* NOTE for the ghost-smoke work (docs/GHOST_FIDELITY.md): the pool here is world-space and
+ * SHARED, which is already correct — every car should stir one cloud, and it is why the
+ * AIR field needed no change. What is per-car is only the EMISSION and the four-wheel
+ * `accum`. So the split is smokeStep -> advance-once + emit-per-car, NOT calling this
+ * whole function per car: that would age every particle and integrate the air N times, so
+ * smoke would evaporate faster the more cars were on track. */
 function smokeStep(dt, emit, i, nightF) {
   const P = smoke.pool, acc = smoke.accum, t = smokePrevT || 0;
   const collide = SMOKE_COLLIDE && smokeColl;                       // per-frame track collision (fine grid → cheap)
@@ -2931,7 +2957,14 @@ function render() {
   // the rubber history stays visible even while the car is in a gap.
   {
     let curLap = 0; if (ex.laps) for (const l of ex.laps) if (l.frame <= i) curLap++;
-    drawTireMarks(mvp, L, fogD, tCur / ex.dt, curLap);
+    drawTireMarks(mvp, L, fogD, tCur / ex.dt, curLap, markVBO, markCount);
+    // every ghost's rubber, each revealed up to ITS own frame — so a car that locked up
+    // into turn one has left its marks there and nowhere the others have not been yet
+    for (const g of ghostDraws) {
+      if (!g.run.markCount) continue;
+      let gl2 = 0; if (g.run.ex.laps) for (const l of g.run.ex.laps) if (l.frame <= g.f) gl2++;
+      drawTireMarks(mvp, L, fogD, g.f, gl2, g.run.markVBO, g.run.markCount);
+    }
   }
 
   gl.useProgram(prog);
