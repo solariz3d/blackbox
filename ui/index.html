@@ -949,6 +949,104 @@ const glowLoc = {
 };
 const glowBuf = gl.createBuffer();
 
+/* TRACK LAMP GLARE — the lamp seen, as distinct from the lamp lighting something.
+ *
+ * These are two different distances and the configs say so plainly. The T-180 test track's
+ * lamps declare RANGE 180 m and FADE_AT 1000 m, and the track is 943 m across: the author
+ * means the pool of light is local and the lamp ITSELF is visible from anywhere on the
+ * circuit. Nordic is starker still — 300 m range, 2000 m fade. Illumination alone therefore
+ * gives a night track that goes black fifty metres out, which is not what a real night
+ * circuit looks like from the far side.
+ *
+ * Separate program from the car's glow because colour has to be PER SPRITE here. The car
+ * batches by colour (one warm set, one red set) and a track's lamps do not batch — sakura's
+ * are white, thunderhead's run blue and orange within the same series.
+ *
+ * There is no cull to twelve here. That limit exists because each lit fragment costs a
+ * shader loop iteration; a point sprite costs one vertex and a few pixels, so every lamp
+ * within its fade distance is drawn — all 207 of nordic's. */
+const progLamp = gl.createProgram();
+gl.attachShader(progLamp, shader(gl.VERTEX_SHADER,
+  "attribute vec3 aPos; attribute vec3 aCol; attribute vec2 aSB;" +
+  "uniform mat4 uMVP; varying vec3 vC; varying float vB;" +
+  "void main(){ gl_Position = uMVP*vec4(aPos,1.0); gl_PointSize = aSB.x; vC = aCol; vB = aSB.y; }"));
+gl.attachShader(progLamp, shader(gl.FRAGMENT_SHADER,
+  "precision mediump float; varying vec3 vC; varying float vB;" +
+  // a hot core inside a much wider, much softer halo — one smoothstep gives a flat disc
+  // that reads as a decal, and a lamp at distance is mostly halo
+  "void main(){ float r = length(gl_PointCoord-0.5)*2.0;" +
+  " float core = pow(smoothstep(1.0,0.0,r), 6.0);" +
+  " float halo = pow(smoothstep(1.0,0.0,r), 1.6) * 0.42;" +
+  " float a = (core + halo) * vB; gl_FragColor = vec4(vC*a, a); }"));
+gl.linkProgram(progLamp);
+const lampLoc = {
+  pos: gl.getAttribLocation(progLamp, "aPos"), col: gl.getAttribLocation(progLamp, "aCol"),
+  sb: gl.getAttribLocation(progLamp, "aSB"), mvp: gl.getUniformLocation(progLamp, "uMVP"),
+};
+const lampBuf = gl.createBuffer();
+let TRACK_LAMP_GLOW = 1;
+let LAMP_GLARE_GAIN = 1.0;
+
+/* Draw every track lamp as an additive sprite, sized by distance but never allowed to
+ * vanish. `th` is tan(fov/2), so the projection matches the car's glow layer. */
+function drawTrackLampGlare(mvp, nightF, th) {
+  // follows the same switch as the lamps themselves — turning a track's lights off and
+  // leaving its glares hanging in the air would be a strange half-state
+  if (!TRACK_LIGHTS_ON || !TRACK_LAMP_GLOW || !trackLights.length) return;
+  const eye = camEye(), Hpx = cv.height;
+  const v = [];
+  for (const L of trackLights) {
+    const gate = L.night ? nightF : 1;
+    if (gate <= 0.02) continue;
+    const dx = L.pos[0] - eye[0], dy = L.pos[1] - eye[1], dz = L.pos[2] - eye[2];
+    const d = Math.hypot(dx, dy, dz) || 1;
+    const fade = L.fadeAt || L.range;
+    if (d > fade) continue;
+    /* Brightness falls off far more slowly than the illumination does. That is not a
+     * fudge: what carries a distant light to the eye is glare, and glare falls off with
+     * the source's apparent brightness, not with the inverse square of a pool of light on
+     * tarmac. Linear in d/fade, raised to 0.7 so it holds most of its strength across the
+     * middle distances and only lets go near the author's stated fade. */
+    const b = Math.pow(1 - d / fade, 0.7) * gate * LAMP_GLARE_GAIN;
+    if (b <= 0.004) continue;
+    /* Size: a real fixture's angular size, EXCEPT that it is not allowed below ~2.5 px.
+     * The floor is the whole point. A lamp 900 m away subtends far less than a pixel, so
+     * the honest projection makes it disappear — but a real light at that distance is
+     * still plainly visible, because the eye receives its glare rather than resolving its
+     * shape. Below about a pixel a sprite also starts to shimmer as it crosses the sample
+     * grid, so the floor fixes the flicker and the vanishing in one move. */
+    const world = 0.55 + 0.22 * Math.min(4, L.intensity);
+    const px = Math.max(2.5, Math.min(70, world * Hpx / (d * th)));
+    /* Pull the sprite toward the eye. Its position is the lamp mesh's bounding-sphere
+     * CENTRE, so at equal depth the fixture's own front face wins the depth test and the
+     * lamp hides inside its own housing. Half a metre clears a typical fixture without
+     * letting the glare punch through a wall in front of it. */
+    const k = 0.5 / d;
+    v.push(L.pos[0] - dx * k, L.pos[1] - dy * k, L.pos[2] - dz * k,
+           L.color[0], L.color[1], L.color[2], px, b);
+  }
+  if (!v.length) return;
+  gl.useProgram(progLamp);
+  gl.uniformMatrix4fv(lampLoc.mvp, false, mvp);
+  gl.bindBuffer(gl.ARRAY_BUFFER, lampBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(lampLoc.pos);
+  gl.vertexAttribPointer(lampLoc.pos, 3, gl.FLOAT, false, 32, 0);
+  gl.enableVertexAttribArray(lampLoc.col);
+  gl.vertexAttribPointer(lampLoc.col, 3, gl.FLOAT, false, 32, 12);
+  gl.enableVertexAttribArray(lampLoc.sb);
+  gl.vertexAttribPointer(lampLoc.sb, 2, gl.FLOAT, false, 32, 24);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);          // additive: glare adds, never darkens
+  gl.depthMask(false);                          // a lamp behind a grandstand stays hidden,
+  gl.enable(gl.DEPTH_TEST);                     // but glare must not occlude what follows
+  gl.drawArrays(gl.POINTS, 0, v.length / 8);
+  gl.disableVertexAttribArray(lampLoc.col);
+  gl.disableVertexAttribArray(lampLoc.sb);
+  gl.disable(gl.BLEND);
+  gl.depthMask(true);
+}
+
 // glow layer: red tail lights (flare on braking) + the body's white & red LED accent
 // arrays. Headlights are the shader cone spotlight, not here. All fade in at night.
 function drawCarLights(cm, mvp, th, nightF, brakeF) {
@@ -3365,6 +3463,14 @@ function render() {
     gl.disable(gl.DEPTH_TEST);
     bindAndDraw(bufs.cursor, 1, gl.POINTS, 10);
     gl.enable(gl.DEPTH_TEST);
+  }
+
+  /* The track's own lamps, seen. Outside the carShown block on purpose — the lights of a
+   * circuit do not depend on a car being on it — and after the scene and the cars, so the
+   * depth buffer is complete and a lamp behind a grandstand or a car is correctly hidden. */
+  {
+    const lfov = fa ? (follow.rig.fov || 0.9) : 0.9;
+    drawTrackLampGlare(mvp, nightF, Math.tan(lfov / 2));
   }
 
   // tyre smoke: live billboards off the same slip signal, into the HDR buffer so
