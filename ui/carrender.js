@@ -1,19 +1,19 @@
-﻿/* carrender.js â€” car body + wheels + driver rendering and posing.
+﻿/* carrender.js — car body + wheels + driver rendering and posing.
  * Pure render/pose functions, loaded before the main script (shared global scope).
  * They read/write app state declared in index.html (ex, carSteerAngle, carWheels,
  * carDriver, carSteerWheel, driverRig, the STEER_WHEEL_/WHEEL_ROLL/SUSP_/DRIVER_
- * tunables) and use gl/tLoc from glcore.js and the helpers in mathutil.js â€” all at
+ * tunables) and use gl/tLoc from glcore.js and the helpers in mathutil.js — all at
  * call time (runtime), so load order is fine.
  *
  * MULTI-GHOST: the per-car functions take the run they operate on (`src`) and return
- * their per-car results rather than writing app globals â€” carModelMatrix returns
+ * their per-car results rather than writing app globals — carModelMatrix returns
  * {mat, steer} instead of assigning carSteerAngle. Omit `src` and they fall back to the
  * primary run, which is what the single-car path still does. Still global, deliberately:
  * carGForces and driverRig read/serve the HUD and the driver you're actually watching.
  */
 // build the car's world matrix at a FRACTIONAL frame position. Orientation is
 // the REAL recorded body attitude: up = road surface normal, heading = the
-// front-axleâ†’rear-axle vector from the wheels (carries the true slip angle the
+// front-axle→rear-axle vector from the wheels (carries the true slip angle the
 // car actually had). Everything interpolated so it's smooth at any refresh.
 function carModelMatrix(fpos, src) {
   const E = src || ex;                 // src = a ghost's own run; default = the primary
@@ -27,8 +27,8 @@ function carModelMatrix(fpos, src) {
   let ux = lp(NM, 0), uy = lp(NM, 1), uz = lp(NM, 2);
   const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
   // real body heading (wheels); velocity as sign-reference + fallback. The velocity
-  // window is INTERPOLATED across the sub-frame (i0â†’i1 by f) so the steer angle â€” and
-  // thus the wheels + exo â€” is smooth at any refresh, not stepped at the 66 Hz frames.
+  // window is INTERPOLATED across the sub-frame (i0→i1 by f) so the steer angle — and
+  // thus the wheels + exo — is smooth at any refresh, not stepped at the 66 Hz frames.
   const a = Math.max(0, i0 - 3), b = Math.min(N - 1, i0 + 4);
   const a1 = Math.max(0, i1 - 3), b1 = Math.min(N - 1, i1 + 4);
   const vx = (P[b*3]-P[a*3]) + ((P[b1*3]-P[a1*3]) - (P[b*3]-P[a*3])) * f;
@@ -37,11 +37,11 @@ function carModelMatrix(fpos, src) {
   let hx = lp(FW, 0), hy = lp(FW, 1), hz = lp(FW, 2);
   if (Math.hypot(hx, hy, hz) < 1e-4) { hx = vx; hy = vy; hz = vz; }  // fallback to velocity
   let hl = Math.hypot(hx, hy, hz) || 1; hx /= hl; hy /= hl; hz /= hl;
-  // NOTE: do NOT re-align the nose to the velocity. The wheel heading (front axle âˆ’
+  // NOTE: do NOT re-align the nose to the velocity. The wheel heading (front axle −
   // rear axle) already IS the true nose direction; forcing it to point with travel
-  // flips the car 180Â° ("switches ends") exactly when the drift passes 90Â°, which is
+  // flips the car 180° ("switches ends") exactly when the drift passes 90°, which is
   // when we most want to see the real backward-facing slide. Trust the wheels.
-  const hd = hx * ux + hy * uy + hz * uz; hx -= ux * hd; hy -= uy * hd; hz -= uz * hd; // âŸ‚ up
+  const hd = hx * ux + hy * uy + hz * uz; hx -= ux * hd; hy -= uy * hd; hz -= uz * hd; // ⟂ up
   hl = Math.hypot(hx, hy, hz) || 1; hx /= hl; hy /= hl; hz /= hl;
   // amplify the real slip (angle between travel and body heading) toward the crab look
   if (carSlipExag !== 1) {
@@ -54,7 +54,7 @@ function carModelMatrix(fpos, src) {
       const cX = vpy * hz - vpz * hy, cY = vpz * hx - vpx * hz, cZ = vpx * hy - vpy * hx;
       const sign = (cX * ux + cY * uy + cZ * uz) >= 0 ? 1 : -1;
       let ang = Math.acos(dvh) * sign * carSlipExag;
-      ang = Math.max(-1.4, Math.min(1.4, ang)); // cap at ~80Â°
+      ang = Math.max(-1.4, Math.min(1.4, ang)); // cap at ~80°
       const c = Math.cos(ang), s = Math.sin(ang);
       hx = vpx * c + (uy * vpz - uz * vpy) * s;
       hy = vpy * c + (uz * vpx - ux * vpz) * s;
@@ -72,18 +72,18 @@ function carModelMatrix(fpos, src) {
   let steer = 0;
   {
     let sx = vx, sy = vy, sz = vz;
-    const sd = sx * ux + sy * uy + sz * uz; sx -= ux * sd; sy -= uy * sd; sz -= uz * sd; // travel âŸ‚ up
+    const sd = sx * ux + sy * uy + sz * uz; sx -= ux * sd; sy -= uy * sd; sz -= uz * sd; // travel ⟂ up
     const sl = Math.hypot(sx, sy, sz);
     if (sl > 1e-4) {
       sx /= sl; sy /= sl; sz /= sl;
       const vH = sx * hx + sy * hy + sz * hz;   // along nose (+Z local)
       const vR = sx * rx + sy * ry + sz * rz;   // along right (+X local)
-      // point the wheels EXACTLY at the line â€” no steering-lock cap. The T-180
-      // crabs to 90Â°+ and the wheels follow all the way (atan2 handles the full range).
+      // point the wheels EXACTLY at the line — no steering-lock cap. The T-180
+      // crabs to 90°+ and the wheels follow all the way (atan2 handles the full range).
       steer = Math.atan2(vR, vH);
     }
   }
-  // local axes â†’ world: Xâ†’right, Yâ†’up, Z(nose)â†’heading
+  // local axes → world: X→right, Y→up, Z(nose)→heading
   return {
     mat: new Float32Array([
       rx, ry, rz, 0,
@@ -112,7 +112,7 @@ function drawCarGroups(groups, modelMat) {
     gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
   }
 }
-// carMat âŠ— (rotate about model-up through the wheel centre by `steer`) â€” steers a
+// carMat ⊗ (rotate about model-up through the wheel centre by `steer`) — steers a
 // front wheel to point down the line. X=right, Z=nose in the car's local frame.
 function wheelSteerModel(carMat, pivot, steer, roll, lift) {
   const cy = Math.cos(steer), sy = Math.sin(steer);
@@ -127,7 +127,7 @@ function wheelSteerModel(carMat, pivot, steer, roll, lift) {
   return new Float32Array(mMul(carMat, R));
 }
 // lateral / longitudinal / vertical g at fractional frame `fp`, from the path's local
-// acceleration â€” deterministic (scrub-safe) and windowed so it's smooth. Feeds the
+// acceleration — deterministic (scrub-safe) and windowed so it's smooth. Feeds the
 // procedural suspension (dive/squat, roll, bumps). Same math the driver lean reads.
 function carGForces(fp, src) {
   const E = src || ex;
@@ -138,7 +138,7 @@ function carGForces(fp, src) {
   let ux = E.nrm[i*3], uy = E.nrm[i*3+1], uz = E.nrm[i*3+2]; const ul = Math.hypot(ux,uy,uz)||1; ux/=ul;uy/=ul;uz/=ul;
   let hx = P[b*3]-P[a*3], hy = P[b*3+1]-P[a*3+1], hz = P[b*3+2]-P[a*3+2];
   const hd = hx*ux+hy*uy+hz*uz; hx-=ux*hd; hy-=uy*hd; hz-=uz*hd; const hl = Math.hypot(hx,hy,hz)||1; hx/=hl;hy/=hl;hz/=hl;
-  const rx = uy*hz-uz*hy, ry = uz*hx-ux*hz, rz = ux*hy-uy*hx;   // right = upÃ—heading
+  const rx = uy*hz-uz*hy, ry = uz*hx-ux*hz, rz = ux*hy-uy*hx;   // right = up×heading
   const iv = 1 / (w * dt);
   const dvx = ((P[b*3]-P[i*3]) - (P[i*3]-P[a*3])) * iv * iv;
   const dvy = ((P[b*3+1]-P[i*3+1]) - (P[i*3+1]-P[a*3+1])) * iv * iv;
@@ -147,15 +147,15 @@ function carGForces(fp, src) {
   const latG = (dvx*rx + dvy*ry + dvz*rz) / 9.81;
   return {
     latG,                                         // + = pushed toward +right (raw, includes banking gravity)
-    longG,                                        // + = accelerating, âˆ’ = braking (raw)
-    vertA: (dvx*ux + dvy*uy + dvz*uz) / 9.81,     // + = pushed up (bump), âˆ’ = crest
+    longG,                                        // + = accelerating, − = braking (raw)
+    vertA: (dvx*ux + dvy*uy + dvz*uz) / 9.81,     // + = pushed up (bump), − = crest
     // gravity-corrected braking: heading is flattened to the road plane, so gravity's
     // along-track pull is just its vertical component (hy). Subtracting it means climbing
     // a loop/banking no longer reads as braking. + = real braking-direction contact force.
     brakeG: -longG - hy,
     // gravity-corrected lateral (same trick on the right axis): the "right" vector tilts
     // with banking, so gravity projects onto it (its y-component, ry). Subtracting that
-    // leaves only the tyre's GENUINE lateral demand â€” near zero when the banking carries
+    // leaves only the tyre's GENUINE lateral demand — near zero when the banking carries
     // the car, large only when actually cornering harder than the bank supports. This is
     // what should lay rubber, so banked laps stop over-marking.
     latGcorr: latG + ry,
@@ -187,13 +187,13 @@ function detectShifts(ex) {
 // per-wheel suspension travel (m, along body up): dive/squat + roll + bump, clamped
 function wheelLift(w, g) {
   const front = w.front, left = w.pivot[0] > 0;
-  let lift = (front ? -1 : 1) * g.longG * SUSP_LONG          // brake â†’ front compresses, rear extends
+  let lift = (front ? -1 : 1) * g.longG * SUSP_LONG          // brake → front compresses, rear extends
            + (left ? 1 : -1) * g.latG * SUSP_LAT * SUSP_LAT_SIGN  // outer corner compresses
            + g.vertA * SUSP_BUMP;                            // bumps push all four up
   return Math.max(-SUSP_MAX, Math.min(SUSP_MAX, lift));
 }
-// travelled distance (m) at fractional frame `fp`, interpolated â€” drives the wheel
-// roll-spin so it's scrub-safe (scrub back â†’ wheels roll back, pause â†’ they stop).
+// travelled distance (m) at fractional frame `fp`, interpolated — drives the wheel
+// roll-spin so it's scrub-safe (scrub back → wheels roll back, pause → they stop).
 function wheelRollDistance(fp, src) {
   const E = src || ex;
   const cd = E && E.cumDist; if (!cd) return 0;
@@ -202,7 +202,7 @@ function wheelRollDistance(fp, src) {
   return cd[i] + (cd[j] - cd[i]) * (fp - i);
 }
 // recorded wheel-centre WORLD position at fractional frame `fp` for wheel k (0=FL,1=FR,
-// 2=RL,3=RR). This is the real per-wheel position from the replay â€” placing each wheel
+// 2=RL,3=RR). This is the real per-wheel position from the replay — placing each wheel
 // here makes it track the actual banked/bumpy surface (real suspension), no floating.
 // Returns null when the frame's wheel quad is invalid (gap / unsupported replay).
 function wheelWorldAt(fp, k, src) {
@@ -230,29 +230,29 @@ function wheelWorldAt(fp, k, src) {
   return [cr(0), cr(1), cr(2)];
 }
 
-// ---- tyre slip signal â†’ skid marks + smoke ---------------------------------
-// The REAL signal, from recorded wheel data: the SLIP ANGLE â€” the angle between where
-// the car points (body heading from front axle âˆ’ rear axle, `ex.fwd`) and where it's
-// actually travelling (velocity). A gripping tyre points where it goes (slip â‰ˆ 0Â°, even
+// ---- tyre slip signal → skid marks + smoke ---------------------------------
+// The REAL signal, from recorded wheel data: the SLIP ANGLE — the angle between where
+// the car points (body heading from front axle − rear axle, `ex.fwd`) and where it's
+// actually travelling (velocity). A gripping tyre points where it goes (slip ≈ 0°, even
 // at huge banked-corner G); a sliding/scrubbing tyre doesn't. This is what actually lays
-// rubber and makes smoke â€” unlike lateral G, which is tyre LOAD (high while gripping too).
-// Units are DEGREES. Validated: a gripping centrifuge lap reads ~0-3Â°, real slides read high.
-const SKID_ON = 9;        // deg of slip below this lays NO rubber (grip); above â†’ marks
-const SKID_RANGE = 16;    // deg span above the deadzone that ramps 0â†’full intensity
+// rubber and makes smoke — unlike lateral G, which is tyre LOAD (high while gripping too).
+// Units are DEGREES. Validated: a gripping centrifuge lap reads ~0-3°, real slides read high.
+const SKID_ON = 9;        // deg of slip below this lays NO rubber (grip); above → marks
+const SKID_RANGE = 16;    // deg span above the deadzone that ramps 0→full intensity
 function skidIntensity(s) { return Math.max(0, Math.min(1, (s - SKID_ON) / SKID_RANGE)); }
 const SMOKE_ON = 9;       // deg of slip below this makes NO smoke
 const SMOKE_RANGE = 14;
 function smokeIntensity(s) { return Math.max(0, Math.min(1, (s - SMOKE_ON) / SMOKE_RANGE)); }
-// Real AC wheelSlip â†’ equivalent "smoke degrees" so it feeds the same tuned pipeline.
-// Calibrated from a clean PB lap: grip sits <2, p95â‰ˆ7, real slides run ~20â€“80+ (spiking to
+// Real AC wheelSlip → equivalent "smoke degrees" so it feeds the same tuned pipeline.
+// Calibrated from a clean PB lap: grip sits <2, p95≈7, real slides run ~20–80+ (spiking to
 // thousands on a lockup). ON sits just above the grip band; full by +42. This is PER-WHEEL,
-// so rear wheelspin or a locked front tyre smoke on their own â€” things the car-wide slip
+// so rear wheelspin or a locked front tyre smoke on their own — things the car-wide slip
 // ANGLE can't see. ON/SPAN are the tuning knobs.
 const REAL_SLIP_ON = 8, REAL_SLIP_SPAN = 42;
 function realSlipToDeg(s) { return SMOKE_ON + Math.max(0, Math.min(1, (s - REAL_SLIP_ON) / REAL_SLIP_SPAN)) * SMOKE_RANGE; }
 // Fills two signals per wheel [frame*4 + k], k = 0:FL 1:FR 2:RL 3:RR, both in degrees:
-//   slip      â€” slip angle Ã— outer-wheel weight (marks: outer tyres scrub more)
-//   smokeSlip â€” the car-wide slip angle (smoke; rear bias is applied at emit time)
+//   slip      — slip angle × outer-wheel weight (marks: outer tyres scrub more)
+//   smokeSlip — the car-wide slip angle (smoke; rear bias is applied at emit time)
 // Returns { slip, smokeSlip }; callers apply skidIntensity()/smokeIntensity().
 function computeWheelSlip(ex) {
   const N = ex.N, P = ex.pos, F = ex.fwd, NM = ex.nrm, dt = ex.dt, gap = ex.gap;
@@ -273,7 +273,7 @@ function computeWheelSlip(ex) {
       const right = (k === 1 || k === 3);
       slip[i*4 + k] = slipDeg * (right === outerRight ? 1.0 : 0.6); // marks: outer wheels weighted
       // smoke: car-wide slip ANGLE (drift), blended with REAL per-wheel wheelSlip (wheelspin /
-      // lockup) when telemetry is present â€” whichever signal calls for more smoke wins.
+      // lockup) when telemetry is present — whichever signal calls for more smoke wins.
       let sm = slipDeg;                                            // kinematic drift angle
       if (hasReal) sm = Math.max(sm, realSlipToDeg(ex.tel.slip[i*4 + k]));
       smokeSlip[i*4 + k] = sm;                                     // rear bias still applied at emit
@@ -282,16 +282,16 @@ function computeWheelSlip(ex) {
   return { slip, smokeSlip };
 }
 // Prebuild the whole skid-mark ribbon mesh once (interleaved: pos3, frame, lap,
-// intensity, cross, run â€” 8 floats/vertex). Centreline is the real recorded contact
+// intensity, cross, run — 8 floats/vertex). Centreline is the real recorded contact
 // patch; width is across the travel direction, lifted just off the surface. `cross`
-// is -1..1 across the width and `run` is metres along the path â€” the shader uses them
+// is -1..1 across the width and `run` is metres along the path — the shader uses them
 // to draw tread striations + grain. Only laid where the tyre is actually sliding.
 function buildTireMarkMesh(ex) {
   const N = ex.N, W = ex.wheels, ok = ex.wheelsOk, NM = ex.nrm, slip = ex.slip;
   if (!W || !ok || !slip) return new Float32Array(0);
   const HALF = 0.14, LIFT = 0.03;              // tyre half-width (m), lift off the surface (m)
   // per-wheel radius (0:FL 1:FR 2:RL 3:RR): drop the recorded wheel CENTRE to the CONTACT
-  // PATCH on the track, else marks float ~a radius (â‰ˆ a foot) above the surface.
+  // PATCH on the track, else marks float ~a radius (≈ a foot) above the surface.
   const R = [0.33, 0.33, 0.33, 0.33];
   if (typeof carWheels !== "undefined" && carWheels)
     for (const w of carWheels) R[(/F$/i.test(w.corner) ? 0 : 2) + (/^L/i.test(w.corner) ? 0 : 1)] = w.radius || 0.33;
@@ -306,7 +306,7 @@ function buildTireMarkMesh(ex) {
     if (uy < 0) { ux = -ux; uy = -uy; uz = -uz; } return [ux, uy, uz];
   };
   const contact = (f, k, up) => { const a = f*12+k*3, r = R[k]; return [W[a]-up[0]*r, W[a+1]-up[1]*r, W[a+2]-up[2]*r]; };
-  // ribbon edge: width across travel (right = up Ã— travel), lifted just off the surface
+  // ribbon edge: width across travel (right = up × travel), lifted just off the surface
   const edge = (ca, cb, up, sgn) => {
     const tx = cb[0]-ca[0], ty = cb[1]-ca[1], tz = cb[2]-ca[2];
     let rx = up[1]*tz - up[2]*ty, ry = up[2]*tx - up[0]*tz, rz = up[0]*ty - up[1]*tx;
@@ -324,7 +324,7 @@ function buildTireMarkMesh(ex) {
       const s0 = skidIntensity(slip[f*4+k]), s1 = skidIntensity(slip[(f+1)*4+k]);
       if (s0 <= 0.01 && s1 <= 0.01) continue;
       const Lo0 = edge(c0, c1, up0, -1), Ro0 = edge(c0, c1, up0, 1);
-      const Lo1 = edge(c1, c0, up1, 1), Ro1 = edge(c1, c0, up1, -1);   // c0â†’c1 flipped for the far end
+      const Lo1 = edge(c1, c0, up1, 1), Ro1 = edge(c1, c0, up1, -1);   // c0→c1 flipped for the far end
       const fr0 = f, fr1 = f+1, lp0 = lapOf[f], lp1 = lapOf[f+1];
       push(Lo0, fr0, lp0, s0, -1, run0); push(Ro0, fr0, lp0, s0, 1, run0); push(Lo1, fr1, lp1, s1, -1, run1);
       push(Ro0, fr0, lp0, s0, 1, run0); push(Ro1, fr1, lp1, s1, 1, run1); push(Lo1, fr1, lp1, s1, -1, run1);
@@ -333,7 +333,7 @@ function buildTireMarkMesh(ex) {
   return new Float32Array(out);
 }
 
-// carMat âŠ— (rotate `ang` about an arbitrary unit axis through a pivot) â€” for the
+// carMat ⊗ (rotate `ang` about an arbitrary unit axis through a pivot) — for the
 // cockpit steering wheel spinning about its tilted column.
 function axisSpinModel(carMat, ax, ang, piv) {
   let x = ax[0], y = ax[1], z = ax[2]; const l = Math.hypot(x, y, z) || 1; x/=l; y/=l; z/=l;
@@ -351,7 +351,7 @@ function axisSpinModel(carMat, ax, ang, piv) {
 
 // Procedural driver pose: read lateral/longitudinal G from the telemetry and lean
 // the body + turn the head into the corner. Returns {body, head} model matrices
-// (âŠ— carMat), smoothed so the motion is slow and weighty.
+// (⊗ carMat), smoothed so the motion is slow and weighty.
 function driverPose(fp, carMat, steer, src, rig) {
   const E = src || ex;                                   // this ghost's run, else the primary
   const st = steer != null ? steer : carSteerAngle;      // this ghost's steer, else the primary's
@@ -367,28 +367,28 @@ function driverPose(fp, carMat, steer, src, rig) {
   let ux = E.nrm[i*3], uy = E.nrm[i*3+1], uz = E.nrm[i*3+2]; const ul = Math.hypot(ux,uy,uz)||1; ux/=ul;uy/=ul;uz/=ul;
   let hx = P[b*3]-P[a*3], hy = P[b*3+1]-P[a*3+1], hz = P[b*3+2]-P[a*3+2];
   const hd = hx*ux+hy*uy+hz*uz; hx-=ux*hd; hy-=uy*hd; hz-=uz*hd; const hl = Math.hypot(hx,hy,hz)||1; hx/=hl;hy/=hl;hz/=hl;
-  const rx = uy*hz-uz*hy, ry = uz*hx-ux*hz, rz = ux*hy-uy*hx;   // right = upÃ—heading
+  const rx = uy*hz-uz*hy, ry = uz*hx-ux*hz, rz = ux*hy-uy*hx;   // right = up×heading
   const inv = 1 / (w * dt);
   const v1x = (P[i*3]-P[a*3])*inv, v1y = (P[i*3+1]-P[a*3+1])*inv, v1z = (P[i*3+2]-P[a*3+2])*inv;
   const v2x = (P[b*3]-P[i*3])*inv, v2y = (P[b*3+1]-P[i*3+1])*inv, v2z = (P[b*3+2]-P[i*3+2])*inv;
-  const dvx = (v2x-v1x)*inv, dvy = (v2y-v1y)*inv, dvz = (v2z-v1z)*inv;   // â‰ˆ acceleration (m/sÂ²)
+  const dvx = (v2x-v1x)*inv, dvy = (v2y-v1y)*inv, dvz = (v2z-v1z)*inv;   // ≈ acceleration (m/s²)
   const latG = (dvx*rx + dvy*ry + dvz*rz) / 9.81;    // + = pushed toward +right
   const clamp = (v, m) => Math.max(-m, Math.min(m, v));
   // head faces THE LINE, like the wheels: yaw by the slip angle so the driver
-  // looks where the car is going â€” but capped at a realistic neck range (~49Â°).
+  // looks where the car is going — but capped at a realistic neck range (~49°).
   const yawT = clamp(st * DRIVER_HEAD_SIGN, DRIVER_HEAD_YAW_MAX);
   const hrollT = clamp(-latG * 0.035, 0.08);         // a little head tilt with the G (body leans too now)
   const k = 1 - Math.exp(-3.0 / 60);                 // slow settle (~3/s)
   R.headYaw += (yawT - R.headYaw) * k;
   R.headRoll += (hrollT - R.headRoll) * k;
-  // subtle head BOB from G-load â€” nudged opposite the acceleration (inertia): sideways with lateral G,
+  // subtle head BOB from G-load — nudged opposite the acceleration (inertia): sideways with lateral G,
   // fore/aft with braking/accel. Small + smoothed so it reads as weight, not wobble.
   const longG = (dvx * hx + dvy * hy + dvz * hz) / 9.81;
-  // SLIGHT body lean â€” he's belted in snug, so the torso/shoulders only shift a little with the G
+  // SLIGHT body lean — he's belted in snug, so the torso/shoulders only shift a little with the G
   // (roll into lateral G, pitch forward under braking) about the hips. The head rides on top.
   /* LATERAL ONLY. The fore/aft pitch is gone on purpose: a racing seat plus a harness holds the
    * driver against braking and acceleration almost completely, so bobbing him back and forth under
-   * long G reads as wonky rather than weighty â€” invisible from a chase cam, obvious once the camera
+   * long G reads as wonky rather than weighty — invisible from a chase cam, obvious once the camera
    * sits half a metre away. Lateral sway survives because belts do far less against sideways load
    * and you genuinely see drivers move with it. */
   const bRollT = clamp(-latG * 0.009, 0.02), bPitchT = 0;
@@ -396,17 +396,17 @@ function driverPose(fp, carMat, steer, src, rig) {
   R.bodyRoll = (R.bodyRoll || 0) + (bRollT - (R.bodyRoll || 0)) * k;
   R.bodyPitch = (R.bodyPitch || 0) + (bPitchT - (R.bodyPitch || 0)) * k;
   // The body is a RIGID seated pose (the car's own driver_base_pos.knh, in car
-  // space) â€” hands already on the wheel. Only the head moves, pivoting about the
+  // space) — hands already on the wheel. Only the head moves, pivoting about the
   // real neck joint (also in car space), then everything rides carMat to world.
   const pv = (carDriver && carDriver.neckPivot) || [0, 1.08, 0.09];
-  // head yaw (looks to the line) + a little roll with G â€” but NO separate positional bob: the head's
+  // head yaw (looks to the line) + a little roll with G — but NO separate positional bob: the head's
   // shift is now purely the CONSEQUENCE of the torso lean it rides on (a separate bob = moonwalk).
   const headExtra = mMul(rotP(1, R.headYaw, pv[0], pv[1], pv[2]), rotP(2, R.headRoll, pv[0], pv[1], pv[2]));
   // torso lean about the hips; the head rides ON the leaned body so shoulders + head move together
   /* Sway about the GRIP, not the hips. Leaning the rigid seated pose about the hips swings the
    * shoulders AND the arms, but the wheel does not move with them, so the hands slid around the rim
    * and the grip read as loose. A driver holding a wheel is hinged at his hands: the grip is the
-   * fixed point and the body sways about it. Measured: 4.9 mm of hand drift at max lean â†’ 1.5 mm. */
+   * fixed point and the body sways about it. Measured: 4.9 mm of hand drift at max lean → 1.5 mm. */
   const hip = (carDriver && carDriver.wheelC) ? carDriver.wheelC : [0, 0.4, 0.02];
   const bodyExtra = mMul(rotP(2, R.bodyRoll, hip[0], hip[1], hip[2]), rotP(0, R.bodyPitch, hip[0], hip[1], hip[2]));
   const bodyMat = mMul(carMat, bodyExtra);
@@ -439,17 +439,17 @@ function driverSkinUpload(world) {
 // Glued-grip steering: the hands ride the wheel's REAL grip points at any steer,
 // and the wheel turns as far as the arms can physically follow. Three pieces:
 //
-// gripSat â€” the wheel's rotation is a smooth saturating map of the raw steer:
-// lockÂ·tanh(raw/lock). Near-linear in normal corners, keeps creeping toward the
+// gripSat — the wheel's rotation is a smooth saturating map of the raw steer:
+// lock·tanh(raw/lock). Near-linear in normal corners, keeps creeping toward the
 // lock in hairpins/drifts (never freezes mid-corner like a hard clamp), and never
-// spins past what the hands can hold. lock=0 â†’ uncapped (no driver rig to limit it).
+// spins past what the hands can hold. lock=0 → uncapped (no driver rig to limit it).
 function gripSat(raw, lock) { return lock > 0 ? lock * Math.tanh(raw / lock) : raw; }
 
-// armSolve â€” one arm at one grip angle: orbit the grip (G0 if snapped onto the
+// armSolve — one arm at one grip angle: orbit the grip (G0 if snapped onto the
 // measured rim, else the authored W0) about the wheel axis to the live grip W, and
 // when W is past the 2-bone reach, lean the SHOULDER toward it (up to shoulderMax
 // metres) the way a real driver rolls a shoulder into a crossed-over turn. Without
-// this, ik2bone clamps its target short and the hand floats off the rim â€” the
+// this, ik2bone clamps its target short and the hand floats off the rim — the
 // exact artefact this replaces. Pure (testable headless).
 function armSolve(arm, ang, C, ax, shoulderMax) {
   const c = Math.cos(ang), s = Math.sin(ang), o = 1 - c;
@@ -461,19 +461,19 @@ function armSolve(arm, ang, C, ax, shoulderMax) {
   const over = v3len(v3sub(W, arm.S0)) - reach;
   const S = over > 0 ? v3add(arm.S0, v3sc(v3nrm(v3sub(W, arm.S0)), Math.min(over, shoulderMax))) : arm.S0;
   /* WRIST BEND GOES IN THE ELBOW (docs/DRIVER_WRIST.md attempt 4).
-   * A relative rotation is twist + bend. WRIST_FOLLOW absorbs the TWIST in the forearm â€”
+   * A relative rotation is twist + bend. WRIST_FOLLOW absorbs the TWIST in the forearm —
    * measurably, and measurably it cannot touch the bend (test_wristbend.js): it rotates
-   * the forearm about its own axis, so elbowâ†’wrist doesn't move, and the hand is welded
+   * the forearm about its own axis, so elbow→wrist doesn't move, and the hand is welded
    * to the rim, so that doesn't move either. The angle between them is untouched by
    * construction, which is why three attempts at pronation never fixed what the eye sees.
    * The bend's only free variable is WHERE THE ELBOW SITS. ik2bone places it on a circle
-   * about the shoulderâ†’wrist axis and `pole` picks the point, so swinging the pole turns
+   * about the shoulder→wrist axis and `pole` picks the point, so swinging the pole turns
    * the forearm's direction while leaving the wrist on the grip and the hand on the rim.
-   * Aim it at the elbow that would make the forearm collinear with the hand â€” which is
+   * Aim it at the elbow that would make the forearm collinear with the hand — which is
    * what a driver's elbow does rather than folding the wrist. */
   let pole = arm.pole;
   if (WRIST_POLE > 0 && arm.G0) {
-    const hv = v3nrm(v3sub(arm.G0, arm.W0));                 // bind hand axis: wrist â†’ grip contact
+    const hv = v3nrm(v3sub(arm.G0, arm.W0));                 // bind hand axis: wrist → grip contact
     const hd = v3dot(ax, hv), hcx = v3cross(ax, hv);         // welded to the rim: same orbit as W
     const hA = [hv[0]*c + hcx[0]*s + ax[0]*hd*o,
                 hv[1]*c + hcx[1]*s + ax[1]*hd*o,
@@ -490,12 +490,12 @@ function armSolve(arm, ang, C, ax, shoulderMax) {
 }
 
 // WRIST_FOLLOW / WRIST_RAMP (declared with the other tunables in index.html): how the wheel's roll
-// is absorbed as forearm pronation instead of a folded wrist â€” see docs/DRIVER_WRIST.md.
+// is absorbed as forearm pronation instead of a folded wrist — see docs/DRIVER_WRIST.md.
 
-// snapToMesh â€” the grip target is the local CENTRE OF MATERIAL nearest the
+// snapToMesh — the grip target is the local CENTRE OF MATERIAL nearest the
 // authored grip: nearest wheel vertex, then two mean-shift steps (centroid of the
 // verts inside a handle-sized ball). This lands in the middle of the physical
-// handle bar and can NEVER land in a hole â€” a hole has no vertices to attract it.
+// handle bar and can NEVER land in a hole — a hole has no vertices to attract it.
 // (An idealized circle fit can't tell a handle from the opening beside it, which
 // put the hands through the T-180's grip holes.) Pure (testable headless).
 function snapToMesh(p, verts, ballR) {
@@ -520,10 +520,10 @@ function snapToMesh(p, verts, ballR) {
   return c;
 }
 
-// palmGrip â€” the rigid shift that puts the PALM CUP (centroid of the curled
+// palmGrip — the rigid shift that puts the PALM CUP (centroid of the curled
 // fingers' proximal+middle joints in the seated pose) onto the nearest bar core,
-// plus a small depth trim back along the cupâ†’wrist axis. The wrist was the wrong
-// thing to place â€” it sits ~11 cm behind the actual contact, so wrist-based
+// plus a small depth trim back along the cup→wrist axis. The wrist was the wrong
+// thing to place — it sits ~11 cm behind the actual contact, so wrist-based
 // placement pushed the fingers past the wheel (screenshot-verified on the T-180).
 function palmGrip(cup, W0, verts, trim) {
   const core = snapToMesh(cup, verts);
@@ -536,7 +536,7 @@ function palmGrip(cup, W0, verts, trim) {
   return shift;
 }
 
-// gripLockCalib â€” sweep the orbit both ways at load and find the largest angle
+// gripLockCalib — sweep the orbit both ways at load and find the largest angle
 // BOTH hands can still reach (shoulder lean included). The wheel's lock is
 // calibrated to THIS car's actual rig, not a guessed constant.
 function gripLockCalib(arms, C, ax, shoulderMax) {
@@ -555,12 +555,12 @@ function gripLockCalib(arms, C, ax, shoulderMax) {
 
 // ---- authored steering animation (steer.ksanim) ----
 // The car ships the mod author's own lock-to-lock steering animation: clavicles,
-// arms, hands, EVERY finger, authored ON this wheel â€” palms wrapped around the
+// arms, hands, EVERY finger, authored ON this wheel — palms wrapped around the
 // grips at every angle. When present it drives the driver (AC itself drives this
 // same file from steer input); the IK/snap pipeline below stays as the fallback
 // for cars without one.
 
-// quaternion (x,y,z,w) â†’ row-vector rotation matrix rows (v' = vÂ·M)
+// quaternion (x,y,z,w) → row-vector rotation matrix rows (v' = v·M)
 function ksanimLocal(nd, ff) {   // sample one node's PQS track at fractional frame ff
   const last = nd.p.length / 3 - 1;
   const f0 = Math.max(0, Math.min(last, Math.floor(ff))), f1 = Math.min(last, f0 + 1), t = Math.max(0, Math.min(1, ff - f0));
@@ -575,7 +575,7 @@ function ksanimLocal(nd, ff) {   // sample one node's PQS track at fractional fr
   const sx = nd.s[f0*3] + (nd.s[f1*3] - nd.s[f0*3]) * t;
   const sy = nd.s[f0*3+1] + (nd.s[f1*3+1] - nd.s[f0*3+1]) * t;
   const sz = nd.s[f0*3+2] + (nd.s[f1*3+2] - nd.s[f0*3+2]) * t;
-  return [   // SÂ·R with translation row (row-vector convention, matches kn5 node matrices)
+  return [   // S·R with translation row (row-vector convention, matches kn5 node matrices)
     (1 - 2*(qy*qy + qz*qz)) * sx, (2*(qx*qy + qz*qw)) * sx, (2*(qx*qz - qy*qw)) * sx, 0,
     (2*(qx*qy - qz*qw)) * sy, (1 - 2*(qx*qx + qz*qz)) * sy, (2*(qy*qz + qx*qw)) * sy, 0,
     (2*(qx*qz + qy*qw)) * sz, (2*(qy*qz - qx*qw)) * sz, (1 - 2*(qx*qx + qy*qy)) * sz, 0,
@@ -583,9 +583,9 @@ function ksanimLocal(nd, ff) {   // sample one node's PQS track at fractional fr
   ];
 }
 
-// driverAnimWorlds â€” compose the skeleton's world matrices at anim time t (0..1):
+// driverAnimWorlds — compose the skeleton's world matrices at anim time t (0..1):
 // animated nodes take their ksanim local, the rest keep the seated pose's local,
-// all chained parentâ†’child (kn5 node order is depth-first, parents first).
+// all chained parent→child (kn5 node order is depth-first, parents first).
 function driverAnimWorlds(st, t) {
   const skel = st.skel, N = skel.count;
   const ff = Math.max(0, Math.min(1, t)) * (st.anim.frameCount - 1);
@@ -598,8 +598,8 @@ function driverAnimWorlds(st, t) {
   return world;
 }
 
-// driverAnimInit â€” bind the ksanim to the skeleton and calibrate its wheel range
-// from the HAND's own arc about the wheel axis (Î¸(t) lookup, so hands and wheel
+// driverAnimInit — bind the ksanim to the skeleton and calibrate its wheel range
+// from the HAND's own arc about the wheel axis (θ(t) lookup, so hands and wheel
 // stay in exact sync even where the authored animation isn't linear in t).
 function driverAnimInit(anim, skel, poseWorld, poseLocal, wheelC, wheelAxis) {
   if (!anim || !anim.frameCount || anim.frameCount < 2) return null;
@@ -628,16 +628,16 @@ function driverAnimInit(anim, skel, poseWorld, poseLocal, wheelC, wheelAxis) {
     map.push(th); prev = th;
   }
   const c = map[(S - 1) >> 1];
-  for (let i = 0; i < S; i++) map[i] -= c;   // Î¸ relative to the animation's centre
+  for (let i = 0; i < S; i++) map[i] -= c;   // θ relative to the animation's centre
   st.map = map;
   st.lock = Math.min(Math.abs(map[0]), Math.abs(map[S - 1]));
   // an anim whose hand barely sweeps (the T-180's moves ~3 cm lock-to-lock) can't
-  // express a wheel that visibly turns â€” fall back to the IK path, which can
+  // express a wheel that visibly turns — fall back to the IK path, which can
   if (st.lock < 0.35) return null;
   return st;
 }
 
-// animT â€” invert the Î¸(t) lookup: which anim time puts the hands at wheel spin
+// animT — invert the θ(t) lookup: which anim time puts the hands at wheel spin
 // `spin`. Clamps into the authored range.
 function animT(st, spin) {
   const m = st.map, S = m.length;
@@ -673,7 +673,7 @@ function steerOfFrame(E, i) {
   return Math.atan2((vx*rx + vy*ry + vz*rz) / sl, (vx*hx + vy*hy + vz*hz) / sl);
 }
 
-// 98th-percentile |steer| of the whole run â€” the wildest sustained steer this
+// 98th-percentile |steer| of the whole run — the wildest sustained steer this
 // replay actually reaches. The wheel maps LINEARLY (proportional the whole way,
 // no saturating crawl) so that THIS lands exactly at the lock: condensed zone,
 // per-run self-calibrated, and the wheel never visibly stalls while the car turns.
@@ -691,11 +691,11 @@ function steerRefCalib(E) {
 }
 
 // Skin the driver's body into this car's authored seated pose (driver_base_pos.knh),
-// which places the skeleton â€” and therefore the hands â€” onto THIS car's wheel. Each
+// which places the skeleton — and therefore the hands — onto THIS car's wheel. Each
 // bone's world matrix comes straight from the knh (car space); bones absent from it
 // fall back to the model's bind pose. `spin` (rad) orbits both hands with the wheel:
 // per arm the grip point rotates about the wheel axis and the elbow re-solves (2-bone
-// IK), then the whole armâ†’handâ†’finger subtree rotates so nothing tears. spin=0
+// IK), then the whole arm→hand→finger subtree rotates so nothing tears. spin=0
 // reproduces the seated pose exactly. Rigid body otherwise, so only the arms move.
 function driverSeatedPose(spin) {
   const D = carDriver;
@@ -718,10 +718,10 @@ function driverSeatedPose(spin) {
       const dS = v3sub(S, arm.S0);                                // shoulder lean (zero within plain reach)
       const Rup = rvFromTo(v3sub(arm.E0, arm.S0), v3sub(E, S));   // upper arm swings about the leaned shoulder
       const W1 = v3add(S, mRot(v3sub(arm.W0, arm.S0), Rup));      // wrist after lean + Rup
-      const Rfore = rvFromTo(v3sub(W1, E), v3sub(W, E));          // forearm swings about E â†’ wrist lands ON the grip
+      const Rfore = rvFromTo(v3sub(W1, E), v3sub(W, E));          // forearm swings about E → wrist lands ON the grip
       // the HAND is welded to the WHEEL, not swung with the arm: its orientation is
       // the authored grip orbited about the wheel axis, exactly like the wheel mesh.
-      // (Stacking Rup+Rfore+roll on it â€” the old way â€” twisted the wrist goofily at
+      // (Stacking Rup+Rfore+roll on it — the old way — twisted the wrist goofily at
       // crossed-over angles.) The arm swings to meet the wrist; the wrist flex is
       // whatever connects them, which is what a real wrist does.
       const handSet = arm.handSub ? new Set(arm.handSub) : null;
@@ -733,19 +733,19 @@ function driverSeatedPose(spin) {
       for (const b of arm.foreSub) { if (handSet && handSet.has(b)) continue; world[b] = rvRotAbout(world[b], Rfore, E); }
       /* WRIST TWIST GOES IN THE FOREARM, not the wrist joint.
        * The hand is welded to the rim (below), so it carries the full wheel rotation. The forearm,
-       * placed by IK, only knows where the elbow and wrist ARE â€” not how the hand is rolled. The
+       * placed by IK, only knows where the elbow and wrist ARE — not how the hand is rolled. The
        * difference has to appear somewhere, and with nothing else absorbing it, it shows up as a
-       * bent wrist on the hand travelling DOWN the rim (turn left â†’ left hand at the bottom â†’ left
+       * bent wrist on the hand travelling DOWN the rim (turn left → left hand at the bottom → left
        * wrist folds, and mirrored on a right turn).
        * A real arm does this with pronation: the radius rotates about the forearm's own axis, which
        * moves neither the elbow nor the wrist, so it is free for us too. Roll the forearm by the
        * part of the wheel's rotation that lies ALONG that axis and the wrist comes back straight. */
       if (arm.foreSub && WRIST_FOLLOW > 0) {
-        const u = v3nrm(v3sub(W, E));                       // forearm axis, elbow â†’ wrist
+        const u = v3nrm(v3sub(W, E));                       // forearm axis, elbow → wrist
         const twist = ang * v3dot(ax, u) * WRIST_FOLLOW;    // the wheel's spin resolved onto that axis
         if (Math.abs(twist) > 1e-4) {
           // rvRotAbout wants a 4x4 ROTATION MATRIX (same convention rvFromTo returns), not an
-          // axis-angle 3-vector â€” handing it one silently reads undefined elements, fills the
+          // axis-angle 3-vector — handing it one silently reads undefined elements, fills the
           // matrix with NaN, and the arm disappears rather than erroring.
           const mkTw = t => {
             const cw = Math.cos(t), sw = Math.sin(t), Cw = 1 - cw;

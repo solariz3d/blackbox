@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>BLACKBOX â€” AC replay telemetry, in 3D</title>
+<title>BLACKBOX — AC replay telemetry, in 3D</title>
 <style>
   :root {
     --bg: #0A0D13;
@@ -334,7 +334,7 @@
 </head>
 <body>
 <header>
-  <button class="ghostbtn" id="hdrHome" title="back to your tracks">âŒ‚ tracks</button>
+  <button class="ghostbtn" id="hdrHome" title="back to your tracks">⌂ tracks</button>
   <div class="logo">BLACK<span>BOX</span></div>
   <div class="fileinfo" id="fileinfo">no file loaded</div>
   <div class="spacer"></div>
@@ -344,23 +344,23 @@
   <button id="btnFollow">follow car</button>
   <button id="btnCar" class="on">car model</button>
   <button id="btnLine" class="on">line</button>
-  <span id="timeCtl" title="Time of day" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.85"><span id="timeIcon">ðŸŒ™</span><input id="timeSlider" type="range" min="0" max="1439" value="60" style="width:92px;vertical-align:middle"><span id="timeLabel" style="min-width:38px">01:00</span></span>
+  <span id="timeCtl" title="Time of day" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.85"><span id="timeIcon">🌙</span><input id="timeSlider" type="range" min="0" max="1439" value="60" style="width:92px;vertical-align:middle"><span id="timeLabel" style="min-width:38px">01:00</span></span>
   <button id="btnShadow" class="on">shadows</button>
-  <button id="btnTyres" class="on" title="skid marks + smoke â€” click to cycle: lap Â· keep Â· off">tyres Â· lap</button>
-  <span id="volCtl" title="Volume" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85"><span id="volIcon" title="mute / unmute" style="cursor:pointer">ðŸ”Š</span><input id="volSlider" type="range" min="0" max="100" value="100" style="width:78px;vertical-align:middle"></span>
+  <button id="btnTyres" class="on" title="skid marks + smoke — click to cycle: lap · keep · off">tyres · lap</button>
+  <span id="volCtl" title="Volume" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85"><span id="volIcon" title="mute / unmute" style="cursor:pointer">🔊</span><input id="volSlider" type="range" min="0" max="100" value="100" style="width:78px;vertical-align:middle"></span>
   <button id="btnLap" class="on">lap only</button>
   <button id="btnLapCmp" title="overlay every other timed lap's line, coloured by speed difference at the same point on track">compare laps</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
-    <option value="1" selected>1Ã—</option>
-    <option value="6">6Ã—</option>
-    <option value="24">24Ã—</option>
-    <option value="60">60Ã—</option>
+    <option value="1" selected>1×</option>
+    <option value="6">6×</option>
+    <option value="24">24×</option>
+    <option value="60">60×</option>
   </select>
-  <button id="btnOpen">open replayâ€¦</button>
-  <button id="btnTrack">load track kn5â€¦</button>
-  <button id="btnTracksDir" title="point at ...\assettocorsa\content\tracks once; replays then auto-load their track">tracks folderâ€¦</button>
-  <button id="btnFull" title="windowed fullscreen (F11)">â›¶ full</button>
+  <button id="btnOpen">open replay…</button>
+  <button id="btnTrack">load track kn5…</button>
+  <button id="btnTracksDir" title="point at ...\assettocorsa\content\tracks once; replays then auto-load their track">tracks folder…</button>
+  <button id="btnFull" title="windowed fullscreen (F11)">⛶ full</button>
 </header>
 
 <div id="stage">
@@ -369,9 +369,9 @@
     <h1>BLACK<span>BOX</span></h1>
     <p>Drop an Assetto Corsa <span class="mono">.acreplay</span> file anywhere in this window.
     The replay is the black box: position, speed, G, lap times, and the road surface itself,
-    read straight out of the bytes â€” no game, no telemetry app.</p>
-    <p class="mono" style="opacity:.8">drag to orbit Â· wheel to zoom Â· right-drag to pan</p>
-    <p class="mono" style="opacity:.8" id="dropHint">optional: drop the track's .kn5 too (content\tracks\â€¦) to see the real road under your line</p>
+    read straight out of the bytes — no game, no telemetry app.</p>
+    <p class="mono" style="opacity:.8">drag to orbit · wheel to zoom · right-drag to pan</p>
+    <p class="mono" style="opacity:.8" id="dropHint">optional: drop the track's .kn5 too (content\tracks\…) to see the real road under your line</p>
     <button id="btnOpen2">choose file</button>
     <div id="replaylist" class="hidden"></div>
     <p class="mono" id="droperr" style="color:var(--accent)"></p>
@@ -380,9 +380,9 @@
     <div id="dash">
       <div id="tach"><div id="tachfill"></div></div>
       <div id="dashmain">
-        <div id="dgear">â€“</div>
+        <div id="dgear">–</div>
         <div id="dspeedwrap"><span id="dspeed">0</span><span id="dspeedu">km/h</span></div>
-        <div id="dboostwrap"><span class="dlbl">BOOST</span><span id="dboost">â€“</span></div>
+        <div id="dboostwrap"><span class="dlbl">BOOST</span><span id="dboost">–</span></div>
       </div>
       <div id="pedals">
         <div class="pbar"><span class="dlbl">THR</span><div class="pbartrack"><div id="thrfill" class="pfill thr"></div></div></div>
@@ -392,10 +392,10 @@
       <div id="dstats"></div>
     </div>
     <div class="chip" id="chipLaps"></div>
-    <div class="chip" id="chipTrack" style="color:var(--accent)">NO TRACK LOADED â€” the ribbon is your driven line, not the road. Click "load track kn5â€¦" to render the real track.</div>
+    <div class="chip" id="chipTrack" style="color:var(--accent)">NO TRACK LOADED — the ribbon is your driven line, not the road. Click "load track kn5…" to render the real track.</div>
     <div class="chip hidden" id="chipBridge" style="color:var(--accent)"></div>
   </div>
-  <div id="help" class="hidden">drag look Â· WASD fly Â· Shift/Ctrl up/down Â· Space pause Â· wheel zoom Â· <span id="audioind" style="opacity:.5">M sound</span></div>
+  <div id="help" class="hidden">drag look · WASD fly · Shift/Ctrl up/down · Space pause · wheel zoom · <span id="audioind" style="opacity:.5">M sound</span></div>
   <div id="transport" class="hidden">
     <canvas id="scrub" height="34" aria-label="Timeline scrubber"></canvas>
     <div id="timelabel"></div>
@@ -406,7 +406,7 @@
 <input type="file" id="trackpick" accept=".kn5" class="hidden">
 <input type="file" id="lapcmppick" accept=".acreplay" class="hidden">
 
-<!-- intro: clean title card â€” wordmark + a speed-line draw, on a warm sound motif -->
+<!-- intro: clean title card — wordmark + a speed-line draw, on a warm sound motif -->
 <div id="intro">
   <div id="introwrap">
     <div id="introword">BLACK<span>BOX</span></div>
@@ -422,18 +422,18 @@
     <div class="tabs"><button class="tab on">Tracks</button></div>
     <div style="flex:1"></div>
     <div class="ovsub" id="gallerysub"></div>
-    <button class="ghostbtn" id="btnSettings">âš™ settings</button>
+    <button class="ghostbtn" id="btnSettings">⚙ settings</button>
   </div>
   <div id="trackview">
     <div id="tvbg"></div>
-    <button class="navarrow" id="tvPrev" aria-label="previous track">â€¹</button>
+    <button class="navarrow" id="tvPrev" aria-label="previous track">‹</button>
     <div id="tvstage">
       <div class="tvname" id="tvname"></div>
       <div class="tvrow">
         <div id="tvthumb"></div>
         <div id="tvmapwrap">
           <canvas id="tvmap" width="720" height="720"></canvas>
-          <div class="maplabel">layout Â· generated from track geometry</div>
+          <div class="maplabel">layout · generated from track geometry</div>
         </div>
       </div>
       <div class="tvfoot">
@@ -442,7 +442,7 @@
         <div class="tvcount" id="tvcount"></div>
       </div>
     </div>
-    <button class="navarrow" id="tvNext" aria-label="next track">â€º</button>
+    <button class="navarrow" id="tvNext" aria-label="next track">›</button>
   </div>
 </div>
 
@@ -452,8 +452,8 @@
     <div class="setrow">
       <div class="setlabel">Units</div>
       <div class="segbtns" id="unitToggle">
-        <button class="seg" data-u="metric">Metric Â· km, km/h</button>
-        <button class="seg" data-u="imperial">Imperial Â· mi, mph</button>
+        <button class="seg" data-u="metric">Metric · km, km/h</button>
+        <button class="seg" data-u="imperial">Imperial · mi, mph</button>
       </div>
     </div>
   </div>
@@ -461,13 +461,13 @@
 
 <div id="tracklist" class="overlay hidden">
   <div class="ovbar">
-    <button class="ghostbtn" id="tlback">â† tracks</button>
+    <button class="ghostbtn" id="tlback">← tracks</button>
     <div class="ovsub" id="tltitle"></div>
   </div>
   <div id="tlscroll">
     <div id="tldetail">
       <div id="tlmapwrap"><canvas id="tlmap" width="700" height="420"></canvas>
-        <div class="maplabel">layout â€” generated from track geometry</div></div>
+        <div class="maplabel">layout — generated from track geometry</div></div>
       <div id="tlinfo"></div>
     </div>
     <div id="tlrows"></div>
@@ -490,7 +490,7 @@
 "use strict";
 /* ===================== state ===================== */
 let replay = null, ex = null, stats = null;
-let carSteerRef = 0;   // 98th-pct |steer| of the current run (steerRefCalib) â€” the linear wheel scale's anchor
+let carSteerRef = 0;   // 98th-pct |steer| of the current run (steerRefCalib) — the linear wheel scale's anchor
 let playing = true, rate = 1, tCur = 0;
 let audioAutoStarted = false;   // engine sound spawns on with the first replay
 // webview autoplay lock: any user gesture resumes a suspended AudioContext
@@ -499,7 +499,7 @@ let colorMode = "speed";
 let lapOnly = true;
 // Lap comparison: overlay every other timed lap's driven line on the reference lap, each
 // coloured by how much FASTER or SLOWER it was at that point on track. Distance-aligned,
-// not time-aligned â€” two laps on a common clock stop describing the same corner after the
+// not time-aligned — two laps on a common clock stop describing the same corner after the
 // first one you took differently, which is the whole reason a delta bar exists.
 let lapCompare = false;
 let lapRefIndex = null;   // null = the fastest lap; the reference every overlay is measured against
@@ -524,29 +524,29 @@ function frameRange() {
 
 const bufs = { ribbon: null, ribbonN: 0, line: null, lineN: 0, grid: null, gridN: 0, cursor: gl.createBuffer(),
                trackPos: null, trackIdx: null, trackIdxN: 0 };
-// extUint / extS3TC â†’ glcore.js
+// extUint / extS3TC → glcore.js
 let edgeIndex = null;   // RoadEdge index once a kn5 is loaded
 let worldColl = null;   // full-world collider grid for the drone follow-cam (coarse cells)
 let smokeColl = null;   // fine-celled collider for per-frame smoke-vs-track collision (many cheap queries)
-let trackAABB = null;   // track world bounds { cx,cy,cz, radius } â€” sizes the static shadow bake
+let trackAABB = null;   // track world bounds { cx,cy,cz, radius } — sizes the static shadow bake
 let sceneGroups = null; // textured visual scene draw batches
 const windPrev = { t: 0, p: [0, 0, 0], kph: 0 };   // camera airspeed for the listener-local wind
 
-// second program (VST/FST textured+lit scene) + progT + tLoc â†’ glcore.js
-// IDENT4 â†’ mathutil.js
+// second program (VST/FST textured+lit scene) + progT + tLoc → glcore.js
+// IDENT4 → mathutil.js
 let carGroups = null;   // uploaded car model mesh groups (LOD0)
-let carGlass = null;    // windscreen glass groups â†’ drawn with the reflective progGlass pass
+let carGlass = null;    // windscreen glass groups → drawn with the reflective progGlass pass
 let carLights = null;   // { head:[[x,y,z]...], tail:[...] } emitter points from the model housings
-let carNozzle = null;   // turbine nozzle centroid (model space) â€” plume + backfire emit here
+let carNozzle = null;   // turbine nozzle centroid (model space) — plume + backfire emit here
 let carWheels = null;   // steerable wheels {corner, pivot, front, radius, rollGroups, staticGroups}
 let carSteerWheel = null; // in-cockpit steering wheel { pivot, ax, groups }
-let STEER_WHEEL_RATIO = 6.0;  // cockpit wheel turns this Ã— the road-wheel angle â€” sets how LIVELY the wheel is early in a corner
-let STEER_WHEEL_MAX = 2.1;    // rad (~120Â°): condensed high-sensitivity zone (formula-style) â€” the wheel represents the car's whole steer range inside this; raise toward the arms' calibrated lock for more arm-crossing, lower for a tighter zone
+let STEER_WHEEL_RATIO = 6.0;  // cockpit wheel turns this × the road-wheel angle — sets how LIVELY the wheel is early in a corner
+let STEER_WHEEL_MAX = 2.1;    // rad (~120°): condensed high-sensitivity zone (formula-style) — the wheel represents the car's whole steer range inside this; raise toward the arms' calibrated lock for more arm-crossing, lower for a tighter zone
 let STEER_WHEEL_AXIS = 2;     // which node axis it spins about (0=X,1=Y,2=Z); flip if it tumbles
 let STEER_WHEEL_SIGN = -1;    // flip if it turns the wrong way (driver was counter-steering vs the wheels)
 let WHEEL_ROLL_SIGN = 1;      // road-wheel roll-spin direction (flip if wheels spin backward)
 // procedural suspension: each corner travels vertically vs the body under load + bumps
-// (no suspension channel in the replay â€” inferred from the G-forces we do have).
+// (no suspension channel in the replay — inferred from the G-forces we do have).
 let SUSP_ON = true;
 let SUSP_LONG = 0.020;   // dive/squat travel per g of braking/accel (m)
 let SUSP_LAT = 0.018;    // roll travel per g of cornering (m)
@@ -557,36 +557,36 @@ let SUSP_LAT_SIGN = 1;   // flip if the car rolls the wrong way in corners
 let BRAKE_DEADZONE_G = 0.4;  // decel below this = coasting/lift-off, not braking
 let BRAKE_RANGE_G = 0.8;     // decel above deadzone+range = full brake light
 let BRAKE_SCRUB = 0.18;      // discount cornering scrub: decel explained by lateral g isn't braking
-let carDriver = null;   // { bodyGroups, headGroups } â€” driver model, procedurally posed
+let carDriver = null;   // { bodyGroups, headGroups } — driver model, procedurally posed
 let carSteerAngle = 0;  // front-wheel steer this frame (radians), set by carModelMatrix
 // procedural driver rig: the body is a rigid seated pose (the car's own
-// driver_base_pos.knh) and only the head turns into corners â€” smoothed so it
+// driver_base_pos.knh) and only the head turns into corners — smoothed so it
 // settles slowly. Tunables up top for easy feel work.
 /* The cockpit shot: the eye sits BEHIND the steering wheel, at about the driver's eyeline, and
- * looks FORWARD down the road â€” so the rim, the hands and the arms fill the lower frame with the
+ * looks FORWARD down the road — so the rim, the hands and the arms fill the lower frame with the
  * track running away ahead. Aiming back at the wheel instead gives a rear-facing view, which is
  * disorienting when the chase cam you zoomed in from was looking forward.
  * Offsets are relative to the wheel's own pivot in the car's basis (m); BACK is toward the driver.
- * The _DEEP pair is the final squeeze of the zoom â€” tighter onto the hands. */
+ * The _DEEP pair is the final squeeze of the zoom — tighter onto the hands. */
 let COCKPIT_FWD = 0.34, COCKPIT_UP = 0.26, COCKPIT_SIDE = 0.60, COCKPIT_FOV = 1.35;
 let COCKPIT_FWD_DEEP = 0.22, COCKPIT_UP_DEEP = 0.20, COCKPIT_SIDE_DEEP = 0.44, COCKPIT_FOV_DEEP = 1.45;
-let COCKPIT_ORBIT_R = 0.52, COCKPIT_ORBIT_UP = 0.05;   // max zoom: drag orbits a sphere of this radius about the wheel, full 360Â°
+let COCKPIT_ORBIT_R = 0.52, COCKPIT_ORBIT_UP = 0.05;   // max zoom: drag orbits a sphere of this radius about the wheel, full 360°
 let COCKPIT_AIM_UP = 10 * Math.PI / 180;   // at max zoom the aim tilts up by this much off the rim
-let HEAD_HIDE_DIST = 0.34;   // hide the driver head inside this radius of the neck pivot (m) â€” a helmet surrounds the lens at that range
-let DRIVER_CLEAR = 0.26;     // camera keep-out radius around the chestâ†’wheel capsule (torso, shoulders, arms)
-let DRIVER_CLEAR_FROM = 0.35;   // where the keep-out starts along neckâ†’wheel: 0 = at the head, 1 = at the wheel
-let DRIVER_HEAD_YAW_MAX = 0.85;   // neck isn't a swivel â€” cap the head turn (~49Â°)
+let HEAD_HIDE_DIST = 0.34;   // hide the driver head inside this radius of the neck pivot (m) — a helmet surrounds the lens at that range
+let DRIVER_CLEAR = 0.26;     // camera keep-out radius around the chest→wheel capsule (torso, shoulders, arms)
+let DRIVER_CLEAR_FROM = 0.35;   // where the keep-out starts along neck→wheel: 0 = at the head, 1 = at the wheel
+let DRIVER_HEAD_YAW_MAX = 0.85;   // neck isn't a swivel — cap the head turn (~49°)
 let DRIVER_HEAD_SIGN = 1;         // flip if the head turns the wrong way
 // hands stay GLUED to the wheel's grip points at any steer: one spin drives the
 // wheel AND the hands, run through a smooth saturating lock (gripSat) calibrated
 // at load to what BOTH arms can physically reach (gripLockCalib). Past plain arm
-// reach the shoulder leans toward the grip (armSolve) â€” like a real driver in a
-// crossed-over turn â€” so the hand lands ON the grip instead of floating short.
-let DRIVER_SHOULDER_REACH = 0.15; // max shoulder lean toward the grip (m) â€” buys crossed-over reach past straight-arm range
-let DRIVER_GRIP_SNAP = 1.0;       // 0..1: how fully the grips snap toward the wheel's actual material â€” drop for a softer pull
-let DRIVER_PALM_OFFSET = -0.020;  // m: SIGNED grip-depth trim along the cupâ†’wrist axis â€” positive backs the hands off the bar, negative seats hands+fingers FORWARD past it (eyes-on tuned: âˆ’20 mm â‰ˆ 1 inch forward of the hollow+bias anchor)
-let DRIVER_GRIP_BIAS = 0.012;     // m: seats the bar DEEPER into the finger curl (toward the tips) â€” the hand is sculpted for a fat rim, so on a thin bar the spare finger length must poke somewhere; this sends it to the hidden palm side instead of out the wheel's face
-// how much of the wheel's roll the FOREARM absorbs as pronation (0 = none, the wrist folds; 1 = all â€”
+// reach the shoulder leans toward the grip (armSolve) — like a real driver in a
+// crossed-over turn — so the hand lands ON the grip instead of floating short.
+let DRIVER_SHOULDER_REACH = 0.15; // max shoulder lean toward the grip (m) — buys crossed-over reach past straight-arm range
+let DRIVER_GRIP_SNAP = 1.0;       // 0..1: how fully the grips snap toward the wheel's actual material — drop for a softer pull
+let DRIVER_PALM_OFFSET = -0.020;  // m: SIGNED grip-depth trim along the cup→wrist axis — positive backs the hands off the bar, negative seats hands+fingers FORWARD past it (eyes-on tuned: −20 mm ≈ 1 inch forward of the hollow+bias anchor)
+let DRIVER_GRIP_BIAS = 0.012;     // m: seats the bar DEEPER into the finger curl (toward the tips) — the hand is sculpted for a fat rim, so on a thin bar the spare finger length must poke somewhere; this sends it to the hidden palm side instead of out the wheel's face
+// how much of the wheel's roll the FOREARM absorbs as pronation (0 = none, the wrist folds; 1 = all —
 // anatomically honest). Attempt 2 applied it in one lump at the elbow and looked worse (crease shear);
 // attempt 3 ramps it down a twist-bone rig: proximal forearm turns WRIST_RAMP of it, RIG_ForeArm_END
 // (which carries MORE skin than the forearm bone, 349 vs 242) turns all of it, the skin blends the
@@ -595,23 +595,23 @@ let WRIST_FOLLOW = 1.0;
 let WRIST_RAMP = 0.3;             // the proximal forearm's share of the twist (the END twist bone always gets 100%)
 // attempt 4: the BEND, which is a different quantity and the one the eye complains about. FOLLOW
 // absorbs rotation ABOUT the forearm axis and provably cannot change the angle BETWEEN the forearm
-// and the hand (test_wristbend.js: 0.00Â° at every wheel angle). That angle's only free variable is
+// and the hand (test_wristbend.js: 0.00° at every wheel angle). That angle's only free variable is
 // the elbow, so the IK pole is aimed at the elbow position that puts the forearm in line with the
 // hand. 0 = the old bind-pose pole; 1 = fully hand-led. Lower it if the elbow silhouette reads odd.
 let WRIST_POLE = 1.0;
-let DRIVER_GRIP_UP = 0.0;         // base grip-height offset (rad): 0 = the rig's natural symmetric grip (rim-orbit coupling made raising it lopsided â€” tune eyes-on)
+let DRIVER_GRIP_UP = 0.0;         // base grip-height offset (rad): 0 = the rig's natural symmetric grip (rim-orbit coupling made raising it lopsided — tune eyes-on)
 let DRIVER_GRIP_SPIN_SIGN = 1;    // flip if the hands orbit opposite the wheel
 const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
-// vector + matrix helpers (v3*, mXfPt, mRot, mT, rv*, ik2bone, rotP, scaleMat) â†’ mathutil.js
+// vector + matrix helpers (v3*, mXfPt, mRot, mT, rv*, ik2bone, rotP, scaleMat) → mathutil.js
 let showCar = true;     // render the car model on the cursor
 let showLine = true;    // render the driven-line ribbon
 let carLift = -0.34;    // body height (m). Wheels now sit at their recorded positions (data-driven),
-                        // so this only sets the BODY â€” aligned to the real wheel mounts (~0.395 âˆ’ 0.05).
+                        // so this only sets the BODY — aligned to the real wheel mounts (~0.395 − 0.05).
 let carFlip = -1;       // forward-axis sign (T-180 nose is +Z, so flip)
 let carSlipExag = 1.0;  // 1 = EXACT recorded attitude; >1 amplifies the slip toward the film crab
 let showThruster = true;
 
-// thruster flame â€” round additive blue point-sprites, perspective-sized
+// thruster flame — round additive blue point-sprites, perspective-sized
 const progThr = gl.createProgram();
 gl.attachShader(progThr, shader(gl.VERTEX_SHADER,
   "attribute vec3 aPos; attribute float aSize; attribute float aBright;" +
@@ -620,7 +620,7 @@ gl.attachShader(progThr, shader(gl.VERTEX_SHADER,
 gl.attachShader(progThr, shader(gl.FRAGMENT_SHADER,
   "precision mediump float; varying float vB;" +
   "void main(){ float r = length(gl_PointCoord-0.5)*2.0; float a = pow(smoothstep(1.0,0.0,r),1.8)*vB;" +
-  " vec3 col = mix(vec3(0.14,0.46,1.0), vec3(0.92,0.97,1.0), min(a,1.0));" +   // deep blue edge â†’ white-hot core
+  " vec3 col = mix(vec3(0.14,0.46,1.0), vec3(0.92,0.97,1.0), min(a,1.0));" +   // deep blue edge → white-hot core
   " gl_FragColor = vec4(col*a, a); }"));
 gl.linkProgram(progThr);
 const thrLoc = {
@@ -638,7 +638,7 @@ function turbineIntensity(i, src) {
   const N = E.N;
   if (i < 1 || i >= N - 1 || E.gap[i]) return 0;
   /* BEST: the turbine's own state, as the mod itself reads it. The afterburner is a BUTTON
-   * (CSP `scriptControllerInputs[12]`/`[17]`) and the plume is real thrust (`[9]`) â€” neither is
+   * (CSP `scriptControllerInputs[12]`/`[17]`) and the plume is real thrust (`[9]`) — neither is
    * visible in AC's shared memory, so this only exists in replays recorded with the BLACKBOX CSP
    * bridge installed (schema 6). When it's there, the flame fires when the driver fired it. */
   if (E.tel && E.tel.has.turbine) {
@@ -648,8 +648,8 @@ function turbineIntensity(i, src) {
     return Math.min(1, Math.max(thrust, ab * (0.85 + 0.15 * thrust)));
   }
   // FALLBACK when the replay predates the bridge: infer the plume from turbo boost
-  // pressure (1.0 idle â†’ ~1.94 at load), throttle-gated so a lift collapses it. This is a
-  // stand-in for the button, not a reading of it â€” it cannot know when you pressed it.
+  // pressure (1.0 idle → ~1.94 at load), throttle-gated so a lift collapses it. This is a
+  // stand-in for the button, not a reading of it — it cannot know when you pressed it.
   if (E.tel && E.tel.has.boost) {
     const boostN = Math.max(0, Math.min(1, (E.tel.boost[i] - 1.05) / 0.85));
     const thr = Math.max(0, Math.min(1, E.tel.gas[i]));
@@ -669,28 +669,28 @@ function turbineIntensity(i, src) {
     let d = Math.abs(hx * vx + hy * vy + hz * vz);
     slip = Math.acos(Math.max(0, Math.min(1, d))); // radians
   }
-  const slipN = Math.min(1, slip / 0.35);           // ~20Â° = full
+  const slipN = Math.min(1, slip / 0.35);           // ~20° = full
   // hard acceleration (boost) from speed rise
   const s0 = ex.speed[i], sm = ex.speed[Math.max(0, i - 4)];
   const acc = isFinite(s0) && isFinite(sm) ? Math.max(0, (s0 - sm)) / 40 : 0;
   return Math.min(1, slipN * 0.85 + Math.min(1, acc) * 0.5);
 }
 
-// blue thruster plume from the Mach 6's rear, perspective-sized point sprites â€” a straight
+// blue thruster plume from the Mach 6's rear, perspective-sized point sprites — a straight
 // jet out the nozzle. `lum` brightens it (cranked at night).
-// JET AFTERBURNER â€” a continuous blue flame cone out the turbine nozzle: a thin white-hot core with
+// JET AFTERBURNER — a continuous blue flame cone out the turbine nozzle: a thin white-hot core with
 // shock diamonds (the periodic bright spots real afterburners show), wrapped in a soft blue glow, with
 // turbulent wobble that grows toward the tip and a plume that stretches under boost. Additive, blue.
 function drawThruster(m, inten, mvp, lum) {
   lum = lum || 1;
   const eye = camEye();
   const nz = carNozzle || [0, 0.49, -2.1];                    // emit from the turbine nozzle geometry
-  const lx = nz[0], ly = nz[1], lz = nz[2] + 0.02;            // sit at the nozzle mouth (barely recessed) â€” a deep recess + fat sprites washed the housing
+  const lx = nz[0], ly = nz[1], lz = nz[2] + 0.02;            // sit at the nozzle mouth (barely recessed) — a deep recess + fat sprites washed the housing
   const ox = m[0] * lx + m[4] * ly + m[8] * lz + m[12];
   const oy = m[1] * lx + m[5] * ly + m[9] * lz + m[13];
   const oz = m[2] * lx + m[6] * ly + m[10] * lz + m[14];
-  const bx = -m[8], by = -m[9], bz = -m[10];                  // backward = âˆ’nose (plume axis)
-  const rx = m[0], ry = m[1], rz = m[2], ux = m[4], uy = m[5], uz = m[6];   // car right / up â†’ lateral turbulence plane
+  const bx = -m[8], by = -m[9], bz = -m[10];                  // backward = −nose (plume axis)
+  const rx = m[0], ry = m[1], rz = m[2], ux = m[4], uy = m[5], uz = m[6];   // car right / up → lateral turbulence plane
   const th = Math.tan(0.9 / 2), Hpx = cv.height;
   const t0 = performance.now();
   const flick = 0.86 + 0.14 * Math.sin(t0 * 0.05) + 0.06 * Math.sin(t0 * 0.017);  // combustion flicker
@@ -710,16 +710,16 @@ function drawThruster(m, inten, mvp, lum) {
     arr[idx * 5 + 4] = b;
     idx++;
   };
-  // inner core â€” thin, white-hot, dense; brightness pulses at shock diamonds and tapers to the tip
+  // inner core — thin, white-hot, dense; brightness pulses at shock diamonds and tapers to the tip
   for (let k = 0; k < KC; k++) {
     const t = k / (KC - 1);
     const shock = 1 + 0.55 * Math.pow(Math.max(0, Math.sin(t * 13.0 - t0 * 0.02)), 6);   // shock diamonds drifting aft
-    // belly profile: NARROW at the mouth (so it doesn't wash the housing) â†’ fattest just aft â†’ taper
+    // belly profile: NARROW at the mouth (so it doesn't wash the housing) → fattest just aft → taper
     const r = (0.11 * (0.3 + 0.7 * Math.min(1, t * 4.5)) * (1 - t * 0.55) + 0.010) * (0.85 + 0.35 * inten);
     const b = (1 - Math.pow(t, 1.25)) * inten * flick * lum * shock * 1.15;
     push(t, r, b, (0.014 + 0.09 * t * t) * (0.6 + 0.4 * inten), k * 0.7);
   }
-  // outer glow â€” wider, softer blue cone enveloping the core
+  // outer glow — wider, softer blue cone enveloping the core
   for (let k = 0; k < KG; k++) {
     const t = k / (KG - 1);
     const r = (0.2 * (0.32 + 0.68 * Math.min(1, t * 3.8)) * (1 - t * 0.45) + 0.018) * (0.75 + 0.45 * inten);   // wide envelope, but narrow at the mouth so it doesn't spill onto the housing
@@ -742,7 +742,7 @@ function drawThruster(m, inten, mvp, lum) {
 // decaying over ~0.16 s. Deterministic (scrub-safe). 0 when not near a shift.
 // Real backfire trigger frames from telemetry: gear changes (the throttle-cut pop),
 // throttle lifts at high rpm (overrun crackle), and rev-limiter onset (limiter bang).
-// Far truer than the kinematic upshift guess â€” exact timing, and it catches downshifts
+// Far truer than the kinematic upshift guess — exact timing, and it catches downshifts
 // and lift-off pops the kinematic version never saw. Returns sorted frames, or null.
 function detectTelemetryBackfires(ex) {
   const T = ex.tel; if (!T) return null;
@@ -768,17 +768,17 @@ function backfireAt(fp, src) {
   const E = src || ex;
   const sh = E.shifts; if (!sh || !sh.length) return 0;
   const decay = Math.max(2, Math.round(0.16 / E.dt));
-  let lo = 0, hi = sh.length - 1, best = -1;   // largest shift frame â‰¤ fp
+  let lo = 0, hi = sh.length - 1, best = -1;   // largest shift frame ≤ fp
   while (lo <= hi) { const m = (lo + hi) >> 1; if (sh[m] <= fp) { best = m; lo = m + 1; } else hi = m - 1; }
   if (best < 0) return 0;
   const d = fp - sh[best];
   if (d < 0 || d > decay) return 0;
   return Math.pow(1 - d / decay, 1.6);   // sharp attack at the shift, quick decay
 }
-// exhaust backfire: bright orange pops on an upshift â€” from the TWO DUAL EXHAUSTS that flank
+// exhaust backfire: bright orange pops on an upshift — from the TWO DUAL EXHAUSTS that flank
 // the turbine (NOT the turbine itself), brighter at night.
-// dual-exhaust openings relative to the turbine nozzle â€” measured from the Mach 6 kn5 geometry:
-// exhaust pipes flank the turbine at xâ‰ˆÂ±0.30, tips at zâ‰ˆ-2.4 / yâ‰ˆ0.48 (nozzle â‰ˆ [0,0.50,-2.24]).
+// dual-exhaust openings relative to the turbine nozzle — measured from the Mach 6 kn5 geometry:
+// exhaust pipes flank the turbine at x≈±0.30, tips at z≈-2.4 / y≈0.48 (nozzle ≈ [0,0.50,-2.24]).
 const EXH_X = 0.30, EXH_Y = -0.02, EXH_Z = -0.16;
 function drawBackfire(cm, mvp, th, inten, nightF) {
   const eye = camEye(), Hpx = cv.height;
@@ -801,12 +801,12 @@ function drawBackfire(cm, mvp, th, inten, nightF) {
   gl.enableVertexAttribArray(glowLoc.pos); gl.vertexAttribPointer(glowLoc.pos, 3, gl.FLOAT, false, 20, 0);
   gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
   gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
-  gl.uniform3f(glowLoc.color, 1.3 * HDR_EMIT, 0.55 * HDR_EMIT, 0.14 * HDR_EMIT);   // orange flame (HDR â†’ blooms)
+  gl.uniform3f(glowLoc.color, 1.3 * HDR_EMIT, 0.55 * HDR_EMIT, 0.14 * HDR_EMIT);   // orange flame (HDR → blooms)
   gl.drawArrays(gl.POINTS, 0, NB * 2);                         // two exhaust outlets
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
-// additive coloured glow sprites â€” the car's headlights (warm, wafting beam) and
+// additive coloured glow sprites — the car's headlights (warm, wafting beam) and
 // tail lights (red bleed). Colour is a per-batch uniform so one program does both.
 const progGlow = gl.createProgram();
 gl.attachShader(progGlow, shader(gl.VERTEX_SHADER,
@@ -832,7 +832,7 @@ function drawCarLights(cm, mvp, th, nightF, brakeF) {
   const eye = camEye(), Hpx = cv.height;
   const push = (arr, p, r, b) => { const dist = Math.hypot(p[0]-eye[0], p[1]-eye[1], p[2]-eye[2]) || 1;
     arr.push(p[0], p[1], p[2], Math.min(500, r * Hpx / (dist * th)), b); };
-  // warm headlamp glow â€” each of the 3 lamps per side gets a CRISP bulb; only the top
+  // warm headlamp glow — each of the 3 lamps per side gets a CRISP bulb; only the top
   // lamp keeps a soft halo, so the lower two don't leak light onto the body.
   const warm = [];
   { const hl = carLights.headLamps || [], sL = [], sR = [];
@@ -840,24 +840,24 @@ function drawCarLights(cm, mvp, th, nightF, brakeF) {
     for (const a of hl) (a[0] > 0 ? sL : sR).push(a);
     for (const arr of [sL, sR]) arr.slice().sort((p, q) => q[1] - p[1]).forEach((a, idx) => {
       const P = mXfPt(a, cm);
-      // how head-on the beam is to the camera â€” real headlights GLARE far brighter when you look into
+      // how head-on the beam is to the camera — real headlights GLARE far brighter when you look into
       // them, so the luminous halo swells when the beams point your way (bloom's gone, so draw the glow).
       let dx = eye[0] - P[0], dy = eye[1] - P[1], dz = eye[2] - P[2]; const dl = Math.hypot(dx, dy, dz) || 1;
       const facing = Math.max(0, (dx * fwd[0] + dy * fwd[1] + dz * fwd[2]) / dl);
       // fade the soft halos OUT with distance: far off, the sprites converge and stack additively into a
       // blown-out ball, so keep only the tight bulb at range (still reads as a distant headlight point).
-      const near = Math.max(0, Math.min(1, (42 - dl) / 30));                 // 1 within ~12m â†’ 0 by ~42m
+      const near = Math.max(0, Math.min(1, (42 - dl) / 30));                 // 1 within ~12m → 0 by ~42m
       push(warm, P, 0.05, (0.6 + 0.5 * facing) * nightF * (0.4 + 0.6 * near));       // crisp bulb (dimmer at range so the 3-lamp cluster doesn't stack hot)
-      push(warm, P, 0.13, (0.10 + 0.30 * facing) * nightF * near);                   // soft luminous halo â€” near only
-      if (idx === 0) push(warm, P, 0.26, (0.03 + 0.18 * facing * facing) * nightF * near);  // wide bloom â€” near + head-on only
+      push(warm, P, 0.13, (0.10 + 0.30 * facing) * nightF * near);                   // soft luminous halo — near only
+      if (idx === 0) push(warm, P, 0.26, (0.03 + 0.18 * facing * facing) * nightF * near);  // wide bloom — near + head-on only
     });
   }
-  // tail lights: red running glow â†’ wider/hotter flare under braking (3 lamps/side).
+  // tail lights: red running glow → wider/hotter flare under braking (3 lamps/side).
   // Keep the silhouette (sizes) but toned-down luminosity.
   const red = [], base = 0.4 + 0.85 * brakeF, spread = 1.0 + 0.25 * brakeF;   // MUCH brighter on braking, barely bigger
   for (const t of (carLights.tail || [])) { const T = mXfPt(t, cm);
     push(red, T, 0.08 * spread, base * nightF); push(red, T, 0.11 * spread, 0.42 * base * nightF); }
-  // red LED accents on the body â€” small crisp glows + a tight halo (bloom spreads them)
+  // red LED accents on the body — small crisp glows + a tight halo (bloom spreads them)
   for (const a of (carLights.accentR || [])) { const P = mXfPt(a, cm); push(red, P, 0.055, 0.9 * nightF); push(red, P, 0.09, 0.30 * nightF); }
   // white LED accents
   const white = [];
@@ -878,7 +878,7 @@ function drawCarLights(cm, mvp, th, nightF, brakeF) {
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
-// ELEGANT LENS FLARE â€” a screen-space additive glare for the headlamps at night: a tight core, a
+// ELEGANT LENS FLARE — a screen-space additive glare for the headlamps at night: a tight core, a
 // soft round glow, an anamorphic horizontal streak (the cinematic bit), and a faint vertical spike.
 // Only shows when the beams face the camera (front views / flybys), so it isn't a constant smear.
 const progFlare = gl.createProgram();
@@ -903,7 +903,7 @@ const flareLoc = {
 const flareBuf = gl.createBuffer();
 gl.bindBuffer(gl.ARRAY_BUFFER, flareBuf);
 gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);  // fullscreen tri
-// project a world point to NDC, and gauge how head-on the beam is to the camera â†’ flare intensity
+// project a world point to NDC, and gauge how head-on the beam is to the camera → flare intensity
 function drawLensFlare(cm, mvp, nightF) {
   if (!carLights || nightF < 0.02 || !carLights.head || carLights.head.length < 2) return;
   const eye = camEye();
@@ -921,8 +921,8 @@ function drawLensFlare(cm, mvp, nightF) {
     const facing = Math.max(0, (dx * fwd[0] + dy * fwd[1] + dz * fwd[2]) / dl);
     const edge = Math.max(0, 1 - Math.max(Math.abs(nx), Math.abs(ny)) * 0.7);   // ease out toward screen edges
     // the flare is screen-space (fixed NDC size), so without this a FAR car throws the same full-size
-    // glare ball as a near one â€” fade it hard with distance so it only blooms when the car is close.
-    const distFade = Math.max(0, Math.min(1, (60 - dl) / 45));                  // full within ~15m â†’ gone by ~60m
+    // glare ball as a near one — fade it hard with distance so it only blooms when the car is close.
+    const distFade = Math.max(0, Math.min(1, (60 - dl) / 45));                  // full within ~15m → gone by ~60m
     const inten = Math.pow(facing, 3.0) * nightF * (0.35 + 0.65 * edge) * distFade * 0.85;  // elegant = restrained
     if (inten < 0.015) continue;
     L[k] = [nx, ny, Math.min(inten, 1.1)];
@@ -974,7 +974,7 @@ function drawCarShadow(cm, mvp) {
   gl.depthMask(true); gl.disable(gl.BLEND);
 }
 
-// car/driver/wheel render + pose functions â†’ carrender.js (loaded before the main script)
+// car/driver/wheel render + pose functions → carrender.js (loaded before the main script)
 
 function makeFallbackTexture(rgb) {
   const t = gl.createTexture();
@@ -991,7 +991,7 @@ function uploadImageTexture(bitmap) {
   gl.bindTexture(gl.TEXTURE_2D, t);
   let src = bitmap;
   if (!isGL2 && (!isPOT(bitmap.width) || !isPOT(bitmap.height))) {
-    // WebGL1: repeat-wrap needs power-of-two â€” resample via canvas.
+    // WebGL1: repeat-wrap needs power-of-two — resample via canvas.
     // GL2 handles NPOT + REPEAT + mips natively, keeping full fidelity.
     const cw = 1 << Math.round(Math.log2(bitmap.width));
     const ch = 1 << Math.round(Math.log2(bitmap.height));
@@ -1011,25 +1011,25 @@ function uploadImageTexture(bitmap) {
 /* camera: orbit */
 const cam = { yaw: -0.7, pitch: 0.5, dist: 2500, target: [0, 0, 0] };
 /* follow-cam: a cinematographer, not a rigid boom. It lives in the car's own
- * local frame (right / up = road-normal / back = âˆ’heading, all from the recorded
+ * local frame (right / up = road-normal / back = −heading, all from the recorded
  * wheel attitude), so it stays locked through loops & spirals and never dips
  * through the road it's following. Speed opens it up on straights; curvature
  * tightens it and swings it into the corner. drag = orbit offset, wheel = zoom. */
 let FOLLOW_SWING = 1;   // sign of the into-corner swing (flip if it swings out)
-let FOLLOW_LOOKDOWN = 0.21;  // extra downward pitch (rad, ~12Â°) at full zoom â€” "look down with a neck"
+let FOLLOW_LOOKDOWN = 0.21;  // extra downward pitch (rad, ~12°) at full zoom — "look down with a neck"
 const follow = {
   on: false, yawOff: 0, distMul: 1, saved: null, prevTs: 0,
   rig: { ready: false, dist: 160, height: 60, side: 0, la: 30, up: [0, 1, 0], eye: null, look: null },
 };
-// clamped smoothstep â€” eased 0..1, so a blend starts and ends without a visible kink
+// clamped smoothstep — eased 0..1, so a blend starts and ends without a visible kink
 function smooth01(t) { const x = t < 0 ? 0 : t > 1 ? 1 : t; return x * x * (3 - 2 * x); }
 
-/* Keep the close camera out of the driver, in CAR MODEL SPACE â€” which is the only place this is
+/* Keep the close camera out of the driver, in CAR MODEL SPACE — which is the only place this is
  * simple, because the driver, the wheel and the cabin are all fixed there while the car flies
  * around the world. Two constraints, both cheap:
  *
  *   1. a CAPSULE from the head down to the wheel, radius DRIVER_CLEAR. That segment is the torso,
- *      shoulders and arms â€” everything the camera can bury itself in while orbiting the wheel. The
+ *      shoulders and arms — everything the camera can bury itself in while orbiting the wheel. The
  *      eye gets pushed radially out to the capsule's surface, so the arms stay visible rather than
  *      being hidden, which is the whole point of the shot.
  *   2. a CEILING on how far it may sit from the wheel, so pushing out of the driver cannot shove
@@ -1040,10 +1040,10 @@ function smooth01(t) { const x = t < 0 ? 0 : t > 1 ? 1 : t; return x * x * (3 - 
  * far bigger machine for the same result.
  */
 function cockpitClear(p, wheelC, neckPivot, maxR) {
-  /* The keep-out starts BELOW the head, not at it. Spanning the full headâ†’wheel line blocked the
+  /* The keep-out starts BELOW the head, not at it. Spanning the full head→wheel line blocked the
    * region the camera used to sit in and moved the shot; the head does not need protecting here
    * anyway, because it is hidden once the eye is inside HEAD_HIDE_DIST. What must stay clear is
-   * the chest, shoulders and arms â€” the part you want to keep SEEING rather than fly through. */
+   * the chest, shoulders and arms — the part you want to keep SEEING rather than fly through. */
   const B = wheelC;
   const A = [neckPivot[0] + (wheelC[0] - neckPivot[0]) * DRIVER_CLEAR_FROM,
              neckPivot[1] + (wheelC[1] - neckPivot[1]) * DRIVER_CLEAR_FROM,
@@ -1071,12 +1071,12 @@ function cockpitClear(p, wheelC, neckPivot, maxR) {
     out[0] = wheelC[0] + wx * s; out[1] = wheelC[1] + wy * s; out[2] = wheelC[2] + wz * s;
     return true;
   };
-  /* The two constraints genuinely conflict in some directions â€” behind the head there is NO point
+  /* The two constraints genuinely conflict in some directions — behind the head there is NO point
    * that is both clear of the driver and inside the cabin radius, so one has to win. Relaxing a
    * couple of times settles the easy cases, and the keep-out is applied LAST so the unsatisfiable
    * ones end up slightly outside the cabin rather than inside the driver's shoulder. Sitting a few
    * centimetres proud of the bodywork is invisible; sitting inside an arm is not.
-   * (Applying them in the other order silently re-buried the camera â€” the pull-in undid the push,
+   * (Applying them in the other order silently re-buried the camera — the pull-in undid the push,
    * landing 0.165 m from the capsule against a 0.30 m limit.) */
   for (let i = 0; i < 3; i++) { pushOut(); if (!pullIn()) break; }
   pushOut();
@@ -1093,7 +1093,7 @@ function camEye() {
   ];
 }
 // frame-rate-independent exponential approach factor for a given stiffness.
-// easeK â†’ mathutil.js
+// easeK → mathutil.js
 
 // ---- world collider: a coarse XZ grid over ALL solid track geometry (road,
 // terrain, walls, scenery) so the drone cam paths around anything that would
@@ -1110,11 +1110,11 @@ function buildWorldCollider(verts, tris, cellOverride, bigCapOverride) {
     if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
   }
   const spanX = Math.max(1, maxX - minX), spanZ = Math.max(1, maxZ - minZ);
-  // small cells â†’ few tris per cell â†’ cheap per-particle queries (the smoke collider passes
+  // small cells → few tris per cell → cheap per-particle queries (the smoke collider passes
   // an override; the camera collider uses the coarse default tuned for a few queries/frame).
   const cell = cellOverride || Math.max(6, Math.min(48, Math.max(spanX, spanZ) / 96));
   const nx = Math.max(1, Math.ceil(spanX / cell)), nz = Math.max(1, Math.ceil(spanZ / cell));
-  if (nx * nz > 8000000) return buildWorldCollider(verts, tris);   // guard: too many cells â†’ fall back to coarse
+  if (nx * nz > 8000000) return buildWorldCollider(verts, tris);   // guard: too many cells → fall back to coarse
   const cells = new Array(nx * nz);
   const bigTris = [];              // triangles too large to bucket sanely
   const BIGCAP = bigCapOverride || 48;   // max cells a triangle may occupy before it's an always-tested "big" tri
@@ -1134,7 +1134,7 @@ function buildWorldCollider(verts, tris, cellOverride, bigCapOverride) {
   }
   return { verts, tris, minX, minZ, cell, nx, nz, cells, bigTris, stamp: new Int32Array(nt), stampCur: 0, count: nt };
 }
-// nearest hit parameter t in (0,1] of segment p0â†’p1 vs the world, or -1 if clear.
+// nearest hit parameter t in (0,1] of segment p0→p1 vs the world, or -1 if clear.
 function collideSegment(C, p0, p1) {
   if (!C) return -1;
   const { verts, tris, minX, minZ, cell, nx, nz, cells, bigTris, stamp } = C;
@@ -1226,7 +1226,7 @@ function buildWorldColliderFromGroups(groups, cellOverride, bigCapOverride) {
 function followUpdate(fp, dt) {
   const P = ex.pos, NM = ex.nrm, N = ex.N;
   const i0 = Math.max(0, Math.min(N - 1, Math.floor(fp)));
-  if (ex.gap[i0]) return;                       // car absent this frame â€” hold
+  if (ex.gap[i0]) return;                       // car absent this frame — hold
   const i1 = Math.min(N - 1, i0 + 1);
   const f = ex.gap[i1] ? 0 : Math.max(0, Math.min(1, fp - i0));
   const lp = (A, o) => A[i0 * 3 + o] + (A[i1 * 3 + o] - A[i0 * 3 + o]) * f;
@@ -1234,29 +1234,29 @@ function followUpdate(fp, dt) {
   // up = road-surface normal
   let ux = lp(NM, 0), uy = lp(NM, 1), uz = lp(NM, 2);
   const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
-  // the wheel-plane normal can flip sign past ~90Â° of bank (loops / corkscrews),
+  // the wheel-plane normal can flip sign past ~90° of bank (loops / corkscrews),
   // which would snap the camera to the far side of the track and read as the car
-  // swapping over. Keep it on the SAME side as last frame â€” a genuine inversion
+  // swapping over. Keep it on the SAME side as last frame — a genuine inversion
   // rotates gradually (small per-frame steps, dot stays positive), so only a true
   // sign-flip gets corrected. This makes Bf<0 hold, which keeps the aim forward.
   { const pv = follow.rig.up; if (pv && follow.rig.ready && (ux * pv[0] + uy * pv[1] + uz * pv[2]) < 0) { ux = -ux; uy = -uy; uz = -uz; } }
   // chase heading = DIRECTION OF TRAVEL (velocity), NOT the body heading. The
   // body crabs during slip (the T-180's whole character) and would whip the
-  // camera 180Â° when slip passes 90Â°. Velocity is smooth and always points
+  // camera 180° when slip passes 90°. Velocity is smooth and always points
   // down-road, so the car stays facing correctly away from the lens.
   const wf = Math.max(4, Math.round(0.12 / ex.dt));
   // GAP-FREE velocity window: online replays (AC_*_O_*) teleport the car between
   // frames; a window spanning the jump made the heading point along the teleport
-  // and whipped the camera ~90Â°. Never let the window cross a gap.
+  // and whipped the camera ~90°. Never let the window cross a gap.
   let a = i0, b = i0;
   while (a > 0 && i0 - a < wf && !ex.gap[a - 1]) a--;
   while (b < N - 1 && b - i0 < wf && !ex.gap[b + 1]) b++;
   let hx = P[b * 3] - P[a * 3], hy = P[b * 3 + 1] - P[a * 3 + 1], hz = P[b * 3 + 2] - P[a * 3 + 2];
-  let hd = hx * ux + hy * uy + hz * uz; hx -= ux * hd; hy -= uy * hd; hz -= uz * hd; // âŸ‚ up
+  let hd = hx * ux + hy * uy + hz * uz; hx -= ux * hd; hy -= uy * hd; hz -= uz * hd; // ⟂ up
   let hl = Math.hypot(hx, hy, hz);
   const rig = follow.rig;
   // hold the heading when the car is actually stopped (gate on real speed, not
-  // window length â€” a teleport makes the window huge, not tiny) or the window
+  // window length — a teleport makes the window huge, not tiny) or the window
   // collapsed against a gap. This freezes orientation instead of spinning it.
   const moving = (ex.speed[i0] || 0) > 3 && b > a && hl > 1e-3;
   if (!moving) {
@@ -1267,7 +1267,7 @@ function followUpdate(fp, dt) {
   rig.fwd[0] += (hx - rig.fwd[0]) * kFwd; rig.fwd[1] += (hy - rig.fwd[1]) * kFwd; rig.fwd[2] += (hz - rig.fwd[2]) * kFwd;
   const fl = Math.hypot(rig.fwd[0], rig.fwd[1], rig.fwd[2]) || 1;
   hx = rig.fwd[0] / fl; hy = rig.fwd[1] / fl; hz = rig.fwd[2] / fl;
-  // right = up Ã— heading
+  // right = up × heading
   const rx = uy * hz - uz * hy, ry = uz * hx - ux * hz, rz = ux * hy - uy * hx;
   // signed curvature: turn between the segment before and after the car, on the road plane
   const proj = (vx, vy, vz) => {
@@ -1287,14 +1287,14 @@ function followUpdate(fp, dt) {
   let s = ex.speed[i0]; if (!isFinite(s)) s = 0;
   const speedN = Math.min(1, s / 300);
   // shape targets: right on the car's tail, low, opening out on straights. Much
-  // closer than before â€” the framing pass below guarantees the car stays in shot.
+  // closer than before — the framing pass below guarantees the car stays in shot.
   const DMIN = 4, DMAX = 18, HMIN = 2, HMAX = 6.5;
   // zoomN: 0 at the default distance, 1 fully zoomed in (wheel min). As it zooms in
   // the eye must also DROP to the car's level, or it ends up above the car looking
   // down at the ground; low + behind lets the framing tilt up the road instead.
   const zoomN = Math.max(0, Math.min(1, (1 - (follow.distMul || 1)) / 0.88));
   /* The chase eye stops at the bodywork. The zoom range now runs below 0.12 so the last stretch
-   * can carry the camera into the cockpit, but the CHASE pose must not follow it in â€” unfloored it
+   * can carry the camera into the cockpit, but the CHASE pose must not follow it in — unfloored it
    * ends up centimetres behind the car's origin, buried inside the panels. Going further in is the
    * cockpit blend's job, below. */
   const distT = Math.max(1.5, (DMIN + (DMAX - DMIN) * speedN * (1 - 0.55 * curveN)) * (follow.distMul || 1));
@@ -1305,7 +1305,7 @@ function followUpdate(fp, dt) {
   if (!R.ready) { R.dist = distT; R.height = heightT; R.side = sideT; R.bank = bankT; R.up = [ux, uy, uz]; R.ready = true; }
   // kUp fast enough to track a corkscrew's spinning road-normal; kSlow eases FOV/framing
   const kMed = easeK(5.0, dt), kUp = easeK(5.5, dt), kBank = easeK(3.0, dt), kSlow = easeK(2.0, dt);
-  // back up fast, pull in SLOW â€” so a violent slowdown (distT drops with speed) doesn't rush the eye
+  // back up fast, pull in SLOW — so a violent slowdown (distT drops with speed) doesn't rush the eye
   // in and crowd the car; it stays backed off, keeping room, especially when zoomed all the way in.
   R.dist += (distT - R.dist) * (distT < R.dist ? easeK(1.6, dt) : easeK(6.0, dt));
   R.height += (heightT - R.height) * kMed;
@@ -1313,26 +1313,26 @@ function followUpdate(fp, dt) {
   R.bank = (R.bank || 0) + (bankT - (R.bank || 0)) * kBank;
   R.up[0] += (ux - R.up[0]) * kUp; R.up[1] += (uy - R.up[1]) * kUp; R.up[2] += (uz - R.up[2]) * kUp;
   const sul = Math.hypot(R.up[0], R.up[1], R.up[2]) || 1; R.up[0] /= sul; R.up[1] /= sul; R.up[2] /= sul;
-  // chase direction = âˆ’heading rotated by the user's drag offset about up (Rodrigues)
+  // chase direction = −heading rotated by the user's drag offset about up (Rodrigues)
   const yaw = follow.yawOff || 0, cy = Math.cos(yaw), sy = Math.sin(yaw);
-  const kd = ux * hx + uy * hy + uz * hz;   // heading is âŸ‚ up so ~0, kept for generality
+  const kd = ux * hx + uy * hy + uz * hz;   // heading is ⟂ up so ~0, kept for generality
   const Hx = hx * cy + (uy * hz - uz * hy) * sy + ux * kd * (1 - cy);
   const Hy = hy * cy + (uz * hx - ux * hz) * sy + uy * kd * (1 - cy);
   const Hz = hz * cy + (ux * hy - uy * hx) * sy + uz * kd * (1 - cy);
-  // rigid desired eye â€” tracks the car every frame with only the SHAPE smoothed,
+  // rigid desired eye — tracks the car every frame with only the SHAPE smoothed,
   // so there is NO positional lag (the old eye-smoothing trailed ~15 m at 300 km/h
   // and couldn't hold a corkscrew). Collision & framing ride on top.
-  // RIGIDLY attached to the car â€” inherits its whole motion, so it rides seamlessly through any loop /
+  // RIGIDLY attached to the car — inherits its whole motion, so it rides seamlessly through any loop /
   // spiral / bank. (Softening the vertical DETACHED the eye from the car and broke that seamless follow;
-  // the bumps worth killing are the object-collision folds, handled below â€” not the car's own motion.)
+  // the bumps worth killing are the object-collision folds, handled below — not the car's own motion.)
   const desx = px - Hx * R.dist + R.up[0] * R.height + rx * R.side;
   const desy = py - Hy * R.dist + R.up[1] * R.height + ry * R.side;
   const desz = pz - Hz * R.dist + R.up[2] * R.height + rz * R.side;
   // --- drone collision: fold the boom in fluidly if the world would occlude the car.
-  // Only the fraction is smoothed (spring feel) â€” the base still tracks rigidly. ---
+  // Only the fraction is smoothed (spring feel) — the base still tracks rigidly. ---
   const pivot = [px - Hx * 2 + R.up[0] * 2, py - Hy * 2 + R.up[1] * 2, pz - Hz * 2 + R.up[2] * 2];
   const hit = collideSegment(worldColl, pivot, [desx, desy, desz]);
-  // Ignore 1-frame flickers â€” a thin trackside object flashing through the boom shouldn't jolt the
+  // Ignore 1-frame flickers — a thin trackside object flashing through the boom shouldn't jolt the
   // cam; only a collision that PERSISTS folds it. Then smooth ASYMMETRICALLY: fold in quick enough to
   // avoid clipping, but ease back out slowly so clearing an object doesn't snap the framing. Keeps the
   // genuine sustained collisions (the immersive track rebound) while killing the object-bump jitter.
@@ -1349,28 +1349,28 @@ function followUpdate(fp, dt) {
   // never ram the car: keep the eye outside the car BODY, not just its centre. The
   // T-180's tail reaches ~2.7 m behind its origin, so a smaller radius put the low
   // zoomed eye inside the model (backfaces + near-clip glitch). Sit just behind it.
-  const MINCAR = 3.6 * (1 - 0.78 * zoomN);   // shrink the keep-out radius hard as it zooms â†’ right into the cockpit
+  const MINCAR = 3.6 * (1 - 0.78 * zoomN);   // shrink the keep-out radius hard as it zooms → right into the cockpit
   const cvx = exW - px, cvy = eyW - py, cvz = ezW - pz, cvl = Math.hypot(cvx, cvy, cvz);
   if (cvl > 1e-4 && cvl < MINCAR) { const g = MINCAR / cvl; exW = px + cvx * g; eyW = py + cvy * g; ezW = pz + cvz * g; }
   // anti-clip floor: keep the eye a minimum clearance on the +up side of the road
   const upDot = (exW - px) * R.up[0] + (eyW - py) * R.up[1] + (ezW - pz) * R.up[2];
   const MINH = 1.6 * (1 - 0.8 * zoomN);   // let the eye ride low when fully zoomed in
   if (upDot < MINH) { const add = MINH - upDot; exW += R.up[0] * add; eyW += R.up[1] * add; ezW += R.up[2] * add; }
-  // (no ground clamp â€” it broke spirals/loops and shuffled on stacked track; the original anti-clip
+  // (no ground clamp — it broke spirals/loops and shuffled on stacked track; the original anti-clip
   // floor above is enough. The car being centred is by AIMING, not by burying the eye.)
   R.eye = R.eye || [0, 0, 0];
   R.eye[0] = exW; R.eye[1] = eyW; R.eye[2] = ezW;   // rigid, no lag
   // FOV + framing height ease SLOWLY toward their close/far targets: as it closes in
   // the FOV widens and the car sinks lower, angling the lens up the road ahead.
   const closeN = Math.max(0, Math.min(1, (22 - R.dist) / (22 - 4)));
-  const fovT = Math.min(1.55, 0.85 + 0.40 * closeN + 0.28 * zoomN);  // wide-angle when zoomed in (~88Â°)
-  const frameYT = -0.28 - 0.50 * closeN - 0.10 * zoomN;              // fully zoomed â†’ car sits low, lens tilts up the road
+  const fovT = Math.min(1.55, 0.85 + 0.40 * closeN + 0.28 * zoomN);  // wide-angle when zoomed in (~88°)
+  const frameYT = -0.28 - 0.50 * closeN - 0.10 * zoomN;              // fully zoomed → car sits low, lens tilts up the road
   R.fov = (R.fov == null) ? fovT : R.fov + (fovT - R.fov) * kSlow;
   R.frameY = (R.frameY == null) ? frameYT : R.frameY + (frameYT - R.frameY) * kSlow;
   // --- framing guarantee (robust): place the car at R.frameY using the STABLE
-  // heading/up basis â€” never the eyeâ†’car direction, which degenerates (and used to
-  // flip 180Â°) when the camera rides near overhead. Solve the aim pitch Î² in the
-  // headingâ€“up plane that lands the car's vertical screen position exactly at frameY. ---
+  // heading/up basis — never the eye→car direction, which degenerates (and used to
+  // flip 180°) when the camera rides near overhead. Solve the aim pitch β in the
+  // heading–up plane that lands the car's vertical screen position exactly at frameY. ---
   // as it zooms in, drift the framing focus from the car centre UP onto the driver's head (cockpit feel)
   const nk = (carDriver && carDriver.neckPivot) ? carDriver.neckPivot : [0, 1.08, 0.09];
   const df = zoomN * 0.85, dh = nk[1] * df;
@@ -1380,23 +1380,23 @@ function followUpdate(fp, dt) {
   const kf = R.frameY * Math.tan(R.fov * 0.5);
   let beta = Math.atan2(Bf - kf * Af, Af + kf * Bf);        // pitch that puts the car at frameY
   const BMAX = 1.45; if (beta > BMAX) beta = BMAX; else if (beta < -BMAX) beta = -BMAX; // never aim backward
-  beta -= (FOLLOW_LOOKDOWN + 0.44) * zoomN;   // tilt the view down like a neck as it zooms in â€” +~25Â° at full zoom for the low cockpit look
+  beta -= (FOLLOW_LOOKDOWN + 0.44) * zoomN;   // tilt the view down like a neck as it zooms in — +~25° at full zoom for the low cockpit look
   const cbe = Math.cos(beta), sbe = Math.sin(beta);
   const fX = Hx * cbe + R.up[0] * sbe, fY = Hy * cbe + R.up[1] * sbe, fZ = Hz * cbe + R.up[2] * sbe;
   R.look = [R.eye[0] + fX * 60, R.eye[1] + fY * 60, R.eye[2] + fZ * 60];
-  // drone bank: roll the VIEW up around the heading (view only â€” doesn't move eye)
+  // drone bank: roll the VIEW up around the heading (view only — doesn't move eye)
   const bc = Math.cos(R.bank || 0), bs = Math.sin(R.bank || 0);
-  R.viewUp = [R.up[0] * bc - rx * bs, R.up[1] * bc - ry * bs, R.up[2] * bc - rz * bs];  // up' = upÂ·cos + (HÃ—up)Â·sin
-  /* THE COCKPIT SHOT â€” where the zoom keeps going after the chase cam has run out of room.
+  R.viewUp = [R.up[0] * bc - rx * bs, R.up[1] * bc - ry * bs, R.up[2] * bc - rz * bs];  // up' = up·cos + (H×up)·sin
+  /* THE COCKPIT SHOT — where the zoom keeps going after the chase cam has run out of room.
    *
    * `enter` carries the eye from the chase pose to a point just ahead of the steering wheel, aimed
    * back at it, so you end up looking at the rim, the driver's hands and the arms behind them.
    * `deep` is the last squeeze: keep scrolling and it pushes closer and narrows the lens onto the
-   * hands themselves. Both are anchored on `carDriver.wheelC` â€” the wheel's own pivot from the car
-   * model â€” so it lands correctly on any car instead of on numbers tuned for this one.
+   * hands themselves. Both are anchored on `carDriver.wheelC` — the wheel's own pivot from the car
+   * model — so it lands correctly on any car instead of on numbers tuned for this one.
    *
    * The pose is LOCKED to the car: fixed eye, fixed aim, no drone bank. Everything that makes the
-   * chase cam feel alive â€” the swing into corners, the framing solve, the roll â€” is exactly what
+   * chase cam feel alive — the swing into corners, the framing solve, the roll — is exactly what
    * ruins a close shot, because at half a metre those corrections read as camera shake. Rigid to
    * the car means the cockpit sits still while the world tears past, which is the shot worth having.
    */
@@ -1410,14 +1410,14 @@ function followUpdate(fp, dt) {
     const fwdOff = COCKPIT_FWD - (COCKPIT_FWD - COCKPIT_FWD_DEEP) * deep;   // final squeeze onto the hands
     const up = COCKPIT_UP - (COCKPIT_UP - COCKPIT_UP_DEEP) * deep;
     /* Which side to shoot from: whichever side the user has orbited to. `yawOff` is their own drag
-     * around the car, so its sine gives both the side and how committed they are â€” tanh saturates
+     * around the car, so its sine gives both the side and how committed they are — tanh saturates
      * it quickly, so a small nudge off dead-astern already picks a side and holds it rather than
      * creeping. Orbit through the back and the shot crosses over to the other shoulder. */
     const sideAmt = Math.tanh(Math.sin(follow.yawOff || 0) * 3);
     const sideOff = (COCKPIT_SIDE - (COCKPIT_SIDE - COCKPIT_SIDE_DEEP) * deep) * sideAmt;
     /* Use the CAR'S OWN MODEL MATRIX, not a basis rebuilt here. `wheelC` is in the car model's
-     * space, and the rig's H is the CHASE direction â€” it points from the car back toward the
-     * camera, not forward â€” so mapping model coordinates through it put the eye behind the car
+     * space, and the rig's H is the CHASE direction — it points from the car back toward the
+     * camera, not forward — so mapping model coordinates through it put the eye behind the car
      * looking out the back. carModelMatrix is the same transform the wheel, the driver and the
      * hands are drawn with, so anchoring to it is correct by construction on any car. */
     const cmr = carModelMatrix(fp);
@@ -1427,7 +1427,7 @@ function followUpdate(fp, dt) {
          M[1] * a + M[5] * b + M[9] * c + M[13],
          M[2] * a + M[6] * b + M[10] * c + M[14]]
       : [px + rx * a + R.up[0] * b + Hx * c, py + ry * a + R.up[1] * b + Hy * c, pz + rz * a + R.up[2] * b + Hz * c];
-    /* Which way is "ahead of the wheel" in this model's space? Don't assume Â±Z â€” measure it. The
+    /* Which way is "ahead of the wheel" in this model's space? Don't assume ±Z — measure it. The
      * driver's neck sits BEHIND the wheel, so wheel-minus-neck points toward the nose. Self-
      * calibrating, so a car authored along the other axis still gets the camera on the right side
      * of the wheel instead of buried in the driver's chest. */
@@ -1443,10 +1443,10 @@ function followUpdate(fp, dt) {
     // few degrees up puts the hands low in shot with the road beyond them
     const aimUp = 0.02 + COCKPIT_ORBIT_R * Math.tan(COCKPIT_AIM_UP) * deep;
     const tW = xf(wc[0] + sideOff * 0.15, wc[1] + aimUp, wc[2]);
-    /* At MAX zoom the shot becomes a full orbit of the wheel â€” drag all the way round it, over the
+    /* At MAX zoom the shot becomes a full orbit of the wheel — drag all the way round it, over the
      * top, under it, from the driver's side or the far side. The side-offset framing above
      * saturates on purpose (it commits to a shoulder rather than creeping), which is right for the
-     * approach but would cap you at Â±60 cm here. So the last of the zoom blends that into a true
+     * approach but would cap you at ±60 cm here. So the last of the zoom blends that into a true
      * sphere around the wheel, driven by the same drag: yaw goes all the way round, pitch lifts and
      * drops the eye. Aim stays pinned to the rim, so the hands hold the frame from every angle. */
     if (deep > 0.001) {
@@ -1454,7 +1454,7 @@ function followUpdate(fp, dt) {
       const pit = Math.max(-1.15, Math.min(1.15, cam.pitch || 0));
       const hr = COCKPIT_ORBIT_R * Math.cos(pit);
       // the sphere is centred on the WHEEL (plus a token lift toward the hands), not on the eye
-      // height â€” centring it higher makes the radius shrink as you pitch down, which walks the
+      // height — centring it higher makes the radius shrink as you pitch down, which walks the
       // camera into the rim at the bottom of the arc
       const om = [wc[0] + Math.sin(yaw) * hr,
                   wc[1] + COCKPIT_ORBIT_UP + COCKPIT_ORBIT_R * Math.sin(pit),
@@ -1468,7 +1468,7 @@ function followUpdate(fp, dt) {
     const exW2 = eW[0], eyW2 = eW[1], ezW2 = eW[2];
     const txW = tW[0], tyW = tW[1], tzW = tW[2];
     /* NO world-space smoothing here, deliberately. Filtering the world position of a camera that is
-     * rigidly bolted to a moving car makes the pose TRAIL the car while it drives â€” and the instant
+     * rigidly bolted to a moving car makes the pose TRAIL the car while it drives — and the instant
      * you pause, the filter catches up and the camera glides forward into the cockpit. That is the
      * "momentum lag" artifact. The pose is exact each frame; it is steady because it is expressed in
      * the car's own frame, and any residual jitter belongs to the car matrix, where it should be
@@ -1521,7 +1521,7 @@ const LAP_COLORS = [
 const LAP_DV_FULL = 12;   // km/h difference that saturates the colour
 
 /* Comparison runs. Measured on every replay in the folder: each holds exactly ONE timed
- * lap (81.85, 82.50, 82.85, 86.06, 86.32 â€” five different times, five separate files). So
+ * lap (81.85, 82.50, 82.85, 86.06, 86.32 — five different times, five separate files). So
  * lap-vs-lap lives ACROSS replays, not inside one. A second lap found inside a single
  * replay is handled by the same path; there just aren't any yet. */
 let compareRuns = [];   // [{ ex, label, win, dists, color }]
@@ -1536,7 +1536,7 @@ function lapOverlayInfo() {
   return { wins, refI, ref: wins[refI], extra };
 }
 
-/* The field is capped at four cars â€” the reference plus three. Not arbitrary: each ghost
+/* The field is capped at four cars — the reference plus three. Not arbitrary: each ghost
  * is a full car AND a per-frame skinned-driver vertex upload, so the cost is linear in
  * cars and the driver is the expensive part. Four is also the point past which a chase
  * camera stops being able to show them together. */
@@ -1630,12 +1630,12 @@ function buildLapOverlays() {
 }
 
 /* ===================== ghost cars =====================
- * Each comparison lap gets the SAME car, drawn from the same uploaded model â€” one upload,
- * N draws, which is what the carIdâ†’model cache in ghosts.js exists for. Nothing here
+ * Each comparison lap gets the SAME car, drawn from the same uploaded model — one upload,
+ * N draws, which is what the carId→model cache in ghosts.js exists for. Nothing here
  * re-uploads geometry per ghost.
  *
  * Placed by DISTANCE, not by clock. At the reference car's current position round the lap,
- * each ghost is drawn at the frame where IT was at that same distance â€” so a ghost ahead
+ * each ghost is drawn at the frame where IT was at that same distance — so a ghost ahead
  * on screen is a ghost that was genuinely quicker to that point, and the gap you see IS
  * the time delta. Playing them on a common clock would put them side by side forever and
  * show nothing.
@@ -1647,7 +1647,7 @@ function buildLapOverlays() {
  *
  * INTERPOLATED, not rounded. Rounding to a whole reference frame quantised the ghost's
  * distance to the replay's 66 Hz sample rate while the reference car moved smoothly at
- * the display rate â€” so the ghost held still for several frames and then jumped, which
+ * the display rate — so the ghost held still for several frames and then jumped, which
  * reads as judder or, against a moving background, as a blurred double image. Every
  * other consumer of a frame index here is fractional; this was the one that was not. */
 function refDistanceNow(refFrame) {
@@ -1662,15 +1662,32 @@ function refDistanceNow(refFrame) {
 
 /* Two ways to place a ghost, because they answer different questions.
  *
- *   DISTANCE (default) â€” draw it where IT was at the same point on track. The gap you see
+ *   DISTANCE (default) — draw it where IT was at the same point on track. The gap you see
  *   IS the time delta. This is the coaching view: who was ahead through this corner.
  *
- *   TIME â€” run every lap on one clock, each with its own start offset. Nobody is "ahead
+ *   TIME — run every lap on one clock, each with its own start offset. Nobody is "ahead
  *   by definition"; they start where you place them and race. This is the watching view,
- *   and the offset is what makes it a race rather than a synchronised demonstration â€”
+ *   and the offset is what makes it a race rather than a synchronised demonstration —
  *   without it four laps of the same driver launch as one car and never separate.
  */
-let lapAlign = "distance";   // "distance" | "time"
+/* Default is TIME, and getting this wrong is worth recording.
+ *
+ * I first defaulted the CARS to distance alignment and described it as "the gap you see
+ * is the delta". That is exactly backwards. Distance alignment draws every car at the
+ * frame where IT had covered the same distance — so all of them sit at the same point on
+ * track, superimposed, interpenetrating. There is no gap to see, and no car is lit by
+ * another because they are all zero metres apart.
+ *
+ * The gap you can see comes from a SHARED CLOCK: at the same elapsed time, the quicker
+ * car is further along, and the distance between the cars on screen IS the time delta
+ * made visible. That is the racing view and the right default for watching cars.
+ *
+ * Distance alignment stays, because it is right for the OTHER two consumers — the line
+ * overlay (compare the paths at the same corner) and the speed-difference colouring
+ * (what were you doing HERE). It is a legitimate car view too, for comparing attitude
+ * through one corner, just not the default.
+ */
+let lapAlign = "time";   // "time" (race, cars spread by pace) | "distance" (cars superimposed)
 // Cars lighting and shadowing each other. Both were single-car assumptions: the shader
 // carries one car's worth of lamps, and the car pass disabled shadow sampling outright to
 // dodge self-shadow acne. The acne guard is now a normal-offset plus a metric bias (see
@@ -1693,7 +1710,7 @@ function ghostFrameAt(run, refFrame) {
 }
 
 /* Live telemetry per ghost, at the SAME PLACE on track rather than the same moment:
- * its speed there, and the running time delta. Both are only meaningful distance-aligned â€”
+ * its speed there, and the running time delta. Both are only meaningful distance-aligned —
  * "he was 8 km/h faster than you" is a fact about a corner, not about a clock reading. */
 function updateLapLegendLive() {
   const el = document.getElementById("lapcmp");
@@ -1702,7 +1719,7 @@ function updateLapLegendLive() {
   const d = refDistanceNow(refFrame);
   const rs = speedAtFrame(refFrame);
   const refEl = document.getElementById("lcref");
-  if (refEl) refEl.textContent = isFinite(d) ? `${isFinite(rs) ? rs.toFixed(0) : "â€”"} km/h Â· ${(d / 1000).toFixed(2)} km in` : "outside the lap";
+  if (refEl) refEl.textContent = isFinite(d) ? `${isFinite(rs) ? rs.toFixed(0) : "—"} km/h · ${(d / 1000).toFixed(2)} km in` : "outside the lap";
   for (const span of el.querySelectorAll(".lclive")) {
     const run = compareRuns[+span.dataset.i];
     if (!run) continue;
@@ -1712,16 +1729,16 @@ function updateLapLegendLive() {
     const gs = run.ex.speed[gi];
     const dt = Ghosts.deltaAtDistance(refAligned, run, d);    // + = this run slower to here
     const dv = isFinite(gs) && isFinite(rs) ? gs - rs : NaN;
-    const sign = (v, unit, dp) => `${v >= 0 ? "+" : "âˆ’"}${Math.abs(v).toFixed(dp)}${unit}`;
-    span.innerHTML = `${isFinite(gs) ? gs.toFixed(0) : "â€”"} km/h ` +
+    const sign = (v, unit, dp) => `${v >= 0 ? "+" : "−"}${Math.abs(v).toFixed(dp)}${unit}`;
+    span.innerHTML = `${isFinite(gs) ? gs.toFixed(0) : "—"} km/h ` +
       (isFinite(dv) ? `<span style="color:${dv >= 0 ? "#7fdc8a" : "#e08b7f"}">${sign(dv, "", 0)}</span> ` : "") +
-      (isFinite(dt) ? `Â· <span style="color:${dt <= 0 ? "#7fdc8a" : "#e08b7f"}">${sign(dt, "s", 2)}</span>` : "");
+      (isFinite(dt) ? `· <span style="color:${dt <= 0 ? "#7fdc8a" : "#e08b7f"}">${sign(dt, "s", 2)}</span>` : "");
   }
 }
 
 // This frame's ghosts: matrix AND the run + fractional frame that produced it. The
 // additive effects (thruster, backfire, lamp glow) are drawn in a later pass than the
-// bodies â€” after the opaque and glass passes, where additive blending belongs â€” so they
+// bodies — after the opaque and glass passes, where additive blending belongs — so they
 // need to reach back for the pose rather than re-solve it.
 let ghostDraws = [];
 
@@ -1796,7 +1813,7 @@ function drawGhostCars(mvp, headVP, nightF, allCars) {
     // holds eased values (head yaw/roll, body lean); sharing one between cars would make
     // every driver's head chase whichever car was posed last, at a rate none of them are
     // actually turning. The skinned mesh is a per-car vertex upload, so N cars is N
-    // uploads a frame â€” the real cost of a full-fidelity ghost, and why the roster is capped.
+    // uploads a frame — the real cost of a full-fidelity ghost, and why the roster is capped.
     const animS = carDriver && carDriver.steerAnim;
     const effLock = animS ? animS.lock : Math.min(STEER_WHEEL_MAX, (carDriver && carDriver.gripLock) || Infinity);
     const kSteer = (carSteerRef > 1e-3 && isFinite(effLock)) ? effLock / carSteerRef : STEER_WHEEL_RATIO;
@@ -1819,7 +1836,7 @@ function drawGhostCars(mvp, headVP, nightF, allCars) {
 
 function buildGeometry() {
   const N = ex.N, P = ex.pos, NM = ex.nrm;
-  // the ribbon is ALWAYS the driven line, never a road stand-in â€” that costume
+  // the ribbon is ALWAYS the driven line, never a road stand-in — that costume
   // read as "track with a centered line" until the real road renders under it
   const trackLoaded = !!(bufs.trackIdxN || sceneGroups);
   const HALF = trackLoaded ? 0.95 : 2.0;
@@ -1873,7 +1890,7 @@ function buildGeometry() {
   gl.bufferData(gl.ARRAY_BUFFER, arr, gl.STATIC_DRAW);
   bufs.ribbonN = arr.length / 7;
 
-  // center line (slightly lifted along normal) â€” only over a real track;
+  // center line (slightly lifted along normal) — only over a real track;
   // over the bare ribbon it reads as "a line in the middle of the road"
   const lv = [];
   for (let i = trackLoaded ? ra + 1 : rb; i < rb; i++) {
@@ -1931,7 +1948,7 @@ function bindAndDraw(buf, n, mode, ptSize) {
 
 /* ===================== time-of-day lighting =====================
  * One `timeOfDay` (hours, 0..24) drives a single key light that arcs across the sky and
- * crossfades sunâ†’moon, plus the atmosphere (sky/ground ambient + fog colour). Keyframed
+ * crossfades sun→moon, plus the atmosphere (sky/ground ambient + fog colour). Keyframed
  * at midnight / dawn / noon / dusk and interpolated. The sun/moon is one continuous light:
  * the moon is just "the sun, low, cool and dim". Feeds progT's uSun and uAmb uniforms
  * plus the clear/fog colour. Default is night (his hotlaps). Shadows come next. */
@@ -1984,7 +2001,7 @@ function setHeadlights(cm, headInt, headVP) {
 function setBrakelights(cm, brakeInt) {
   if (brakeInt > 0.001 && cm && carLights && carLights.brake.length >= 2) {
     const A = mXfPt(carLights.brake[0], cm), B = mXfPt(carLights.brake[1], cm);
-    let dx = -cm[8], dy = -cm[9], dz = -cm[10];   // backward = âˆ’nose
+    let dx = -cm[8], dy = -cm[9], dz = -cm[10];   // backward = −nose
     const dl = Math.hypot(dx, dy, dz) || 1;
     gl.uniform3f(tLoc.brakeA, A[0], A[1], A[2]);
     gl.uniform3f(tLoc.brakeB, B[0], B[1], B[2]);
@@ -1996,14 +2013,14 @@ function setBrakelights(cm, brakeInt) {
 }
 
 /* ===================== cascaded shadow maps =====================
- * The car + track render depth-only from the sun/moon direction into TWO cascades â€” a
+ * The car + track render depth-only from the sun/moon direction into TWO cascades — a
  * tight near box (sharp shadow under/around the car) and a wide far box (distant track
  * geometry, ~1 km of coverage). The shader picks the near cascade when the fragment is in
  * it, else the far one, so we get both sharpness up close and long render distance for a
  * cinematic look. Needs WebGL2 depth textures; falls back to the contact-blob otherwise. */
 let SHADOW_ON = true, shadowReady = false, shadowsRendered = false, staticBakeTime = null;
 
-/* tyre marks + smoke â€” both fed by the same recorded-slip signal (carrender.js).
+/* tyre marks + smoke — both fed by the same recorded-slip signal (carrender.js).
  * TYRE_MODE: 0 = off, 1 = reset each lap (default), 2 = accumulate + slow fade. */
 let TYRE_MODE = 1;
 let markVBO = null, markCount = 0;                    // prebuilt skid-mark ribbon (per loaded car)
@@ -2012,28 +2029,28 @@ const smoke = { pool: [], cap: 420, vbo: null, arr: null,
   noiseTex: null, curl: null, accum: new Float32Array(4) };   // baked noise, curl field, per-wheel slide build-up
 const SMOKE_MERGE_LO = 0.10, SMOKE_MERGE_HI = 0.65;    // summed-density ramp: fuses overlapping puffs into one field
 let SMOKE_ERODE = 0.6;                                  // composite noise erosion: frays the merged field into wisps
-let SMOKE_COLLIDE = true;                              // per-frame smokeâ†”track collision (uses the fine smokeColl grid)
+let SMOKE_COLLIDE = true;                              // per-frame smoke↔track collision (uses the fine smokeColl grid)
 let smokePrevT = null;                                 // last playback time (for emission gating + scrub detect)
 const CURL_G = 24, CURL_FREQ = 0.35, CURL_STR = 1.7;   // curl velocity grid (now a turbulence overlay only)
 const SMOKE_WIND = [0.25, 0, 0.10];                    // gentle ambient drift (world x,z)
-// sparse "air" velocity field â€” the shared medium cars stir and smoke rides. Cells exist
+// sparse "air" velocity field — the shared medium cars stir and smoke rides. Cells exist
 // ONLY near cars/smoke (a tube along the track, not the whole map). See docs/SMOKE_PHYSICS.md.
 const AIR = { H: 1.5, inv: 1 / 1.5, cells: new Map() };  // cell size (m); Map<packedKey,{vx,vy,vz,ttl}>
-const AIR_TAU = 0.6, AIR_TTL = 1.2;                    // velocity dissipation Ï„ (s); cell lifetime after last inject (s)
-// Injection is mostly SWIRL (rotates in place â†’ smoke stays put and trails behind) with
-// almost no forward drag (drag would carry the smoke along with the car â€” no trail).
-const WHEEL_DRAG_K = 0.04, WHEEL_SWIRL_K = 0.15, BODY_WAKE_K = 0.0, AIR_TURB = 0.35;  // wake off (0) â€” it only matters for shredding OTHER cars' smoke; with one car it disturbs its own trail
-const SLIDE_GAIN = 3.0, SLIDE_TAU = 0.5, SLIDE_MAX = 2.5;   // per-wheel slide accumulator: grow / decay-Ï„ / cap
+const AIR_TAU = 0.6, AIR_TTL = 1.2;                    // velocity dissipation τ (s); cell lifetime after last inject (s)
+// Injection is mostly SWIRL (rotates in place → smoke stays put and trails behind) with
+// almost no forward drag (drag would carry the smoke along with the car — no trail).
+const WHEEL_DRAG_K = 0.04, WHEEL_SWIRL_K = 0.15, BODY_WAKE_K = 0.0, AIR_TURB = 0.35;  // wake off (0) — it only matters for shredding OTHER cars' smoke; with one car it disturbs its own trail
+const SLIDE_GAIN = 3.0, SLIDE_TAU = 0.5, SLIDE_MAX = 2.5;   // per-wheel slide accumulator: grow / decay-τ / cap
 // Sharpness of a cascade is (2*R)/size metres per texel, so R is as much a resolution
-// knob as size â€” and a free one. NEAR was spending a 180 m box to shadow a 4.5 m car.
+// knob as size — and a free one. NEAR was spending a 180 m box to shadow a 4.5 m car.
 const SHADOW_CASCADES = [
   // NEAR: dynamic, re-rendered every frame around the car. 80/8192 = 0.98 cm per texel
-  // (was 180/4096 = 4.4 cm) â€” ~4.5x finer on the car's own cast shadow. This is the only
+  // (was 180/4096 = 4.4 cm) — ~4.5x finer on the car's own cast shadow. This is the only
   // pass that costs per-frame fill; if the framerate suffers, drop size to 4096 first,
   // which still leaves 1.95 cm from the tighter R alone.
   { R: 40, size: 8192, dyn: true },
   // FAR: STATIC whole-track bake (R/centre from trackAABB), re-rendered only when the sun
-  // moves â€” so resolution here is almost free at runtime, one bake for one memory cost.
+  // moves — so resolution here is almost free at runtime, one bake for one memory cost.
   // At 4096 across a whole circuit a texel was tens of centimetres, which is why distant
   // shadows read as missing until you got close. 8192 halves that.
   { size: 8192, dyn: false },
@@ -2066,7 +2083,7 @@ const SHADOW_CASCADES = [
 // orthographic light box of half-extent R centred on `center`, looking along the sun/moon
 // `reach` = how far TOWARD the light the box starts capturing casters, in metres, and it
 // must NOT be derived from R. In light space a caster shadows the same (x,y) it occupies,
-// so a tight box never loses a caster sideways â€” the only thing it can lose is one
+// so a tight box never loses a caster sideways — the only thing it can lose is one
 // standing between the light and the near plane. Tying reach to R meant that shrinking
 // the box for sharpness also amputated tall casters (grandstands, gantries): their
 // shadows vanished inside the near cascade while the far cascade still had them, leaving
@@ -2085,7 +2102,7 @@ function buildLightVP(dir, R, center, reach) {
 // nothing else, whereas being short silently deletes shadows.
 const SHADOW_CASTER_REACH = 600;
 // Shadow casters. NEAR cascade: dynamic every frame (track + car around the car, sharp).
-// FAR cascade: the WHOLE track baked once â€” only re-rendered when the sun moved (time
+// FAR cascade: the WHOLE track baked once — only re-rendered when the sun moved (time
 // changed), covering the full track bounds. Track participates (banking blocks the sun);
 // no front-cull (would drop the track top); slope-scaled bias in the shader handles acne.
 function renderCarDepth(cm, dir, timeChanged) {
@@ -2099,11 +2116,26 @@ function renderCarDepth(cm, dir, timeChanged) {
       gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
     }
   };
-  // NEAR â€” dynamic, every frame (track + car)
+  // NEAR — dynamic, every frame (track + car)
   const near = SHADOW_CASCADES[0];
-  // reach is passed explicitly so a tall caster 600 m up-sun still lands in this map â€”
+  // reach is passed explicitly so a tall caster 600 m up-sun still lands in this map —
   // without it the box only reaches R*1.8 (71 m at R=40) and deletes grandstand shadows
-  const nlv = buildLightVP(dir, near.R, [cm[12], cm[13], cm[14]], SHADOW_CASTER_REACH);
+  // The near cascade must cover EVERY car, not just the reference. Centred on the
+  // reference at a fixed R, a ghost more than R away simply wasn't in the map and cast
+  // nothing — which is most of a race, since spreading the cars out is the point. Centre
+  // on the group and grow to enclose it: sharpness falls as the field spreads, which is
+  // the honest trade (a 40 m box over one car is 1 cm per texel; a 120 m box is 3 cm).
+  let cx = cm[12], cy = cm[13], cz = cm[14], spread = 0;
+  if (ghostDraws.length) {
+    for (const g of ghostDraws) { cx += g.mat[12]; cy += g.mat[13]; cz += g.mat[14]; }
+    const n = 1 + ghostDraws.length;
+    cx /= n; cy /= n; cz /= n;
+    const far2 = (m) => Math.max(Math.abs(m[12] - cx), Math.abs(m[13] - cy), Math.abs(m[14] - cz));
+    spread = far2(cm);
+    for (const g of ghostDraws) spread = Math.max(spread, far2(g.mat));
+  }
+  const nearR = Math.max(near.R, spread + 12);   // +12 m so a car at the edge keeps its own shadow
+  const nlv = buildLightVP(dir, nearR, [cx, cy, cz], SHADOW_CASTER_REACH);
   near.vp = nlv.vp; near.depth = nlv.depth;
   gl.bindFramebuffer(gl.FRAMEBUFFER, near.fbo); gl.viewport(0, 0, near.size, near.size); gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.uniformMatrix4fv(depthLoc.lightVP, false, near.vp);
@@ -2114,7 +2146,7 @@ function renderCarDepth(cm, dir, timeChanged) {
   // before this pass (solveGhostPoses), so they are current rather than a frame behind.
   for (const g of ghostDraws) drawG(carGroups, g.mat);
   if (carWheels) for (const w of carWheels) { const m = wheelSteerModel(cm, w.pivot, carSteerAngle, 0, 0); drawG(w.rollGroups, m); drawG(w.staticGroups, m); }
-  // FAR â€” static whole-track bake, only when the sun moved (or first time this track)
+  // FAR — static whole-track bake, only when the sun moved (or first time this track)
   const far = SHADOW_CASCADES[1];
   if (trackAABB && (timeChanged || staticBakeTime === null)) {
     // the far box is already kilometres deep from its own radius, so it needs no extra reach
@@ -2122,7 +2154,7 @@ function renderCarDepth(cm, dir, timeChanged) {
     far.vp = flv.vp; far.depth = flv.depth;
     gl.bindFramebuffer(gl.FRAMEBUFFER, far.fbo); gl.viewport(0, 0, far.size, far.size); gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.uniformMatrix4fv(depthLoc.lightVP, false, far.vp);
-    if (sceneGroups) drawG(sceneGroups, IDENT4);   // track only â€” the car is in the near cascade
+    if (sceneGroups) drawG(sceneGroups, IDENT4);   // track only — the car is in the near cascade
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); shadowsRendered = true;
 }
@@ -2175,17 +2207,17 @@ function renderHeadlightDepth(cm, headVP) {
       gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
     }
   };
-  if (sceneGroups) drawG(sceneGroups, IDENT4);   // ONLY the track occludes the beam â€” the car
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);       // must not occlude its own headlights (nose spar â†’ black blob)
+  if (sceneGroups) drawG(sceneGroups, IDENT4);   // ONLY the track occludes the beam — the car
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);       // must not occlude its own headlights (nose spar → black blob)
 }
 
 /* ===================== HDR pipeline (blacks black, light LIGHT) =====================
- * The scene renders into a float (RGBA16F) buffer with an UNCLAMPED range â€” the night
+ * The scene renders into a float (RGBA16F) buffer with an UNCLAMPED range — the night
  * ambient sits near black, and the lights emit real HDR (values > 1). A post chain then
  * blooms only the genuinely-bright pixels (threshold ~1) and ACES-tonemaps to the screen,
  * so darkness stays crushed and highlights blow out. Needs EXT_color_buffer_float. */
 const hdrFX = {
-  ok: false, enabled: false, w: 0, h: 0, hdr: null, bloomA: null, bloomB: null, quad: null,   // HDR/bloom OFF for good (2026-07-23 â€” the bloomed look was disliked; toggle button removed)
+  ok: false, enabled: false, w: 0, h: 0, hdr: null, bloomA: null, bloomB: null, quad: null,   // HDR/bloom OFF for good (2026-07-23 — the bloomed look was disliked; toggle button removed)
   bright: null, blur: null, comp: null,
   exposure: 1.02, threshold: 1.35, bloomAmt: 0.75, sat: 1.32,
 };
@@ -2294,7 +2326,7 @@ function _vn2(x, y, P) {
   const p = a + (b - a) * u; return p + ((c + (d - c) * u) - p) * v;
 }
 function _fbm2(x, y) { let t = 0, amp = 0.5, fr = 4; for (let o = 0; o < 3; o++) { t += amp * _vn2(x * fr, y * fr, fr); fr *= 2; amp *= 0.5; } return t; }
-function _warp2(x, y) { const qx = _fbm2(x, y), qy = _fbm2(x + 0.53, y + 0.13); return _fbm2(x + 0.8 * qx, y + 0.8 * qy); }   // domain warp â†’ turbulence
+function _warp2(x, y) { const qx = _fbm2(x, y), qy = _fbm2(x + 0.53, y + 0.13); return _fbm2(x + 0.8 * qx, y + 0.8 * qy); }   // domain warp → turbulence
 function bakeSmokeNoise() {
   const S = 256, data = new Uint8Array(S * S);
   for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) data[y * S + x] = Math.max(0, Math.min(255, Math.round(_warp2(x / S, y / S) * 255)));
@@ -2376,10 +2408,10 @@ function injectWheel(pos, up, dir, wSpd) {
     const dist = Math.hypot(ox, oy, oz); if (dist > rad) continue;
     const w = 1 - dist / rad;
     let tx = oz, tz = -ox; const tl = Math.hypot(tx, tz) || 1; tx /= tl; tz /= tl;   // swirl around world-up (horizontal)
-    airAdd(cxx, cyy, czz, (dir[0]*drag + tx*swirl) * w, 0, (dir[2]*drag + tz*swirl) * w);  // horizontal only â€” never into the ground
+    airAdd(cxx, cyy, czz, (dir[0]*drag + tx*swirl) * w, 0, (dir[2]*drag + tz*swirl) * w);  // horizontal only — never into the ground
   }
 }
-// the car body drags a wake along its heading â€” this is what shreds another car's smoke
+// the car body drags a wake along its heading — this is what shreds another car's smoke
 function injectWake(pos, dir, spd, up) {
   const A = AIR, H = A.H, R = 3, rad = R * H, push = Math.min(spd, 40) * BODY_WAKE_K;
   const cx0 = Math.floor(pos[0] * A.inv), cy0 = Math.floor(pos[1] * A.inv), cz0 = Math.floor(pos[2] * A.inv);
@@ -2391,7 +2423,7 @@ function injectWake(pos, dir, spd, up) {
     airAdd(cxx, cyy, czz, dir[0]*push*w, 0, dir[2]*push*w);        // wake runs horizontally, never into the ground
   }
 }
-// one field tick: dissipate + evict, then inject the current car (car-agnostic â€” call once
+// one field tick: dissipate + evict, then inject the current car (car-agnostic — call once
 // per active car; one today, N when multiple replays run).
 function airStep(dt, i, fp) {
   const cells = AIR.cells, decay = Math.exp(-dt / AIR_TAU);
@@ -2453,7 +2485,7 @@ function drawTireMarks(mvp, L, fogD, curFrame, curLap) {
 // slides. Two classes: rising "puffs" and long-lived ground-hugging "haze" (lingering trail).
 function smokeStep(dt, emit, i, nightF) {
   const P = smoke.pool, acc = smoke.accum, t = smokePrevT || 0;
-  const collide = SMOKE_COLLIDE && smokeColl;                       // per-frame track collision (fine grid â†’ cheap)
+  const collide = SMOKE_COLLIDE && smokeColl;                       // per-frame track collision (fine grid → cheap)
   for (let j = P.length - 1; j >= 0; j--) {
     const p = P[j]; p.age += dt;
     if (p.age >= p.life) { P[j] = P[P.length - 1]; P.pop(); continue; }
@@ -2469,7 +2501,7 @@ function smokeStep(dt, emit, i, nightF) {
     // per-frame track collision against the fine collider: the segment test can't tunnel even
     // at speed, so smoke bends off any track/world geometry it crosses. Cheap (few tris/cell).
     if (collide) {
-      // 1) movement crossing â†’ bend off walls/banking/any surface it moves through
+      // 1) movement crossing → bend off walls/banking/any surface it moves through
       const hit = collideSmokeSeg(smokeColl, ox, oy, oz, p.x, p.y, p.z);
       if (hit) {
         const tt = Math.max(0, hit.t - 0.03);
@@ -2478,7 +2510,7 @@ function smokeStep(dt, emit, i, nightF) {
         p.vx -= hit.nx * vn; p.vy -= hit.ny * vn; p.vz -= hit.nz * vn;
       }
       // 2) per-frame FLOOR: cast down to the ACTUAL track surface under the particle now (not
-      // its spawn plane) and keep it above â€” catches smoke that drifted over higher/banked
+      // its spawn plane) and keep it above — catches smoke that drifted over higher/banked
       // track or was born a hair below the shell (the "shit ton going through" case).
       const floor = collideSmokeSeg(smokeColl, p.x, p.y + 2.5, p.z, p.x, p.y - 1.5, p.z);
       if (floor) {
@@ -2508,15 +2540,15 @@ function smokeStep(dt, emit, i, nightF) {
   // slip angle but little actual scrub, so gate the amount by speed. ~nothing under 30 km/h,
   // full by ~90 km/h. Keeps long high-speed drifts smoky, kills the low-speed cloud.
   const spd = ex.speed[i] || 0;
-  // speedâ†’smoke amount, calibrated to the T-180 (tops ~570 km/h): 100 km/h â‰ˆ 4%,
-  // 200 â‰ˆ 50%, 400+ = full. Piecewise so the low-mid range barely smokes.
+  // speed→smoke amount, calibrated to the T-180 (tops ~570 km/h): 100 km/h ≈ 4%,
+  // 200 ≈ 50%, 400+ = full. Piecewise so the low-mid range barely smokes.
   const speedFac =
     spd <= 100 ? 0.10 * (spd / 100) :
     spd <= 200 ? 0.10 + 0.40 * (spd - 100) / 100 :
     spd <= 400 ? 0.50 + 0.50 * (spd - 200) / 200 : 1.0;
   const spinAmt = 0.8 + Math.min(spd / 3.6 / 20, 1.6);             // swirl grows with wheel momentum
   const fp = tCur / ex.dt;                                          // exact sub-frame playback position
-  // surface normal (forced toward the sky â€” ex.nrm sign is unreliable), used to drop the
+  // surface normal (forced toward the sky — ex.nrm sign is unreliable), used to drop the
   // recorded wheel CENTRE down to the tyre CONTACT PATCH so smoke comes from the tyre exactly.
   let unx = ex.nrm[i*3], uny = ex.nrm[i*3+1], unz = ex.nrm[i*3+2]; const unl = Math.hypot(unx, uny, unz) || 1;
   unx /= unl; uny /= unl; unz /= unl; if (uny < 0) { unx = -unx; uny = -uny; unz = -unz; }
@@ -2535,25 +2567,25 @@ function smokeStep(dt, emit, i, nightF) {
     if (drive <= 0.05) continue;
     const rearW = k >= 2 ? 1.0 : 0.22;                              // rear-drive: smoke mostly off the rears
     // spawn at the TRUE current wheel position (sub-frame) and spread along the wheel's
-    // path this frame â€” so a fast car doesn't leave the smoke lagging a frame behind.
+    // path this frame — so a fast car doesn't leave the smoke lagging a frame behind.
     const cur = wheelWorldAt(fp, k); if (!cur) continue;
     const prev = wheelWorldAt(Math.max(0, fp - 1), k) || cur;
     const rad = smoke.wheelR ? smoke.wheelR[k] : 0.33;
-    // the wheel's world velocity â€” fresh smoke inherits it so it moves WITH the car briefly
+    // the wheel's world velocity — fresh smoke inherits it so it moves WITH the car briefly
     // (staying around the tyre, swirling up) before air-drag slows it and it trails off.
     const iex = 1 / ex.dt, INH = 0.62;
     const wvx = (cur[0] - prev[0]) * iex * INH, wvy = (cur[1] - prev[1]) * iex * INH, wvz = (cur[2] - prev[2]) * iex * INH;
-    const rate = drive * 1.1 * dt * 60 * (0.9 + 0.4 * build) * rearW;  // sparse â€” one car's worth, not a pack
+    const rate = drive * 1.1 * dt * 60 * (0.9 + 0.4 * build) * rearW;  // sparse — one car's worth, not a pack
     let n = Math.floor(rate); if (Math.random() < rate - n) n++;
     for (let e = 0; e < n && P.length < smoke.cap; e++) {
-      const t = 1 - Math.random() * fill;                          // front of the path â†’ AT the tyre (contact patch)
+      const t = 1 - Math.random() * fill;                          // front of the path → AT the tyre (contact patch)
       const bx = prev[0] + (cur[0] - prev[0]) * t - unx * rad, by = prev[1] + (cur[1] - prev[1]) * t - uny * rad, bz = prev[2] + (cur[2] - prev[2]) * t - unz * rad;
       const ang = Math.random() * 6.283, jr = Math.random() * 0.08; // tight to the tyre
       P.push({                                                       // puff: pools thick + low at the tyre, then wafts up
         x: bx + Math.cos(ang) * jr, y: by + 0.03, z: bz + Math.sin(ang) * jr,
         vx: wvx - Math.sin(ang) * spinAmt * 1.5 + Math.cos(ang) * 0.25,   // wheel velocity + tangential swirl (vortex)
         vy: wvy + 0.5 + Math.random() * 0.5, vz: wvz + Math.cos(ang) * spinAmt * 1.5 + Math.sin(ang) * 0.25,
-        buoy: 3.0, drag: 0.7, curl: CURL_STR * 0.6, relax: 1.4,     // drag slows the inherited velocity â†’ stays near the tyre, then rises
+        buoy: 3.0, drag: 0.7, curl: CURL_STR * 0.6, relax: 1.4,     // drag slows the inherited velocity → stays near the tyre, then rises
         age: 0, life: 2.8 + Math.random() * 1.8, size0: (0.38 + it * 0.7) * (1 + 0.5 * build),
         baseA: 0.13 + it * 0.18,                                    // thick at the wheels only when it's really sliding
         gx: bx, gy: by, gz: bz, nx: unx, ny: uny, nz: unz,         // spawn-surface plane (banking-aware floor)
@@ -2561,7 +2593,7 @@ function smokeStep(dt, emit, i, nightF) {
       });
     }
     if (P.length < smoke.cap && Math.random() < (0.06 + 0.18 * build) * rearW) { // sparse lingering ground haze
-      const t = 1 - Math.random() * fill;                          // front of the path â†’ AT the tyre
+      const t = 1 - Math.random() * fill;                          // front of the path → AT the tyre
       const bx = prev[0] + (cur[0] - prev[0]) * t - unx * rad, by = prev[1] + (cur[1] - prev[1]) * t - uny * rad, bz = prev[2] + (cur[2] - prev[2]) * t - unz * rad;
       const ang = Math.random() * 6.283, jr = Math.random() * 0.22;
       P.push({
@@ -2586,7 +2618,7 @@ function smokeStepAndDraw(mvp, view, L, fogD, i, nightF, softOn, zNear, zFar) {
   let dt = smokePrevT === null ? 0 : tCur - smokePrevT;
   const scrub = smokePrevT === null || dt < 0 || dt > 0.2;
   smokePrevT = tCur;
-  if (scrub) { smoke.pool.length = 0; AIR.cells.clear(); }         // field is live sim â†’ clear on scrub
+  if (scrub) { smoke.pool.length = 0; AIR.cells.clear(); }         // field is live sim → clear on scrub
   else if (dt > 0) {
     if (playing && !scrubbing) airStep(dt, i, tCur / ex.dt);       // cars stir the shared air first
     smokeStep(dt, playing && !scrubbing, i, nightF);               // then smoke rides it
@@ -2600,7 +2632,7 @@ function smokeStepAndDraw(mvp, view, L, fogD, i, nightF, softOn, zNear, zFar) {
   for (const p of P) {
     const tt = p.age / p.life;
     const av = Math.min(1, tt / 0.07) * Math.max(0, 1 - Math.max(0, (tt - 0.38) / 0.62));   // holds full through the spread, fades late
-    const size = p.size0 * (0.5 + p.age * 2.1), alpha = av * p.baseA;   // billows bigger as it spreads â†’ thicker cloud
+    const size = p.size0 * (0.5 + p.age * 2.1), alpha = av * p.baseA;   // billows bigger as it spreads → thicker cloud
     for (let c = 0; c < 6; c++) {
       A[o++] = p.x; A[o++] = p.y; A[o++] = p.z;
       A[o++] = CORN[c][0]; A[o++] = CORN[c][1];
@@ -2637,7 +2669,7 @@ function smokeStepAndDraw(mvp, view, L, fogD, i, nightF, softOn, zNear, zFar) {
 
   if (softOn && hdrFX.smokeDens && smoke.depthTex) {
     // SEAMLESS MERGE: accumulate density additively into a half-res buffer, then one
-    // composite pass ramps the summed density â†’ overlapping puffs fuse into one field.
+    // composite pass ramps the summed density → overlapping puffs fuse into one field.
     const dens = hdrFX.smokeDens;
     gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, smoke.depthTex); gl.uniform1i(smokeLoc.sceneDepth, 6);
     gl.uniform1f(smokeLoc.softOn, 1);
@@ -2692,18 +2724,18 @@ function render() {
   gl.viewport(0, 0, cv.width, cv.height);
   const L = lightingFor(timeOfDay);           // sun/moon + atmosphere for this time of day
   const dayBright = Math.max(L.sun[0], L.sun[1], L.sun[2]);
-  const nightF = Math.max(0, Math.min(1, (1.0 - dayBright) / 0.45));   // 0 by day â†’ 1 deep night: fades the car lights in
+  const nightF = Math.max(0, Math.min(1, (1.0 - dayBright) / 0.45));   // 0 by day → 1 deep night: fades the car lights in
   gl.clearColor(L.fog[0], L.fog[1], L.fog[2], 1);
   if (!ex) { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT); return; }
   const fa = followActive();
-  // near plane: small in follow mode (the car is right in front â€” a 2u near plane
+  // near plane: small in follow mode (the car is right in front — a 2u near plane
   // clipped it like a solid object); larger for the overview cam's depth precision.
-  // shrink the near-clip as it zooms in â†’ the camera reads "smaller" and can sit closer to geometry
+  // shrink the near-clip as it zooms in → the camera reads "smaller" and can sit closer to geometry
   // (and the driver) without the near plane slicing through it.
   const zN = fa ? Math.max(0, Math.min(1, (1 - (follow.distMul || 1)) / 0.88)) : 0;
   /* Free-fly used a FIXED 2 m near plane, which is why the camera clipped into anything you tried
    * to approach: two metres of world in front of the lens was being cut away, so you could never
-   * get near a wall, a kerb or the car itself. It now scales with how far out you are zoomed â€”
+   * get near a wall, a kerb or the car itself. It now scales with how far out you are zoomed —
    * close in you get 8 cm and can nose right up to geometry; zoomed way out it returns to 2 m,
    * where depth precision matters more than proximity and nothing is near the lens anyway.
    * For reference, follow mode has always run 0.1 m against a 60 km far plane (a 600,000:1 ratio)
@@ -2711,7 +2743,7 @@ function render() {
   const zNear = fa ? (0.3 - 0.2 * zN) : 0.05;
   /* Depth precision follows the near:far RATIO, so the way to buy a tiny near plane is to stop
    * paying for a far one nothing uses: 60 km was rendering an empty horizon. 20 km still clears
-   * any Assetto Corsa track by a wide margin, and 0.05:20000 is a 400,000:1 ratio â€” LESS than the
+   * any Assetto Corsa track by a wide margin, and 0.05:20000 is a 400,000:1 ratio — LESS than the
    * 600,000:1 that follow mode has always shipped without z-fighting in this scene. */
   const zFar = fa ? 60000 : 20000;
   const proj = mPerspective(fa ? (follow.rig.fov || 0.9) : 0.9, w / h, zNear, zFar);
@@ -2719,12 +2751,12 @@ function render() {
   const mvp = new Float32Array(mMul(proj, view));
   // fog thins with chase distance (soft far-fade when pulled back), but clamp the
   // effective distance to a floor so zooming the follow cam in close doesn't blow the
-  // density up and wash the background out â€” keeps the far fade without the close haze.
+  // density up and wash the background out — keeps the far fade without the close haze.
   const fogD = 0.35 / Math.max(cam.dist, 120);
 
   // car matrix computed up front so its headlights can light the TRACK too (not just
-  // the car). carModelMatrix is now pure â€” it RETURNS {mat, steer} rather than setting
-  // carSteerAngle â€” so ghosts can each get their own. We publish the primary's steer to
+  // the car). carModelMatrix is now pure — it RETURNS {mat, steer} rather than setting
+  // carSteerAngle — so ghosts can each get their own. We publish the primary's steer to
   // the global here, which is what the wheels, exo and HUD below still read.
   const i = Math.max(0, Math.min(ex.N - 1, Math.floor(tCur / ex.dt)));
   const carShown = carGroups && showCar && !ex.gap[i];
@@ -2739,7 +2771,7 @@ function render() {
     let afx = atgt[0] - aeye[0], afy = atgt[1] - aeye[1], afz = atgt[2] - aeye[2];
     const afl = Math.hypot(afx, afy, afz) || 1; afx /= afl; afy /= afl; afz /= afl;
     BBAudio.setListener(aeye[0], aeye[1], aeye[2], afx, afy, afz, aup[0], aup[1], aup[2]);
-    // WIND rides the CAMERA's own airspeed, not the car's â€” it is what the listener hears from
+    // WIND rides the CAMERA's own airspeed, not the car's — it is what the listener hears from
     // moving through air. Parked beside a car at 400 km/h there is no wind; chasing it there is.
     // Measured from the eye's actual world motion, so free-fly, orbit and follow-cam all feed it
     // without special cases. Smoothed hard: a single dropped frame must not gust.
@@ -2756,7 +2788,7 @@ function render() {
       windPrev.t = tn; windPrev.p[0] = aeye[0]; windPrev.p[1] = aeye[1]; windPrev.p[2] = aeye[2];
     }
     if (!ex.gap[i]) {
-      // emit from the REAR of the car (turbine nozzle, model-space â†’ world via the car matrix), and
+      // emit from the REAR of the car (turbine nozzle, model-space → world via the car matrix), and
       // aim the source backward so the engine projects OUT THE BACK, not from the middle.
       let sx = ex.pos[i * 3], sy = ex.pos[i * 3 + 1], sz = ex.pos[i * 3 + 2];
       if (cm && carNozzle) {
@@ -2773,12 +2805,12 @@ function render() {
       const j1 = Math.min(ex.N - 1, i + 1), j0 = Math.max(0, i - 1), vdt = ((j1 - j0) * ex.dt) || ex.dt;
       const cvx = (ex.pos[j1 * 3] - ex.pos[j0 * 3]) / vdt, cvy = (ex.pos[j1 * 3 + 1] - ex.pos[j0 * 3 + 1]) / vdt, cvz = (ex.pos[j1 * 3 + 2] - ex.pos[j0 * 3 + 2]) / vdt;
       const rl2 = Math.hypot(sx - aeye[0], sy - aeye[1], sz - aeye[2]) || 1;
-      const vRad = (cvx * (sx - aeye[0]) + cvy * (sy - aeye[1]) + cvz * (sz - aeye[2])) / rl2;   // + receding / âˆ’ approaching (m/s)
-      BBAudio.setDoppler(343 / (343 + vRad * rate));   // Ã— replay rate so fast-forward flybys pitch too
+      const vRad = (cvx * (sx - aeye[0]) + cvy * (sy - aeye[1]) + cvz * (sz - aeye[2])) / rl2;   // + receding / − approaching (m/s)
+      BBAudio.setDoppler(343 / (343 + vRad * rate));   // × replay rate so fast-forward flybys pitch too
     }
   }
   const headInt = (carShown && carLights && carLights.head.length >= 2) ? nightF : 0;
-  // brake detection (no brake channel in these replays â€” verified by probing the frame
+  // brake detection (no brake channel in these replays — verified by probing the frame
   // bytes): infer it, but physically. Start from gravity-corrected deceleration (so loops
   // and banking don't count), subtract cornering scrub (tyres bleeding speed in a turn is
   // not braking), then a deadzone for coasting/drag. Only real braking survives.
@@ -2787,7 +2819,7 @@ function render() {
   const brakeF = Math.max(0, Math.min(1, (decelG - BRAKE_DEADZONE_G) / BRAKE_RANGE_G));
   const brakeInt = brakeF * nightF;           // red spill on the road behind, at night
   // cast-shadow pass: near cascade dynamic each frame; far cascade is the whole-track bake,
-  // only re-rendered when the sun moved (time changed) â€” cheap during normal playback.
+  // only re-rendered when the sun moved (time changed) — cheap during normal playback.
   shadowsRendered = false;
   // ghost poses BEFORE the shadow pass: they have to be in the depth map to cast onto the
   // track and onto each other, and solving them during the colour pass left them a frame
@@ -2827,7 +2859,7 @@ function render() {
   gl.viewport(0, 0, cv.width, cv.height);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-  // textured scene pass (track verts are already world-space â†’ model = identity)
+  // textured scene pass (track verts are already world-space → model = identity)
   if (sceneGroups) {
     gl.useProgram(progT);
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
@@ -2900,7 +2932,7 @@ function render() {
     for (const o of (bufs.lapOverlays || [])) bindAndDraw(o.buf, o.n, gl.LINES);
   }
 
-  // the car model on the cursor (its meshes are local-space â†’ uModel = carMatrix).
+  // the car model on the cursor (its meshes are local-space → uModel = carMatrix).
   // i / carShown / cm were computed up front (above the track pass) for the headlights.
   if (carShown) {
     if (!(SHADOW_ON && shadowReady)) drawCarShadow(cm, mvp);   // contact blob only when cast shadows are off
@@ -2930,7 +2962,7 @@ function render() {
     gl.uniform1i(tLoc.tex, 0);
     gl.uniform1f(tLoc.alpha, 1.0);
     gl.activeTexture(gl.TEXTURE0);
-    drawCarGroups(carGroups, cm);                              // body â€” keeps its crab
+    drawCarGroups(carGroups, cm);                              // body — keeps its crab
     drawGhostCars(mvp, headVP, nightF, carList);               // comparison laps, same car, own telemetry
     // the ghost pass leaves whichever lamps lit the LAST ghost bound; restore the
     // reference car's own lighting before its wheels, driver and glass are drawn
@@ -2952,7 +2984,7 @@ function render() {
           tyre[12] += dx; tyre[13] += dy; tyre[14] += dz;
           cage[12] += dx; cage[13] += dy; cage[14] += dz;
           drawCarGroups(w.rollGroups, tyre); drawCarGroups(w.staticGroups, cage);
-        } else {                                               // no recorded data â†’ procedural lift fallback
+        } else {                                               // no recorded data → procedural lift fallback
           const lift = g ? wheelLift(w, g) : 0;
           drawCarGroups(w.rollGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, roll, lift));
           drawCarGroups(w.staticGroups, wheelSteerModel(cm, w.pivot, carSteerAngle, 0, lift));
@@ -2960,7 +2992,7 @@ function render() {
       }
     }
     // cockpit wheel + driver: ONE spin drives both. The car's steer maps LINEARLY
-    // (proportional the whole way â€” the wheel never visibly stalls while the car
+    // (proportional the whole way — the wheel never visibly stalls while the car
     // keeps turning), scaled per-run so this replay's wildest steer (carSteerRef)
     // lands exactly at the lock. The lock is the authored steer animation's own
     // range when the car ships one, else the arms' calibrated IK reach.
@@ -2977,7 +3009,7 @@ function render() {
       for (const sm of carDriver.skinned) drawCarGroups([sm.grp], dp.body);
       /* Drop the head when the camera is right on top of it. A helmet is ~20 cm across, so once the
        * eye is inside that radius the mesh straddles the near plane and you see its interior across
-       * the frame â€” it reads as the helmet "clipping in from behind the camera". No near-plane value
+       * the frame — it reads as the helmet "clipping in from behind the camera". No near-plane value
        * fixes this: the geometry genuinely surrounds the lens. Measured against the neck pivot in
        * world space, so it applies to any camera that gets that close, not just one named mode. */
       let headOK = true;
@@ -2991,7 +3023,7 @@ function render() {
       }
       if (headOK) drawCarGroups(carDriver.headGroups, dp.head);
     }
-    // reflective WINDSCREEN â€” a transparent pass over the car: fresnel rim + sky/ground reflection +
+    // reflective WINDSCREEN — a transparent pass over the car: fresnel rim + sky/ground reflection +
     // a sharp sun glint that slides across as the car turns. Depth-tested but no depth-write, blended.
     if (carGlass && carGlass.length) {
       const eye = camEye();
@@ -3005,7 +3037,7 @@ function render() {
       gl.uniform3f(gLoc.fogC, L.fog[0], L.fog[1], L.fog[2]); gl.uniform1f(gLoc.fogD, fogD);
       gl.uniform3f(gLoc.tint, 0.015, 0.02, 0.03); gl.uniform1f(gLoc.opacity, 0.10);
       gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
-      // the reference car, then every ghost â€” same meshes, one model matrix each, so the
+      // the reference car, then every ghost — same meshes, one model matrix each, so the
       // ghosts get the same windscreen rather than reading as unglazed shells
       for (const M of [cm, ...ghostDraws.map(g => g.mat)]) {
         gl.uniformMatrix4fv(gLoc.model, false, M);
@@ -3056,7 +3088,7 @@ function render() {
     gl.useProgram(prog);
   }
 
-  // cursor point â€” shown when the car model isn't
+  // cursor point — shown when the car model isn't
   if (!carShown) {
     const cpt = new Float32Array([
       ex.pos[i * 3] + ex.nrm[i * 3] * 1.5,
@@ -3082,7 +3114,7 @@ function render() {
   }
   smokeStepAndDraw(mvp, view, L, fogD, i, nightF, usePost, zNear, zFar);
 
-  if (usePost) runHDR();   // HDR scene â†’ bloom + ACES tonemap â†’ screen (blacks black, light LIGHT)
+  if (usePost) runHDR();   // HDR scene → bloom + ACES tonemap → screen (blacks black, light LIGHT)
 }
 
 /* ===================== input: orbit controls ===================== */
@@ -3118,7 +3150,7 @@ cv.addEventListener("contextmenu", e => e.preventDefault());
 cv.addEventListener("wheel", e => {
   e.preventDefault();
   if (follow.on) {
-    // the range continues past the old 0.12 floor â€” the rig turns that last stretch into a move
+    // the range continues past the old 0.12 floor — the rig turns that last stretch into a move
     // into the cockpit rather than pulling the chase eye into the bodywork
     follow.distMul = Math.max(0.03, Math.min(2.6, follow.distMul * (e.deltaY > 0 ? 1.1 : 0.9)));
   } else {
@@ -3139,7 +3171,7 @@ addEventListener("keydown", e => {
   if (k === "m") {   // toggle the telemetry-driven engine soundscape
     if (window.BBAudio) BBAudio.toggle().then(on => {
       const el = document.getElementById("audioind");
-      if (el) { el.textContent = on ? "â™ª sound on" : "â™ª sound off"; el.style.opacity = on ? "1" : "0.5"; }
+      if (el) { el.textContent = on ? "♪ sound on" : "♪ sound off"; el.style.opacity = on ? "1" : "0.5"; }
     });
     e.preventDefault(); return;
   }
@@ -3150,7 +3182,7 @@ addEventListener("blur", () => flyKeys.clear());
 /* Apply buffered look motion, eased. A TIME-CONSTANT response (not a fixed fraction per frame)
  * keeps the feel identical at 30, 60 or 144 fps. */
 const lookPend = { dx: 0, dy: 0 };
-const LOOK_TAU = 0.035;            // seconds to absorb a flick â€” short enough to still feel direct
+const LOOK_TAU = 0.035;            // seconds to absorb a flick — short enough to still feel direct
 function lookStep(dtSec) {
   if (!lookPend.dx && !lookPend.dy) return;
   const k = 1 - Math.exp(-Math.max(0.001, dtSec) / LOOK_TAU);
@@ -3174,12 +3206,12 @@ function lookStep(dtSec) {
 }
 
 /* Free-fly with inertia. Stepping the position directly while a key is held starts and stops the
- * camera instantly â€” that hard start/stop is most of what makes hand-flown footage look jerky; a
+ * camera instantly — that hard start/stop is most of what makes hand-flown footage look jerky; a
  * real camera has mass. Velocity chases the requested direction and coasts when you let go.
  * Behaviour is unchanged while a key is held at steady state: same top speed, same scaling. */
 const flyVel = [0, 0, 0];
-const FLY_ACCEL = 6.5;             // 1/s â€” how hard it chases the requested velocity
-const FLY_DAMP = 4.0;              // 1/s â€” coast-down when nothing is held
+const FLY_ACCEL = 6.5;             // 1/s — how hard it chases the requested velocity
+const FLY_DAMP = 4.0;              // 1/s — coast-down when nothing is held
 function flyStep(dtSec) {
   if (follow.on || !ex) { flyVel[0] = flyVel[1] = flyVel[2] = 0; return; }
   const dt = Math.max(0.001, Math.min(0.05, dtSec));
@@ -3279,7 +3311,7 @@ document.getElementById("btnPlay").addEventListener("click", togglePlay);
 document.getElementById("rate").addEventListener("change", function () { rate = +this.value; });
 document.getElementById("modeSpeed").addEventListener("click", () => setMode("speed"));
 document.getElementById("modeBank").addEventListener("click", () => setMode("bank"));
-/* Lap comparison legend â€” the lap times, and which colour is which lap. Facts only:
+/* Lap comparison legend — the lap times, and which colour is which lap. Facts only:
  * the line colour says where each lap was faster or slower, this says which lap it is
  * and what it cost. Hidden entirely when comparison is off. */
 function renderLapLegend(info) {
@@ -3294,7 +3326,7 @@ function renderLapLegend(info) {
   if (!lapCompare || !info) { el.style.display = "none"; return; }
   el.style.display = "block";
   const fmt = (ms) => {
-    if (!ms) return "â€”";
+    if (!ms) return "—";
     const s = ms / 1000;
     return `${Math.floor(s / 60)}:${(s % 60).toFixed(3).padStart(6, "0")}`;
   };
@@ -3303,32 +3335,32 @@ function renderLapLegend(info) {
     `background:rgb(${c.map(x => Math.round(x * 255)).join(",")})"></span>`;
   const row = (c, label, ms, isRef) => {
     const d = isRef ? "reference"
-      : (ms && refMs ? `${ms >= refMs ? "+" : "âˆ’"}${(Math.abs(ms - refMs) / 1000).toFixed(3)}` : "");
-    return `<div>${swatch(c)}${label} Â· ${fmt(ms)} <span style="opacity:.6">${d}</span></div>`;
+      : (ms && refMs ? `${ms >= refMs ? "+" : "−"}${(Math.abs(ms - refMs) / 1000).toFixed(3)}` : "");
+    return `<div>${swatch(c)}${label} · ${fmt(ms)} <span style="opacity:.6">${d}</span></div>`;
   };
   const rows = [
     row([1, 1, 1], `lap ${info.refI + 1}`, refMs, true) +
-      `<div style="margin:0 0 3px 15px;opacity:.75"><span id="lcref">â€”</span></div>`,
+      `<div style="margin:0 0 3px 15px;opacity:.75"><span id="lcref">—</span></div>`,
     ...info.extra.map(o => row(LAP_COLORS[(o.k + 1) % LAP_COLORS.length], `lap ${o.k + 1}`, o.w.timeMs, false)),
     ...compareRuns.map((r, i) => row(r.color, r.label, r.win.timeMs, false) +
-      `<div style="margin:0 0 3px 15px;opacity:.75"><span class="lclive" data-i="${i}">â€”</span></div>`),
+      `<div style="margin:0 0 3px 15px;opacity:.75"><span class="lclive" data-i="${i}">—</span></div>`),
   ].join("");
   const full = compareRuns.length >= MAX_CARS - 1;
   const addRow = `<div id="lcadd" style="margin-top:6px;cursor:${full ? "default" : "pointer"};opacity:${full ? ".4" : ".8"}">` +
     (full ? `four cars is the limit` : `+ add a lap`) + `</div>`;
   // distance = coaching (gap on screen IS the delta); race = one clock, staggered starts
   const modeRow = `<div style="margin-top:6px;opacity:.75">align: ` +
-    `<span id="lcmd" style="cursor:pointer;text-decoration:underline">${lapAlign === "time" ? "race (one clock)" : "distance (delta)"}</span></div>`;
+    `<span id="lcmd" style="cursor:pointer;text-decoration:underline">${lapAlign === "time" ? "race (one clock)" : "same point (cars overlap)"}</span></div>`;
   // offsets only mean anything on a shared clock; in distance align a ghost is placed by
   // where it was, so shifting it in time would describe a lap nobody drove
   const offRows = (lapAlign === "time" && compareRuns.length)
     ? `<div style="margin-top:5px;opacity:.75">start offset</div>` + compareRuns.map((r, i) =>
         `<div style="display:flex;gap:6px;align-items:center">${swatch(r.color)}` +
-        `<span class="lcoff" data-i="${i}" data-d="-1" style="cursor:pointer;padding:0 5px">âˆ’</span>` +
+        `<span class="lcoff" data-i="${i}" data-d="-1" style="cursor:pointer;padding:0 5px">−</span>` +
         `<span style="min-width:52px;display:inline-block;text-align:center">${(r.offsetS || 0).toFixed(1)}s</span>` +
         `<span class="lcoff" data-i="${i}" data-d="1" style="cursor:pointer;padding:0 5px">+</span></div>`).join("")
     : "";
-  el.innerHTML = `<div style="opacity:.55;margin-bottom:4px">lap comparison Â· green = faster here</div>` +
+  el.innerHTML = `<div style="opacity:.55;margin-bottom:4px">lap comparison · green = faster here</div>` +
     rows + addRow + modeRow + offRows;
 
   const add = document.getElementById("lcadd");
@@ -3345,7 +3377,7 @@ function renderLapLegend(info) {
   }
 }
 
-/* Picking the lap to compare against â€” IN THE APP, never an OS folder dialog.
+/* Picking the lap to compare against — IN THE APP, never an OS folder dialog.
  * BLACKBOX already knows every replay for the loaded track (replays_for_track) and
  * already parses each one's fastest lap for the track browser, so the natural picker is
  * a list of this track's laps by time. Sending the chair out to a file dialog to hunt
@@ -3370,9 +3402,9 @@ async function showLapPicker() {
   const el = ensureLapPicker();
   el.style.display = "block";
   const head = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">` +
-    `<span style="opacity:.55">compare againstâ€¦</span>` +
-    `<span id="lappickx" style="cursor:pointer;opacity:.5;padding:0 4px">âœ•</span></div>`;
-  el.innerHTML = head + `<div style="opacity:.6">reading this track's replaysâ€¦</div>`;
+    `<span style="opacity:.55">compare against…</span>` +
+    `<span id="lappickx" style="cursor:pointer;opacity:.5;padding:0 4px">✕</span></div>`;
+  el.innerHTML = head + `<div style="opacity:.6">reading this track's replays…</div>`;
   el.querySelector("#lappickx").onclick = hideLapPicker;
 
   const track = replay && replay.track;
@@ -3388,7 +3420,7 @@ async function showLapPicker() {
   }
   el.innerHTML = head + others.map((r, i) =>
     `<div class="lprow" data-i="${i}" style="cursor:pointer;padding:3px 4px;border-radius:3px;display:flex;gap:10px;justify-content:space-between">` +
-    `<span style="opacity:.85">${esc(fmtReplayDate(r))}</span><span class="lp" style="opacity:.5">readingâ€¦</span></div>`).join("");
+    `<span style="opacity:.85">${esc(fmtReplayDate(r))}</span><span class="lp" style="opacity:.5">reading…</span></div>`).join("");
   el.querySelector("#lappickx").onclick = hideLapPicker;
 
   // lap times, same way the track browser gets them: parse each replay once
@@ -3439,7 +3471,7 @@ document.getElementById("btnLapCmp").addEventListener("click", function () {
   if (!lapCompare) { renderLapLegend(null); hideLapPicker(); return; }
   // turning it on with no runs loaded: go straight to picking one, since an empty
   // comparison is a toggle that visibly does nothing. Adding MORE runs is the legend's
-  // "+ add a lap" â€” the button stays a plain on/off so it can always be turned off.
+  // "+ add a lap" — the button stays a plain on/off so it can always be turned off.
   const info = lapOverlayInfo();
   if (info && info.extra.length + compareRuns.length === 0) showLapPicker();
 });
@@ -3474,13 +3506,13 @@ document.getElementById("btnLine").addEventListener("click", function () {
   showLine = !showLine;
   this.classList.toggle("on", showLine);
 });
-(function () {   // time-of-day slider â†’ timeOfDay (hours); updates the â˜€/ðŸŒ™ icon + HH:MM label
+(function () {   // time-of-day slider → timeOfDay (hours); updates the ☀/🌙 icon + HH:MM label
   const sl = document.getElementById("timeSlider"), ic = document.getElementById("timeIcon"), lb = document.getElementById("timeLabel");
   const upd = () => {
     timeOfDay = (+sl.value) / 60;
     const hh = Math.floor(timeOfDay), mm = Math.round((timeOfDay - hh) * 60);
     lb.textContent = String(hh).padStart(2, "0") + ":" + String(mm).padStart(2, "0");
-    ic.textContent = (timeOfDay >= 6 && timeOfDay < 18) ? "â˜€" : "ðŸŒ™";
+    ic.textContent = (timeOfDay >= 6 && timeOfDay < 18) ? "☀" : "🌙";
   };
   sl.addEventListener("input", upd);
   upd();
@@ -3490,9 +3522,9 @@ document.getElementById("btnLine").addEventListener("click", function () {
   if (!shadowReady) { btn.classList.remove("on"); btn.disabled = true; btn.title = "needs WebGL2 depth textures"; return; }
   btn.addEventListener("click", function () { SHADOW_ON = !SHADOW_ON; this.classList.toggle("on", SHADOW_ON); });
 })();
-(function () {   // tyre marks + smoke: cycle lap (reset each lap) â†’ keep (accumulate + fade) â†’ off
+(function () {   // tyre marks + smoke: cycle lap (reset each lap) → keep (accumulate + fade) → off
   const btn = document.getElementById("btnTyres");
-  const LBL = ["tyres Â· off", "tyres Â· lap", "tyres Â· keep"];
+  const LBL = ["tyres · off", "tyres · lap", "tyres · keep"];
   btn.addEventListener("click", function () {
     TYRE_MODE = (TYRE_MODE + 1) % 3;
     btn.textContent = LBL[TYRE_MODE];
@@ -3500,11 +3532,11 @@ document.getElementById("btnLine").addEventListener("click", function () {
     if (TYRE_MODE === 0) { smoke.pool.length = 0; }   // clear live particles when switched off
   });
 })();
-(function () {   // volume slider â†’ master gain; icon click mutes/unmutes
+(function () {   // volume slider → master gain; icon click mutes/unmutes
   const slider = document.getElementById("volSlider"), icon = document.getElementById("volIcon");
   if (!slider) return;
   let lastNonZero = 100;
-  const iconFor = v => v <= 0 ? "ðŸ”‡" : v < 45 ? "ðŸ”ˆ" : v < 80 ? "ðŸ”‰" : "ðŸ”Š";
+  const iconFor = v => v <= 0 ? "🔇" : v < 45 ? "🔈" : v < 80 ? "🔉" : "🔊";
   const apply = v => { if (icon) icon.textContent = iconFor(v); if (window.BBAudio) BBAudio.setVolume(v / 100); };
   slider.addEventListener("input", function () { const v = +this.value; if (v > 0) lastNonZero = v; apply(v); });
   if (icon) icon.addEventListener("click", function () {
@@ -3514,14 +3546,14 @@ document.getElementById("btnLine").addEventListener("click", function () {
   });
   apply(+slider.value);
 })();
-(function () {   // the CSP bridge â€” offered, never installed behind the user's back
+(function () {   // the CSP bridge — offered, never installed behind the user's back
   /* The turbine's afterburner is a button in CSP's extended physics that AC's shared memory never
    * exposes, so a replay can only carry it if this small app was running while you drove. That
-   * means writing into the user's Assetto Corsa folder, which is theirs â€” so this asks, states
+   * means writing into the user's Assetto Corsa folder, which is theirs — so this asks, states
    * exactly where it will write, and does nothing until clicked. Nothing here affects existing
    * replays; it changes what future ones record. */
   /* Deferred to a task, NOT run at parse time: `inTauri` is a `const` declared further down this
-   * same script, so touching it from here during parse throws a temporal-dead-zone ReferenceError â€”
+   * same script, so touching it from here during parse throws a temporal-dead-zone ReferenceError —
    * which aborts the WHOLE inline script and takes the track browser down with it (symptom: the app
    * opens on the bare drop-a-file screen instead of the track menu). Anything added near the top
    * that reads app state must wait until the script has finished running. */
@@ -3532,16 +3564,16 @@ document.getElementById("btnLine").addEventListener("click", function () {
   const show = html => { chip.innerHTML = html; chip.classList.remove("hidden"); };
   const check = async () => {
     let s;
-    try { s = await tinvoke("bridge_status"); } catch (e) { return; }   // no AC install â†’ nothing to offer
+    try { s = await tinvoke("bridge_status"); } catch (e) { return; }   // no AC install → nothing to offer
     if (s.installed && s.current) { chip.classList.add("hidden"); return; }
     const verb = s.installed ? "UPDATE" : "INSTALL";
-    show(`TURBINE TELEMETRY â€” the afterburner button lives in CSP's extended physics and is invisible to AC's shared memory, so replays can't carry it unless a small CSP app is running while you drive. <b>${verb}</b> it into <code>${esc(s.path)}</code>? <button id="btnBridge">${verb.toLowerCase()} bridge</button> <span class="dim">then enable "BLACKBOX Bridge" in CSP's app list. Existing replays are unaffected.</span>`);
+    show(`TURBINE TELEMETRY — the afterburner button lives in CSP's extended physics and is invisible to AC's shared memory, so replays can't carry it unless a small CSP app is running while you drive. <b>${verb}</b> it into <code>${esc(s.path)}</code>? <button id="btnBridge">${verb.toLowerCase()} bridge</button> <span class="dim">then enable "BLACKBOX Bridge" in CSP's app list. Existing replays are unaffected.</span>`);
     const b = document.getElementById("btnBridge");
     if (b) b.addEventListener("click", async () => {
       b.disabled = true;
       try {
         const path = await tinvoke("install_bridge");
-        show(`Bridge installed to <code>${esc(path)}</code> â€” enable <b>BLACKBOX Bridge</b> in CSP's app list, then drive. Replays saved after that carry turbine and afterburner data.`);
+        show(`Bridge installed to <code>${esc(path)}</code> — enable <b>BLACKBOX Bridge</b> in CSP's app list, then drive. Replays saved after that carry turbine and afterburner data.`);
       } catch (e) { show("bridge install failed: " + esc(String(e))); }
     });
   };
@@ -3568,7 +3600,7 @@ document.getElementById("btnLine").addEventListener("click", function () {
   });
   wake();
 })();
-(function () {   // windowed fullscreen â€” Tauri borderless-fullscreen (no exclusive mode switch); F11 or the â›¶ button
+(function () {   // windowed fullscreen — Tauri borderless-fullscreen (no exclusive mode switch); F11 or the ⛶ button
   const twin = (window.__TAURI__ && window.__TAURI__.window) ? window.__TAURI__.window : null;
   async function toggle() {
     try {
@@ -3644,12 +3676,12 @@ async function idbSet(key, val) {
 
 const chipTrack = () => document.getElementById("chipTrack");
 document.getElementById("btnTracksDir").addEventListener("click", async () => {
-  if (!window.showDirectoryPicker) { alert("This browser lacks the File System Access API (use Chrome/Edge) â€” drag the kn5 in manually."); return; }
+  if (!window.showDirectoryPicker) { alert("This browser lacks the File System Access API (use Chrome/Edge) — drag the kn5 in manually."); return; }
   try {
     const dir = await showDirectoryPicker();
     await idbSet("tracksDir", dir);
     if (replay && !sceneGroups && !bufs.trackIdxN) maybeAutoLoadTrack(replay.track);
-    else chipTrack().textContent = "tracks folder saved â€” future replays auto-load their track";
+    else chipTrack().textContent = "tracks folder saved — future replays auto-load their track";
   } catch (e) { /* user cancelled */ }
 });
 
@@ -3658,13 +3690,13 @@ async function maybeAutoLoadTrack(trackName) {
   // native app: fetch the track's kn5 files straight from the Steam AC install
   if (inTauri) {
     try {
-      chipTrack().textContent = `finding ${trackName} in your AC installâ€¦`;
+      chipTrack().textContent = `finding ${trackName} in your AC install…`;
       const files = await tinvoke("find_track", { name: trackName });
       if (!files || !files.length) {
-        chipTrack().textContent = `track "${trackName}" not found in your Steam AC install â€” load a kn5 manually`;
+        chipTrack().textContent = `track "${trackName}" not found in your Steam AC install — load a kn5 manually`;
         return;
       }
-      chipTrack().textContent = `loading ${trackName} (${files.length} kn5)â€¦`;
+      chipTrack().textContent = `loading ${trackName} (${files.length} kn5)…`;
       const items = [];
       for (const f of files) {
         const ab = await tinvoke("read_file", { path: f.path });
@@ -3678,7 +3710,7 @@ async function maybeAutoLoadTrack(trackName) {
   }
   const dir = await idbGet("tracksDir");
   if (!dir) {
-    chipTrack().textContent = `NO TRACK LOADED â€” click "tracks folderâ€¦" once (pick ...\\assettocorsa\\content\\tracks) and replays will load their track automatically.`;
+    chipTrack().textContent = `NO TRACK LOADED — click "tracks folder…" once (pick ...\\assettocorsa\\content\\tracks) and replays will load their track automatically.`;
     return;
   }
   try {
@@ -3690,7 +3722,7 @@ async function maybeAutoLoadTrack(trackName) {
       if (handle.kind === "directory" && name.toLowerCase() === trackName.toLowerCase()) { found = handle; break; }
     }
     if (!found) {
-      chipTrack().textContent = `track folder "${trackName}" not found in the saved tracks folder â€” load the kn5 manually`;
+      chipTrack().textContent = `track folder "${trackName}" not found in the saved tracks folder — load the kn5 manually`;
       return;
     }
     const items = [];
@@ -3700,10 +3732,10 @@ async function maybeAutoLoadTrack(trackName) {
       }
     }
     if (!items.length) {
-      chipTrack().textContent = `no .kn5 files in "${trackName}" â€” load manually`;
+      chipTrack().textContent = `no .kn5 files in "${trackName}" — load manually`;
       return;
     }
-    chipTrack().textContent = `auto-loading ${trackName} (${items.length} kn5)â€¦`;
+    chipTrack().textContent = `auto-loading ${trackName} (${items.length} kn5)…`;
     await loadTrackBuffers(items);
   } catch (e) {
     chipTrack().textContent = "track auto-load failed: " + e.message;
@@ -3715,7 +3747,7 @@ async function makeSceneTexture(blob, name) {
   if (fmt === "dds") {
     const parsed = KN5Tex.parseDDS(blob);
     // placeholder textures (NULL.dds etc.): tiny and near-black would kill the
-    // material â€” probe and substitute a neutral surface grey
+    // material — probe and substitute a neutral surface grey
     if (parsed.width <= 4 && parsed.height <= 4) {
       let rgba;
       if (parsed.format === "rgba8") rgba = parsed.mips[0].data;
@@ -3772,7 +3804,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
           const translucent = /transparent|glass/i.test(mat.name || "");
           allGroups.push({ posBuf, nrmBuf, uvBuf, idxBuf, count: g.idx.length, tex,
                            alphaTested: !!(mat.alphaTested), translucent });
-          if (!translucent) collGroups.push({ pos: g.pos, idx: g.idx }); // solid â†’ collider
+          if (!translucent) collGroups.push({ pos: g.pos, idx: g.idx }); // solid → collider
           triCount += g.triCount;
         }
       } catch (sceneErr) {
@@ -3804,7 +3836,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
 
     if (ex) buildGeometry(); // ribbon shrinks to car width now that the road is real
     document.getElementById("chipTrack").classList.add("hidden");
-    fi.textContent = prev + ` Â· track: ${items.length} kn5, ${(triCount).toLocaleString()} tris${allGroups.length ? " textured" : " (bare)"} (${((performance.now() - t0) / 1000).toFixed(1)}s) Â· building edge indexâ€¦`;
+    fi.textContent = prev + ` · track: ${items.length} kn5, ${(triCount).toLocaleString()} tris${allGroups.length ? " textured" : " (bare)"} (${((performance.now() - t0) / 1000).toFixed(1)}s) · building edge index…`;
 
     setTimeout(() => {
       try {
@@ -3820,7 +3852,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
           base += r.verts.length / 3; vo += r.verts.length; to += r.tris.length;
         }
         edgeIndex = RoadEdge.buildEdgeIndex(verts, tris);
-        // track world bounds â†’ sizes the static whole-track shadow bake; reset forces a re-bake
+        // track world bounds → sizes the static whole-track shadow bake; reset forces a re-bake
         { let a = 1e18, b = 1e18, c = 1e18, d = -1e18, e = -1e18, f = -1e18;
           for (let v = 0; v < verts.length; v += 3) { const x = verts[v], y = verts[v+1], z = verts[v+2];
             if (x<a)a=x; if(x>d)d=x; if(y<b)b=y; if(y>e)e=y; if(z<c)c=z; if(z>f)f=z; }
@@ -3831,15 +3863,15 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
           worldColl = collGroups.length ? buildWorldColliderFromGroups(collGroups)
                                         : buildWorldCollider(verts, tris);
           // smoke collides with the TRACK SURFACE ONLY (the road mesh), not the environment
-          // (grandstands/props/buildings) â€” keeps the per-particle queries cheap on detailed
+          // (grandstands/props/buildings) — keeps the per-particle queries cheap on detailed
           // tracks. verts/tris here are the merged road mesh.
           smokeColl = (tris && tris.length) ? buildWorldCollider(verts, tris, 3, 4096)
                     : (collGroups.length ? buildWorldColliderFromGroups(collGroups, 3, 4096) : null);
         } catch (e) { worldColl = null; smokeColl = null; console.warn("collider build failed:", e); }
-        fi.textContent = fi.textContent.replace(" Â· building edge indexâ€¦",
-          ` Â· ${edgeIndex.count.toLocaleString()} edge segments${worldColl ? ", " + worldColl.count.toLocaleString() + " collider tris" : ""}`);
+        fi.textContent = fi.textContent.replace(" · building edge index…",
+          ` · ${edgeIndex.count.toLocaleString()} edge segments${worldColl ? ", " + worldColl.count.toLocaleString() + " collider tris" : ""}`);
       } catch (err) {
-        fi.textContent = fi.textContent.replace(" Â· building edge indexâ€¦", " Â· edge index failed");
+        fi.textContent = fi.textContent.replace(" · building edge index…", " · edge index failed");
       }
     }, 60);
   } catch (err) {
@@ -3853,7 +3885,7 @@ function loadTrack(file) {
 }
 
 // clear the prior track's scene + GPU buffers before loading another, or they
-// stack (bug: open track A, then B â†’ both rendered at once)
+// stack (bug: open track A, then B → both rendered at once)
 function resetTrackScene() {
   if (sceneGroups) {
     for (const g of sceneGroups) {
@@ -3925,7 +3957,7 @@ async function uploadGroups(groupList, scene, fallbackRGB) {
       uvBuf: mk(g.uv, gl.ARRAY_BUFFER), idxBuf: mk(g.idx, gl.ELEMENT_ARRAY_BUFFER),
       count: g.idx.length, tex, alphaTested: !!mat.alphaTested,
       blend: mat.blendMode === 1,   // transparent (alpha-blend)
-      glass: /glass/i.test(mat.name || "") && !/headlight/i.test(mat.name || ""),   // windscreen â†’ reflective pass
+      glass: /glass/i.test(mat.name || "") && !/headlight/i.test(mat.name || ""),   // windscreen → reflective pass
     });
   }
   return out;
@@ -3937,7 +3969,7 @@ async function uploadSceneGroups(scene, fallbackRGB) { return uploadGroups(scene
  * There are 16 T-180 variants installed on this machine and they do not sound alike, so a fixed set
  * of samples is the wrong engine for fifteen of them. The car's FMOD bank holds its own ladder plus
  * the turbine/afterburner stack that the shipped subset never had. Failure is non-fatal by design:
- * no Tauri, no bank, an odd codec â€” BBAudio keeps the built-in wavs and the app just sounds as it
+ * no Tauri, no bank, an odd codec — BBAudio keeps the built-in wavs and the app just sounds as it
  * did before. */
 async function loadCarSound(carId) {
   if (!inTauri || !carId || !window.BBAudio || !window.FSB5) return;
@@ -3946,10 +3978,10 @@ async function loadCarSound(carId) {
     if (!path) return;
     const ab = await tinvoke("read_file", { path });
     const info = await BBAudio.setCarBank(ab, carId);
-    if (info && info.voices) console.log(`[BBAudio] ${carId}: playing ${info.event} â€” ${info.voices} layers from its own bank`);
+    if (info && info.voices) console.log(`[BBAudio] ${carId}: playing ${info.event} — ${info.voices} layers from its own bank`);
     else if (info && info.wrongCar) console.warn(`[BBAudio] no engine: the event map is ${info.wrongCar}, this replay is ${carId}`);
   } catch (e) {
-    console.warn("[BBAudio] car bank unavailable for " + carId + " â€” no engine sound:", e);
+    console.warn("[BBAudio] car bank unavailable for " + carId + " — no engine sound:", e);
   }
 }
 
@@ -3959,9 +3991,9 @@ async function loadCarModel(carId) {
     const files = await tinvoke("find_car", { carId });
     if (!files || !files.length) return;
     const ab = await tinvoke("read_file", { path: files[0].path });
-    const scene = KN5.extractScene(ab, { lod0Only: true, skipTransparent: false });   // keep glass (windscreen) â€” normally skipped
+    const scene = KN5.extractScene(ab, { lod0Only: true, skipTransparent: false });   // keep glass (windscreen) — normally skipped
     carGroups = await uploadSceneGroups(scene, [150, 152, 158]);
-    carGlass = carGroups.filter(g => g.glass);       // windscreen â†’ reflective glass pass
+    carGlass = carGroups.filter(g => g.glass);       // windscreen → reflective glass pass
     carGroups = carGroups.filter(g => !g.blend);     // opaque body only (all transparent stays out of the solid pass)
     // light emitters from the model's own housings (model space): headlight/brakelight
     // bulbs as one centroid per side, and the LED arrays (white + red) clustered per lamp.
@@ -3976,7 +4008,7 @@ async function loadCarModel(carId) {
         if (best < 0) cl.push({ x, y, z, c: 1 }); else { const q = cl[best]; q.x += x; q.y += y; q.z += z; q.c++; } }
       return cl.filter(q => q.c > 8).map(q => [q.x/q.c, q.y/q.c, q.z/q.c]);
     };
-    const sideMeans = lamps => {   // average the lamps on each side â†’ 2 beam origins
+    const sideMeans = lamps => {   // average the lamps on each side → 2 beam origins
       const L = [0,0,0,0], R = [0,0,0,0], out = [];
       for (const p of lamps) { const s = p[0] > 0 ? L : R; s[0] += p[0]; s[1] += p[1]; s[2] += p[2]; s[3]++; }
       for (const c of [L, R]) if (c[3]) out.push([c[0]/c[3], c[1]/c[3], c[2]/c[3]]);
@@ -3988,9 +4020,9 @@ async function loadCarModel(carId) {
       else if (/brakelightbulb/i.test(mat.name)) { const l = clusterLamps(g, 0.10); carLights.tail.push(...l); carLights.brake.push(...sideMeans(l)); }
       else if (/ledwhite/i.test(mat.name)) carLights.accentW.push(...clusterLamps(g, 0.07));
       else if (/ledred/i.test(mat.name)) carLights.accentR.push(...clusterLamps(g, 0.07));
-      else if (/turbineglow/i.test(mat.name)) {   // turbine nozzle â†’ plume + backfire origin
+      else if (/turbineglow/i.test(mat.name)) {   // turbine nozzle → plume + backfire origin
         // emit from the nozzle MOUTH (rearmost, min z), not the centroid, so the housing
-        // occludes the plume and it only glows out the opening â€” not through the bodywork.
+        // occludes the plume and it only glows out the opening — not through the bodywork.
         const p = g.pos, n = p.length / 3; let cx = 0, cy = 0, minz = 1e9;
         for (let k = 0; k < n; k++) { cx += p[k*3]; cy += p[k*3+1]; if (p[k*3+2] < minz) minz = p[k*3+2]; }
         carNozzle = [cx/n, cy/n, minz];
@@ -3999,7 +4031,7 @@ async function loadCarModel(carId) {
     // steerable wheels (front pair steers to the line; the body keeps its crab)
     carWheels = [];
     for (const w of (scene.wheels || [])) {
-      // rolling radius = furthest TYRE vertex from the pivot in the plane âŸ‚ the axle (model X)
+      // rolling radius = furthest TYRE vertex from the pivot in the plane ⟂ the axle (model X)
       let r2 = 0;
       for (const g of w.rollGroups) { const p = g.pos; for (let k = 0; k < p.length; k += 3) {
         const dy = p[k+1] - w.pivot[1], dz = p[k+2] - w.pivot[2]; const d = dy*dy + dz*dz; if (d > r2) r2 = d; } }
@@ -4011,11 +4043,11 @@ async function loadCarModel(carId) {
     // in-cockpit steering wheel (spins with steer)
     carSteerWheel = null;
     if (scene.steerWheel) {
-      // keep a CPU copy of the wheel's vertices (downsampled if huge) â€” the
+      // keep a CPU copy of the wheel's vertices (downsampled if huge) — the
       // driver's grips get snapped onto the nearest actual MATERIAL (snapToMesh)
       // so the hands hold the physical handle, holes and all
       let total = 0; for (const g of scene.steerWheel.groups) total += g.pos.length;
-      const step = 3 * Math.max(1, Math.ceil(total / 90000));   // â‰¤ ~30k verts kept
+      const step = 3 * Math.max(1, Math.ceil(total / 90000));   // ≤ ~30k verts kept
       const verts = [];
       for (const g of scene.steerWheel.groups) for (let i = 0; i + 2 < g.pos.length; i += step)
         verts.push(g.pos[i], g.pos[i+1], g.pos[i+2]);
@@ -4045,7 +4077,7 @@ async function loadCarModel(carId) {
             // reposition each RIGID (head/helmet) mesh from bind to the seated pose.
             // The helmet/face hang off non-bone nodes, so walk up to the nearest
             // ancestor the seated pose defines (RIG_Head) and apply that bone's rigid
-            // bindâ†’seated delta: seatedVert = bindVert Â· inv(A.bindWorld) Â· knhWorld[A].
+            // bind→seated delta: seatedVert = bindVert · inv(A.bindWorld) · knhWorld[A].
             for (const m of dscene.meshes) {
               if (m.skinned || m.ownerName == null) continue;
               let ai = dscene.nameIndex[m.ownerName];
@@ -4065,7 +4097,7 @@ async function loadCarModel(carId) {
             }
           } catch (e) { console.warn("driver pose load failed:", e); poseWorld = null; poseLocal = null; }
         }
-        // hide the HANS device (RT_HANS) â€” the shoulder/neck collar clips ugly on our seated pose
+        // hide the HANS device (RT_HANS) — the shoulder/neck collar clips ugly on our seated pose
         const isHans = m => /hans/i.test((dscene.materials[m.materialId] || {}).name || "");
         const headGroups = await uploadGroups(dscene.meshes.filter(m => !m.skinned && !isHans(m)), dscene, [170, 172, 178]);
         // skinned meshes get DYNAMIC pos/nrm buffers (skinned to the seated pose)
@@ -4100,13 +4132,13 @@ async function loadCarModel(carId) {
             if (!S0 || !E0 || !W0) continue;
             arms.push({ S0, E0, W0, side: s, L1: v3len(v3sub(E0, S0)), L2: v3len(v3sub(W0, E0)), pole: v3sub(E0, S0),
                         armSub: subtreeOf("DRIVER:RIG_Arm_"+s), foreSub: subtreeOf("DRIVER:RIG_ForeArm_"+s),
-                        foreEndSub: subtreeOf("DRIVER:RIG_ForeArm_END_"+s),   // the distal twist bone â€” carries most of the forearm's skin
-                        handSub: subtreeOf("DRIVER:RIG_HAND_"+s),   // hand+fingers â†’ grip rolls with the wheel
+                        foreEndSub: subtreeOf("DRIVER:RIG_ForeArm_END_"+s),   // the distal twist bone — carries most of the forearm's skin
+                        handSub: subtreeOf("DRIVER:RIG_HAND_"+s),   // hand+fingers → grip rolls with the wheel
                         gripBase: (s === "L" ? 1 : -1) * DRIVER_GRIP_UP });   // raise each hand up the rim
           }
-          // put each hand's GRIP HOLLOW â€” the channel the curled fingers enclose,
+          // put each hand's GRIP HOLLOW — the channel the curled fingers enclose,
           // measured from the whole digit ring (knuckles, mids, TIPS, thumb tips)
-          // in the seated pose â€” onto the wheel's nearest actual material (the
+          // in the seated pose — onto the wheel's nearest actual material (the
           // handle bar). The wrist sits ~11 cm behind the contact, and the hand is
           // sculpted for a FAT rim, so on a thin bar the anchor is biased deeper
           // into the curl (DRIVER_GRIP_BIAS): the spare finger length then rests
@@ -4124,7 +4156,7 @@ async function loadCarModel(carId) {
               if (d === 2) tipPts.push(p);
             }
             for (const t of [2, 3]) { const p = originOf("DRIVER:HAND_" + arm.side + "_Thumb" + t); if (p) ringPts.push(p); }
-            if (ringPts.length < 8 || !knuckPts.length || !tipPts.length) continue;   // rig without fingers â†’ leave the authored pose alone
+            if (ringPts.length < 8 || !knuckPts.length || !tipPts.length) continue;   // rig without fingers → leave the authored pose alone
             const cen = pts => v3sc(pts.reduce((a, p) => v3add(a, p), [0, 0, 0]), 1 / pts.length);
             const hollow = cen(ringPts);
             const curlDir = v3nrm(v3sub(cen(tipPts), cen(knuckPts)));   // deeper into the curl
@@ -4136,7 +4168,7 @@ async function loadCarModel(carId) {
           }
         }
         // the mod author's own lock-to-lock steering animation (arms + hands +
-        // every finger, authored ON this wheel â€” palms wrapped around the grips).
+        // every finger, authored ON this wheel — palms wrapped around the grips).
         // When it binds, it drives the driver; the IK/snap path is the fallback.
         let steerAnim = null;
         const steerFile = df.find(f => f.name === "steer");
@@ -4144,12 +4176,12 @@ async function loadCarModel(carId) {
           try {
             const anim = KN5.parseKsanim(await tinvoke("read_file", { path: steerFile.path }));
             steerAnim = driverAnimInit(anim, skel, poseWorld, poseLocal, wheelC, wheelAxis);
-            if (steerAnim) console.log(`steer.ksanim bound: ${anim.frameCount} frames, authored lock Â±${(steerAnim.lock * 180 / Math.PI).toFixed(0)}Â°`);
+            if (steerAnim) console.log(`steer.ksanim bound: ${anim.frameCount} frames, authored lock ±${(steerAnim.lock * 180 / Math.PI).toFixed(0)}°`);
           } catch (e) { console.warn("steer anim load failed:", e); steerAnim = null; }
         }
         carDriver = { skinned, headGroups, skel, poseWorld, neckPivot, arms, wheelC, wheelAxis, steerAnim,
                       // the wheel's soft lock = the largest orbit BOTH hands can physically
-                      // reach on THIS car's rig (shoulder lean included) â€” self-calibrated
+                      // reach on THIS car's rig (shoulder lean included) — self-calibrated
                       gripLock: (arms && arms.length) ? gripLockCalib(arms, wheelC, wheelAxis, DRIVER_SHOULDER_REACH) : 0 };
         if (steerAnim) driverSkinUpload(driverAnimWorlds(steerAnim, animT(steerAnim, 0)));   // seat at anim centre
         else driverSeatedSkin(0);   // seat the body onto the wheel (neutral)
@@ -4172,7 +4204,7 @@ function loadReplayBuffer(ab, name) {
     if (typeof renderLapLegend === "function") renderLapLegend(null);
     selectCar(0);
     document.getElementById("fileinfo").textContent =
-      `${name} Â· ${replay.track}${replay.trackConfig ? "/" + replay.trackConfig : ""} Â· ${replay.weather} Â· ${replay.intervalMs} ms`;
+      `${name} · ${replay.track}${replay.trackConfig ? "/" + replay.trackConfig : ""} · ${replay.weather} · ${replay.intervalMs} ms`;
     drop.classList.add("hidden");
     document.getElementById("hud").classList.remove("hidden");
     document.getElementById("help").classList.remove("hidden");
@@ -4194,7 +4226,7 @@ function loadReplayBuffer(ab, name) {
       audioAutoStarted = true;
       BBAudio.setEnabled(true).then(on => {
         const el = document.getElementById("audioind");
-        if (el) { el.textContent = on ? "â™ª sound on" : "â™ª sound off"; el.style.opacity = on ? "1" : "0.5"; }
+        if (el) { el.textContent = on ? "♪ sound on" : "♪ sound off"; el.style.opacity = on ? "1" : "0.5"; }
       });
     }
   } catch (err) {
@@ -4209,7 +4241,7 @@ function loadFile(file) {
 
 /* ===================== native (Tauri) integration ===================== */
 // One codebase, two modes. In a browser: drag-drop + File System Access.
-// In the BLACKBOX app: native disk access â€” the replay folder is auto-listed,
+// In the BLACKBOX app: native disk access — the replay folder is auto-listed,
 // files load with no prompts, and a replay's track is fetched from the Steam
 // AC install automatically. Feature-detected via the global Tauri API.
 const TAURI = (window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
@@ -4275,10 +4307,10 @@ function fmtWidth(s) {
   return units === "imperial" ? Math.round(m * 3.28084) + " ft" : Math.round(m) + " m";
 }
 function fmtSpeed(kph) {
-  return isFinite(kph) ? (units === "imperial" ? Math.round(kph * 0.621371) + " mph" : Math.round(kph) + " km/h") : "â€”";
+  return isFinite(kph) ? (units === "imperial" ? Math.round(kph * 0.621371) + " mph" : Math.round(kph) + " km/h") : "—";
 }
 function trackMetaStr(t) {
-  return [fmtDistance(parseLengthMeters(t.length)), t.run].filter(Boolean).join(" Â· ");
+  return [fmtDistance(parseLengthMeters(t.length)), t.run].filter(Boolean).join(" · ");
 }
 
 // draw our own top-down map from the track's road geometry (Rust track_outline),
@@ -4307,19 +4339,19 @@ async function drawTrackOutline(folder, canvas) {
     }
     ctx.shadowBlur = 0;
     canvas.classList.add("ready");
-  } catch (e) { /* command may be absent or track unresolved â€” leave thumb as-is */ }
+  } catch (e) { /* command may be absent or track unresolved — leave thumb as-is */ }
 }
 
 let allTracks = [], curTrack = 0;
 async function renderGallery() {
   const sub = document.getElementById("gallerysub");
-  document.getElementById("tvname").textContent = "scanning your Assetto Corsa installâ€¦";
+  document.getElementById("tvname").textContent = "scanning your Assetto Corsa install…";
   try {
     const tracks = await tinvoke("list_tracks");
     tracks.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase())); // alphabetical
     allTracks = tracks;
     const driven = tracks.filter(t => t.replays > 0).length;
-    sub.textContent = `${tracks.length} tracks Â· ${driven} driven`;
+    sub.textContent = `${tracks.length} tracks · ${driven} driven`;
     await indexScreenshots();      // map AC's in-game screenshots to tracks (best-effort)
     showTrackAt(0);
   } catch (e) {
@@ -4330,7 +4362,7 @@ async function renderGallery() {
 // Index AC's in-game screenshots by track. Files are
 // `Screenshot_<carId>_<trackId>_<timestamp>.jpg`; both ids can hold underscores,
 // so the track is the LONGEST known folder id that ends the mid-section. Many of
-// these are accidental button-presses â€” that randomness is the charm.
+// these are accidental button-presses — that randomness is the charm.
 let screenshotsByTrack = {};
 async function indexScreenshots() {
   screenshotsByTrack = {};
@@ -4339,8 +4371,8 @@ async function indexScreenshots() {
   catch (e) { console.warn("screenshots unavailable:", e); return; }
   if (!files || !files.length) return;
   const folders = allTracks.map(t => (t.folder || "").toLowerCase()).filter(Boolean);
-  // fallback index: a folder's last `_`-token â†’ the folder, but only kept if that
-  // token is unique across all folders (so a renamed track like onurisâ†’chases_onuris
+  // fallback index: a folder's last `_`-token → the folder, but only kept if that
+  // token is unique across all folders (so a renamed track like onuris→chases_onuris
   // still lands, without risking an ambiguous mis-match).
   const lastTok = {};
   for (const f of folders) {
@@ -4383,9 +4415,9 @@ function showTrackAt(i) {
   const thumb = document.getElementById("tvthumb");
   thumb.style.backgroundImage = t.preview ? `url('${assetUrl(t.preview)}')` : "none";
   const bits = [fmtDistance(parseLengthMeters(t.length)), t.run, t.country].filter(Boolean);
-  document.getElementById("tvmeta").textContent = bits.join(" Â· ");
+  document.getElementById("tvmeta").textContent = bits.join(" · ");
   const rbtn = document.getElementById("tvReplays");
-  rbtn.textContent = t.replays ? `${t.replays} replay${t.replays === 1 ? "" : "s"} â€” view` : "no replays";
+  rbtn.textContent = t.replays ? `${t.replays} replay${t.replays === 1 ? "" : "s"} — view` : "no replays";
   rbtn.disabled = !t.replays;
   rbtn.onclick = t.replays ? () => openTrack(t) : null;
   document.getElementById("tvcount").textContent = `${curTrack + 1} / ${allTracks.length}`;
@@ -4437,14 +4469,14 @@ function fmtReplayDate(r) {
   const d = m ? new Date(2000 + +m[3], +m[2] - 1, +m[1], +m[4], +m[5], +m[6])
               : new Date(r.modified * 1000);
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
-         " Â· " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+         " · " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
 
 async function openTrack(t) {
   const list = document.getElementById("tracklist");
   const rows = document.getElementById("tlrows");
   document.getElementById("tltitle").textContent = esc(t.name);
-  rows.innerHTML = `<div class="ovsub">loadingâ€¦</div>`;
+  rows.innerHTML = `<div class="ovsub">loading…</div>`;
   document.getElementById("gallery").classList.add("hidden");
   list.classList.remove("hidden");
 
@@ -4473,12 +4505,12 @@ async function openTrack(t) {
     const row = document.createElement("div");
     row.className = "tlrow";
     row.innerHTML =
-      `<span class="car">â€¦</span><span class="lap">â€”</span><span class="when">${esc(fmtReplayDate(r))}</span>`;
+      `<span class="car">…</span><span class="lap">—</span><span class="when">${esc(fmtReplayDate(r))}</span>`;
     row.addEventListener("click", () => { hideOverlays(); loadReplayByPath(r.path, r.name); });
     rows.appendChild(row);
     built.push({ r, row });
   }
-  // fill car + fastest lap by parsing each replay (sequential â€” a few MB each)
+  // fill car + fastest lap by parsing each replay (sequential — a few MB each)
   for (const { r, row } of built) {
     try {
       const ab = await tinvoke("read_file", { path: r.path });
@@ -4488,7 +4520,7 @@ async function openTrack(t) {
       const best = fastestLap(ex);
       row.querySelector(".car").textContent = car;
       const lapEl = row.querySelector(".lap");
-      lapEl.textContent = best ? fmtLapMs(best) : "â€”";
+      lapEl.textContent = best ? fmtLapMs(best) : "—";
       if (best) lapEl.classList.add("has");
     } catch (e) {
       row.querySelector(".car").textContent = parseReplayName(r.name).body;
@@ -4502,7 +4534,7 @@ if (inTauri) {
   document.getElementById("btnOpen2").classList.add("hidden");
   document.getElementById("hdrHome").style.display = "inline-block";
   document.getElementById("chipTrack").textContent =
-    "NO TRACK LOADED â€” the ribbon is your driven line. The track loads itself once a replay is open.";
+    "NO TRACK LOADED — the ribbon is your driven line. The track loads itself once a replay is open.";
   document.getElementById("hdrHome").addEventListener("click", showGallery);
   document.getElementById("tlback").addEventListener("click", showGallery);
   const boot = () => { showGallery(); renderGallery(); };
@@ -4510,7 +4542,7 @@ if (inTauri) {
   else boot();
 }
 
-/* settings modal (units) â€” wired regardless of environment */
+/* settings modal (units) — wired regardless of environment */
 (function () {
   const modal = document.getElementById("settings");
   const segs = () => document.querySelectorAll("#unitToggle .seg");
@@ -4551,7 +4583,7 @@ if (inTauri) {
 
 function selectCar(i) {
   ex = ACReplay.extractCar(replay, i);
-  // cumulative travelled distance per frame (m), not carried across gaps â€” the wheel
+  // cumulative travelled distance per frame (m), not carried across gaps — the wheel
   // roll-spin reads this so the tyres turn exactly with the car's motion.
   {
     const N = ex.N, cd = new Float64Array(N); let acc = 0;
@@ -4564,10 +4596,10 @@ function selectCar(i) {
     }
     ex.cumDist = cd;
   }
-  ex.shifts = detectShifts(ex);   // kinematic upshift frames â†’ exhaust backfires
+  ex.shifts = detectShifts(ex);   // kinematic upshift frames → exhaust backfires
   // REAL telemetry (if the replay was stamped by telemetry_logger): tail-align it onto
   // these N frames so effects can read actual rpm/throttle/brake/boost/slip instead of
-  // guessing kinematically. null when the file has no BBTL blob â†’ kinematic fallback stands.
+  // guessing kinematically. null when the file has no BBTL blob → kinematic fallback stands.
   ex.tel = ACReplay.alignTelemetry(replay.telemetry, ex.N, ex.dt);
   { const tb = detectTelemetryBackfires(ex); if (tb && tb.length) ex.shifts = tb; }     // real gear/lift/limiter pops override the kinematic guess
   { const sl = computeWheelSlip(ex); ex.slip = sl.slip; ex.smokeSlip = sl.smokeSlip; }  // marks (instant) + smoke (fast-decel gated)
@@ -4582,13 +4614,13 @@ function selectCar(i) {
   smoke.accum[0] = smoke.accum[1] = smoke.accum[2] = smoke.accum[3] = 0;
   ensureSmokeAssets();                                 // bake noise texture + curl field once
   stats = ACReplay.runStats(ex);
-  carSteerRef = steerRefCalib(ex);   // this run's wildest sustained steer â†’ maps to the wheel's lock
+  carSteerRef = steerRefCalib(ex);   // this run's wildest sustained steer → maps to the wheel's lock
   buildGeometry();
   tCur = frameRange()[0] * ex.dt;
   refreshStatsChip();
   const fmtLap = ms => `${Math.floor(ms / 60000)}:${((ms % 60000) / 1000).toFixed(3).padStart(6, "0")}`;
   document.getElementById("chipLaps").innerHTML = ex.laps.length
-    ? "laps: " + ex.laps.map(l => `<b>${fmtLap(l.timeMs)}</b>`).join(" Â· ")
+    ? "laps: " + ex.laps.map(l => `<b>${fmtLap(l.timeMs)}</b>`).join(" · ")
     : `<span class="dim">no completed laps detected</span>`;
 }
 
@@ -4597,8 +4629,8 @@ function refreshStatsChip() {
   const dist = units === "imperial" ? (stats.distanceKm * 0.621371).toFixed(2) + " mi" : stats.distanceKm.toFixed(2) + " km";
   const vert = units === "imperial" ? Math.round(stats.verticalM * 3.28084) + " ft" : stats.verticalM.toFixed(0) + " m";
   document.getElementById("dstats").innerHTML =
-    `<b>${fmtSpeed(stats.maxKph)}</b> max Â· ${fmtSpeed(stats.medianKph)} med Â· ` +
-    `${dist} Â· vert ${vert}`;
+    `<b>${fmtSpeed(stats.maxKph)}</b> max · ${fmtSpeed(stats.medianKph)} med · ` +
+    `${dist} · vert ${vert}`;
 }
 
 /* ===================== main loop ===================== */
@@ -4628,7 +4660,7 @@ function loop(ts) {
     if (edgeIndex) {
       const e = RoadEdge.distanceToEdge(edgeIndex, ex.pos[i * 3], ex.pos[i * 3 + 1], ex.pos[i * 3 + 2]);
       const warm = e.dist < 2 ? "<b>" : "";
-      edgeTxt = ` Â· edge ${warm}${e.dist.toFixed(2)} m${warm ? "</b>" : ""}`;
+      edgeTxt = ` · edge ${warm}${e.dist.toFixed(2)} m${warm ? "</b>" : ""}`;
     }
     const altV = units === "imperial" ? Math.round(ex.pos[i * 3 + 1] * 3.28084) + " ft" : ex.pos[i * 3 + 1].toFixed(0) + " m";
     // ---- racing dash: real engine telemetry drives the tach/gear/pedals/boost ----
@@ -4646,23 +4678,23 @@ function loop(ts) {
       document.getElementById("tachfill").style.width = Math.max(0, Math.min(100, rpm / RPM_MAX * 100)).toFixed(1) + "%";
       document.getElementById("tach").classList.toggle("redline", rpm >= REDLINE);
       document.getElementById("dgear").textContent = g <= 0 ? "R" : g === 1 ? "N" : String(g - 1);
-      document.getElementById("dboost").textContent = T.has.boost ? T.boost[i].toFixed(2) : "â€“";
+      document.getElementById("dboost").textContent = T.has.boost ? T.boost[i].toFixed(2) : "–";
       document.getElementById("thrfill").style.width = Math.round(Math.max(0, Math.min(1, T.gas[i])) * 100) + "%";
       document.getElementById("brkfill").style.width = Math.round(Math.max(0, Math.min(1, T.brake[i])) * 100) + "%";
     } else {
       dash.classList.add("no-tel");
     }
-    // big speed â€” real telemetry speed if present, else the kinematic estimate
+    // big speed — real telemetry speed if present, else the kinematic estimate
     const spKph = T && isFinite(T.speed[i]) ? T.speed[i] : (isFinite(sp) ? sp : 0);
     document.getElementById("dspeed").textContent = units === "imperial" ? Math.round(spKph * 0.621371) : Math.round(spKph);
     document.getElementById("dspeedu").textContent = units === "imperial" ? "mph" : "km/h";
-    // secondary readouts: time Â· alt Â· tilt Â· edge-distance
+    // secondary readouts: time · alt · tilt · edge-distance
     document.getElementById("dsecondary").innerHTML =
-      `<b>${fmtT(tCur)}</b> Â· alt ${altV} Â· tilt ${isFinite(tl) ? tl.toFixed(0) : "â€”"}Â°${edgeTxt}` +
-      (T ? ` <span style="opacity:.5">[realÂ·${T.mode}]</span>` : "");
+      `<b>${fmtT(tCur)}</b> · alt ${altV} · tilt ${isFinite(tl) ? tl.toFixed(0) : "—"}°${edgeTxt}` +
+      (T ? ` <span style="opacity:.5">[real·${T.mode}]</span>` : "");
     // telemetry-driven engine soundscape (silent unless toggled on with M, needs telemetry)
     if (window.BBAudio) {
-      // Slip for the squeal, worst wheel â€” one tyre scrubbing is audible. AC's real per-wheel
+      // Slip for the squeal, worst wheel — one tyre scrubbing is audible. AC's real per-wheel
       // wheelSlip when the replay carries it (>1 = sliding, car-agnostic); otherwise -1 and the
       // engine falls back to the kinematic angle, which for a four-wheel-steer car like this one
       // reads the body crabbing rather than the tyres scrubbing.
@@ -4678,14 +4710,14 @@ function loop(ts) {
         // so the readout can never be mistaken for the telemetry itself
         const d = BBAudio.dbg(); const el = document.getElementById("audioind");
         // name the SOURCE, not just the method: "it sounds the same as before" has to be
-        // diagnosable without the console â€” either the car's bank is feeding this or it isn't
+        // diagnosable without the console — either the car's bank is feeding this or it isn't
         // the live voice count is the headline: it should sit around a dozen, and a 0 means the
-        // car's bank or its event map didn't bind â€” a diagnosis, not a taste question
+        // car's bank or its event map didn't bind — a diagnosis, not a taste question
         const s = BBAudio.sourceInfo();
         const car = s.car ? s.car.replace(/^ohyeah2389_|^ma_/, "") : "";
         if (el) el.textContent = s.voices
-          ? `â™ª ${d.rpm} rpm Â· ${s.live}/${s.voices} voices Â· ${s.event} Â· ${car}`
-          : `â™ª ${d.rpm} rpm Â· no engine loaded`;
+          ? `♪ ${d.rpm} rpm · ${s.live}/${s.voices} voices · ${s.event} · ${car}`
+          : `♪ ${d.rpm} rpm · no engine loaded`;
         // backfire cracks on the same shift/lift frames that fire the visual pops
         if (playing && !scrubbing && ex.shifts && bfPrevFrame >= 0 && i > bfPrevFrame && i - bfPrevFrame < 30) {
           for (const sf of ex.shifts) if (sf > bfPrevFrame && sf <= i) { BBAudio.backfire(); break; }
@@ -4694,7 +4726,7 @@ function loop(ts) {
       bfPrevFrame = i;
     }
     let _smk = 0; if (ex.smokeSlip) for (let k = 0; k < 4; k++) _smk = Math.max(_smk, ex.smokeSlip[i * 4 + k]);
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} Â· ${rate}Ã—${lapOnly && ex.laps.length >= 2 ? " Â· lap" : ""} Â· ${fpsEMA.toFixed(0)} fps Â· smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)}`;
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${fpsEMA.toFixed(0)} fps · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)}`;
     drawScrub();
   }
   render();
