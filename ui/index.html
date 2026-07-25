@@ -348,6 +348,9 @@
   <button id="btnShadow" class="on">shadows</button>
   <button id="btnTyres" class="on" title="skid marks + smoke — click to cycle: lap · keep · off">tyres · lap</button>
   <span id="volCtl" title="Volume" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85"><span id="volIcon" title="mute / unmute" style="cursor:pointer">🔊</span><input id="volSlider" type="range" min="0" max="100" value="100" style="width:78px;vertical-align:middle"></span>
+  <span id="revCtl" title="Rev contrast — stretches how far the engine's voice moves for the rpm you actually used. 1.00 = untouched. Pinned-revs driving barely moves the sample bank; this pushes the deviation from this run's median rpm, so the same lap sounds revvier without inventing rpm." style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85">rev<input id="revSlider" type="range" min="100" max="260" value="175" style="width:64px;vertical-align:middle"><span id="revVal" style="opacity:.65;min-width:3.2ch">1.75</span></span>
+  <button id="btnRaw" title="RAW — bypass everything BLACKBOX adds that Assetto Corsa does not: the EQ curve, the grit waveshaper, the 'menace' growl, and the reverb/echo sends. Leaves the car's own samples, the 3D panner and the master ceiling. This is the A/B for 'does it sound like the game'.">raw: off</button>
+  <button id="btnEngMode" title="Engine sound method. HARMONIC resynthesizes the car's own measured harmonic signature at the exact cycle frequency (rpm/120 Hz) — continuous, no pitch clamp. SAMPLE is the original crossfaded recordings. Straight A/B; switch it mid-lap.">eng: harm</button>
   <button id="btnLap" class="on">lap only</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
@@ -477,6 +480,9 @@
 <script src="kn5.js"></script>
 <script src="kn5tex.js"></script>
 <script src="carrender.js"></script>
+<script src="fsb5.js"></script>
+<script src="eventmap.js"></script>
+<script src="engineprofile.js"></script>
 <script src="audioengine.js"></script>
 <script src="roadedge.js"></script>
 <script src="intro.js"></script>
@@ -2676,6 +2682,40 @@ document.getElementById("btnLine").addEventListener("click", function () {
   });
   apply(+slider.value);
 })();
+(function () {   // RAW — strip our own colouring so the car's bank is heard unprocessed
+  const btn = document.getElementById("btnRaw");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    if (!window.BBAudio) return;
+    const on = BBAudio.setRaw(!BBAudio.isRaw());
+    btn.textContent = "raw: " + (on ? "on" : "off");
+    btn.classList.toggle("on", on);
+  });
+})();
+(function () {   // engine method A/B — harmonic resynthesis vs the original sample bank
+  const btn = document.getElementById("btnEngMode");
+  if (!btn) return;
+  const LBL = { ac: "eng: AC", harmonic: "eng: harm", sample: "eng: smpl" };
+  const paint = m => { btn.textContent = LBL[m] || LBL.sample; btn.classList.toggle("on", m !== "sample"); };
+  // cycle AC → harmonic → sample, skipping AC when this car has no decoded event map
+  btn.addEventListener("click", () => {
+    if (!window.BBAudio) return;
+    const cur = BBAudio.getEngineMode();
+    const order = BBAudio.hasAcEvent() ? ["ac", "harmonic", "sample"] : ["harmonic", "sample"];
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    paint(BBAudio.setEngineMode(next));
+  });
+  // no profile file (stale build / generator never run) → say so instead of offering a dead button
+  if (window.BBAudio && !BBAudio.hasHarmonic()) { btn.disabled = true; btn.textContent = "eng: smpl"; btn.title = "engineprofile.js missing — run: node make_engineprofile.js"; }
+  else paint(window.BBAudio ? BBAudio.getEngineMode() : "harmonic");
+})();
+(function () {   // rev-contrast slider → the sample bank's rpm expander (1.00 = untouched)
+  const slider = document.getElementById("revSlider"), out = document.getElementById("revVal");
+  if (!slider) return;
+  const apply = v => { const x = v / 100; if (out) out.textContent = x.toFixed(2); if (window.BBAudio) BBAudio.setRevExpand(x); };
+  slider.addEventListener("input", function () { apply(+this.value); });
+  apply(+slider.value);
+})();
 (function () {   // auto-hide the header + the top-right "drag look" help: fade them out when the pointer is idle, bring them back on activity
   const header = document.querySelector("header");
   if (!header) return;
@@ -3061,6 +3101,31 @@ async function uploadGroups(groupList, scene, fallbackRGB) {
 // shared by track + car
 async function uploadSceneGroups(scene, fallbackRGB) { return uploadGroups(scene.groups, scene, fallbackRGB); }
 
+/* The engine layers come from the REPLAY'S car, not from wavs we ship.
+ * There are 16 T-180 variants installed on this machine and they do not sound alike, so a fixed set
+ * of samples is the wrong engine for fifteen of them. The car's FMOD bank holds its own ladder plus
+ * the turbine/afterburner stack that the shipped subset never had. Failure is non-fatal by design:
+ * no Tauri, no bank, an odd codec — BBAudio keeps the built-in wavs and the app just sounds as it
+ * did before. */
+async function loadCarSound(carId) {
+  if (!inTauri || !carId || !window.BBAudio || !window.FSB5) return;
+  try {
+    const path = await tinvoke("find_car_bank", { carId });
+    if (!path) return;
+    const ab = await tinvoke("read_file", { path });
+    const info = await BBAudio.setCarBank(ab, carId);
+    if (info) console.log(`[BBAudio] ${carId}: ${info.on} on-load, ${info.off} off-load, ${info.turbine} turbine, ${info.backfire} backfire layers from its own bank`);
+    // the engine may have handed itself back to the sample bank (profile belongs to another car) —
+    // repaint the button so the header never claims a mode that isn't running
+    if (info && info.modeChanged) {
+      const b = document.getElementById("btnEngMode");
+      if (b) { b.textContent = "eng: smpl"; b.classList.remove("on"); b.title = `harmonic profile belongs to another car — ${carId} is playing its own sampled layers`; }
+    }
+  } catch (e) {
+    console.warn("[BBAudio] car bank unavailable for " + carId + " — keeping the built-in engine:", e);
+  }
+}
+
 async function loadCarModel(carId) {
   if (!inTauri || !carId) return;
   try {
@@ -3287,6 +3352,7 @@ function loadReplayBuffer(ab, name) {
     } else sel.classList.add("hidden");
     maybeAutoLoadTrack(replay.track);
     if (replay.cars[0]) loadCarModel(replay.cars[0].carId);
+    if (replay.cars[0]) loadCarSound(replay.cars[0].carId);
     // audio comes up ON by default (M mutes). Kick it off on the first replay; the webview's
     // autoplay lock is released by the load click itself, with a gesture fallback below.
     if (window.BBAudio && !audioAutoStarted) {
@@ -3669,6 +3735,14 @@ function selectCar(i) {
   // guessing kinematically. null when the file has no BBTL blob → kinematic fallback stands.
   ex.tel = ACReplay.alignTelemetry(replay.telemetry, ex.N, ex.dt);
   { const tb = detectTelemetryBackfires(ex); if (tb && tb.length) ex.shifts = tb; }     // real gear/lift/limiter pops override the kinematic guess
+  // Rev expander pivot: this run's MEDIAN driving rpm. The expander magnifies deviation from the
+  // pivot, so anchoring it to how the car was actually driven keeps the resting voice put and only
+  // stretches the movement around it — a hard-charging run and a cruise both stay recognisable.
+  if (window.BBAudio && ex.tel && ex.tel.rpm) {   // `has` covers only boost/slip/susp — rpm is always there when a tail exists
+    const v = [];
+    for (let i = 0; i < ex.N; i++) if (ex.tel.rpm[i] > 1000 && isFinite(ex.speed[i]) && ex.speed[i] > 30) v.push(ex.tel.rpm[i]);
+    if (v.length > 50) { v.sort((a, b) => a - b); BBAudio.setRevPivot(v[v.length >> 1]); }
+  }
   { const sl = computeWheelSlip(ex); ex.slip = sl.slip; ex.smokeSlip = sl.smokeSlip; }  // marks (instant) + smoke (fast-decel gated)
   {
     const mesh = buildTireMarkMesh(ex);
@@ -3763,7 +3837,18 @@ function loop(ts) {
     if (window.BBAudio) {
       BBAudio.update(T ? { rpm: T.rpm[i], gas: T.gas[i], brake: T.brake[i], boost: T.has.boost ? T.boost[i] : 0, speed: T.speed[i] } : null);
       if (BBAudio.isOn()) {
-        const d = BBAudio.dbg(); const el = document.getElementById("audioind"); if (el) el.textContent = `♪ ${d.rpm} rpm · ${d.bands} bands`;
+        // show the REAL rpm first (that's the car); the expanded figure only when the knob is off 1,
+        // so the readout can never be mistaken for the telemetry itself
+        const d = BBAudio.dbg(); const el = document.getElementById("audioind");
+        // name the SOURCE, not just the method: "it sounds the same as before" has to be
+        // diagnosable without the console — either the car's bank is feeding this or it isn't
+        const s = BBAudio.sourceInfo();
+        const car = s.car ? s.car.replace(/^ohyeah2389_|^ma_/, "") : "";
+        // AC mode: the live voice count is the headline — it's the number that was 2 and should be ~12
+        const src = s.mode === "ac" ? `${s.event} · ${s.live}/${s.voices} voices · ${car}`
+                  : s.car ? `${s.layers}+${s.off} layers ${s.rpmLo}-${s.rpmHi} · ${car}` : "built-in wavs";
+        const method = s.mode === "ac" ? "AC event" : d.mode === "harmonic" ? `${d.hz} Hz harmonic` : `${d.bands} bands`;
+        if (el) el.textContent = `♪ ${d.rpm} rpm${d.expand > 1.005 && s.mode !== "ac" ? ` →${d.rpmA}` : ""} · ${method} · ${src}${s.raw ? " · RAW" : ""}`;
         // backfire cracks on the same shift/lift frames that fire the visual pops
         if (playing && !scrubbing && ex.shifts && bfPrevFrame >= 0 && i > bfPrevFrame && i - bfPrevFrame < 30) {
           for (const sf of ex.shifts) if (sf > bfPrevFrame && sf <= i) { BBAudio.backfire(); break; }

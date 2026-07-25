@@ -353,6 +353,60 @@ fn find_car(car_id: String) -> Result<Vec<TrackFile>, String> {
     Err(format!("car '{}' not found in any Steam library", car_id))
 }
 
+/// The car's FMOD sound bank: `<car>/sfx/<car_id>.bank`. Every car ships its OWN engine — there are
+/// 16 T-180 variants on this machine and they do not sound alike — so the audio has to come from
+/// the replay's car, not from wavs baked into the app. The frontend reads it with `read_file` and
+/// parses the FSB5 itself; only the lookup needs to live here (Steam library resolution).
+/// Some cars name the bank after the folder, others ship a single differently-named .bank — take
+/// the exact name first, then any .bank in sfx/, so an odd mod still gets its engine.
+#[tauri::command]
+fn find_car_bank(car_id: String) -> Result<String, String> {
+    let mut checked: Vec<String> = Vec::new();
+    for lib in steam_libraries() {
+        let sfx = lib
+            .join("steamapps")
+            .join("common")
+            .join("assettocorsa")
+            .join("content")
+            .join("cars")
+            .join(&car_id)
+            .join("sfx");
+        if !sfx.is_dir() {
+            checked.push(sfx.display().to_string());
+            continue;
+        }
+        let exact = sfx.join(format!("{}.bank", car_id));
+        if exact.is_file() {
+            return Ok(exact.to_string_lossy().to_string());
+        }
+        if let Ok(read) = std::fs::read_dir(&sfx) {
+            for entry in read.flatten() {
+                let p = entry.path();
+                let is_bank = p
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.eq_ignore_ascii_case("bank"))
+                    .unwrap_or(false);
+                // GUIDs.txt lists events; the .strings bank holds names, not audio — skip it
+                let is_strings = p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_lowercase().contains(".strings."))
+                    .unwrap_or(false);
+                if is_bank && !is_strings {
+                    return Ok(p.to_string_lossy().to_string());
+                }
+            }
+        }
+        checked.push(sfx.display().to_string());
+    }
+    Err(format!(
+        "no sound bank for '{}' (checked: {})",
+        car_id,
+        if checked.is_empty() { "no Steam library found".into() } else { checked.join(" ; ") }
+    ))
+}
+
 // Smoke tests against the REAL local install — this machine's replays and
 // Steam AC content. Not portable by design: they prove the native data layer
 // (folder scan, Steam vdf parse, byte read) works here, so the gallery can be
@@ -1549,6 +1603,7 @@ pub fn run() {
             list_screenshots,
             find_track,
             find_car,
+            find_car_bank,
             find_driver,
             list_tracks,
             replays_for_track,

@@ -1,5 +1,154 @@
 # Changelog
 
+## 2026-07-25 — Play AC's own engine event, decoded from the bank
+
+### Added
+- **AC-event engine mode** (`eng: AC`, default when a decoded map exists for the car; the header
+  button now cycles AC → harmonic → sample). Instead of our design playing AC's samples, this plays
+  **AC's authored event**: every looping instrument on the `rpms` sheet with the trigger box, gain
+  curves, static dB and autopitch root the sound designer wrote.
+- **`make_eventmap.js`** — decodes a car bank's FMOD event metadata (the 188 KB `RIFF`/`FEV FMT`
+  region before the FSB5 audio) into the full forensic JSON plus a compact `ui/eventmap.js` for the
+  runtime. **`test_eventmap.js`** pins the result.
+
+### What the decode found — and why hand-tuning was never going to reach it
+- **`engine_ext` and `engine_int` are EMPTY STUBS in this bank** — zero instruments, they produce no
+  sound. The engine is on **`engine_custom`** (CSP's extended-sound path, 24 instruments), with
+  `engine_ext_old` (14) and `engine_int_old` (16) holding the legacy layers, plus `turbine` (11).
+- **6–15 instruments sound simultaneously, mean 12.** Measured on the shipped map: 11 layers at
+  1000 rpm, 15 at 3000, **14 at 8300**. Our engine crossfaded **two**. That single number explains
+  more than every tuning pass of the night put together.
+- **Sustained beds run under the whole range** — `PinkNoise`, `als_front`, `sin5`,
+  `IdleEngine_noise` (+7 dB), `combustion`, `afterburner near` (+10 dB). We played none of them.
+- **The autopitch root is authored per instrument and is NOT the number in the sample's name**
+  (`5972a_inside` → 5900, `7348c` → 7050, `6365d` → 12800). Every name-derived ladder — ours
+  included — was detuned by construction.
+- **Gain curves are authored as fade-in/fade-out pairs** that multiply into trapezoid windows, and
+  **AC plays nothing outside a layer's trigger box** (no extrapolation; we stretched the top layer).
+- Kunos's suffix convention, confirmed character-for-character against `ks_ferrari_488_gt3`: bare
+  `NNNNx` = interior, `_ext` = exterior, `_front` = front mic. Our single "ladder" had been
+  crossfading *across mic positions* mid-sweep, which changes timbre and phase discontinuously.
+
+### Fixed
+- **The sample ladder lost the ~5972 rung.** Interior-named layers were dropped outright, but
+  `5972a_inside` is the only recording near 6000 rpm in this bank (the hand-pulled set shipped it as
+  `eng_on_5972`). Rule is now "exterior wins at the same rpm", not "never interior".
+
+### Honest limits
+- One-shots (throttle-sheet backfire/pop multi-instruments) are **not** carried into the runtime map
+  yet — they need trigger/retrigger logic rather than a gain curve, and BLACKBOX already fires
+  backfires off detected shifts. The count is reported by the generator so the omission is visible.
+- Curve `shape` (per-point curvature) is undecoded; playback interpolates linearly, which is exact
+  wherever shape is 0 — most points.
+- `ui/eventmap.js` is generated **per car, offline**. Another car keeps the sampled engine and logs
+  the command to regenerate. Porting the decoder into the browser (as `fsb5.js` already is) is what
+  makes this work for any car without a build step.
+
+## 2026-07-25 — The engine comes from the replay's own car, not from wavs we ship
+
+### Added
+- **`ui/fsb5.js`** — reads an Assetto Corsa car's FMOD sound bank in the browser (FSB5, PCM16), and
+  **`find_car_bank`** (Rust) locates `<car>/sfx/<car>.bank` across Steam libraries. On load, a replay
+  now pulls its **own car's** engine layers: `loadCarSound(carId)` in `index.html` →
+  `BBAudio.setCarBank()`. Non-fatal by design — no Tauri, no bank, an unexpected codec, or fewer than
+  three engine layers all keep the built-in wavs, so the app degrades to how it sounded before.
+- **`extract_bank.js`** — the same parser as a CLI, to dump any car's samples to wav for analysis.
+
+### Why
+The wavs in `ui/audio` are **one car's** engine (the Mach 6) hand-pulled from its bank — and there
+are **16 T-180 variants installed on this machine alone**, which do not sound alike. Every replay of
+any other car was playing the wrong engine. The bank also carries what the hand-pulled subset never
+had: on the Mach 6, **11 on-load layers** (including four idle stages — the shipped set jumps 1642 →
+3754 with nothing between) and **8 turbine/afterburner layers**. AC's engine is a *composite* — an
+rpm ladder plus a jet spool — and we had been rebuilding only the ladder, from a subset of it. That
+is the likelier reason the sound stayed thin than anything about the resynthesis method.
+
+### Fixed
+- **The FSB5 name table is a bare offset array, not a counted one.** Assuming a count shifts every
+  name by one sample, which fails *silently* — a full set of plausible names attached to the wrong
+  audio (`turbine.wav` would have been "backfire_5"; `eng_on_8700` would have been
+  "IdleEngine_noise"). Caught by matching extracted PCM against the wavs already in `ui/audio`, which
+  a different tool had extracted earlier: with the fix, all 24 shipped wavs match the bank sample
+  **of the same name**. `test_fsb5.js` pins it with that same invariant rather than with durations —
+  the first draft of that test asserted durations I had copied from the broken run, so it agreed with
+  the bug.
+- **`911gt3_gears` was being classified as an engine layer at "911 rpm".** A loose digit match put a
+  gearbox recording in the rpm ladder; the layer name must now be the rpm and nothing else
+  (`5591a_ext`, `7348c`, `6944b_off`, `idle_1837`), per AC's own convention.
+- **Harmonic mode refuses to play the wrong car.** `engineprofile.js` now records which car it was
+  measured from; loading a different car's bank hands the run back to the sample bank (which is that
+  car's own layers, so correct by construction) and repaints the header button, instead of quietly
+  playing the Mach 6's harmonic signature under another car's name.
+- **Race on the audio graph**: `setCarBank` could install bank layers while `ensureGraph()` was still
+  in flight, and that build appends its wav layers when it finishes — both engines stacked. It now
+  waits for the build to finish first.
+
+## 2026-07-25 — A second engine: harmonic resynthesis of the car's own signature
+
+### Added
+- **Harmonic engine** (`eng: harm` in the header, default; `eng: smpl` is the old bank — straight
+  A/B, switchable mid-lap). Two wavetable oscillators per load bank carry the **measured harmonic
+  profiles** of the neighbouring recordings, morph between them by rpm, and run at exactly
+  **rpm/120 Hz** — the four-stroke cycle fundamental. Pitch therefore tracks revs continuously: no
+  ±3-semitone clamp, no band edges to snap across, no loop to drone on. Routed into the existing
+  `engineMix`, so the EQ, grit, panner, cone and doppler that were already tuned all still apply.
+- **`make_engineprofile.js`** — measures that signature out of `ui/audio/eng_*.wav` and generates
+  `ui/engineprofile.js` (23.8 KB): amplitude per harmonic, plus the broadband residual between
+  harmonics in 8 bands, per recording. Regenerate after changing the recordings.
+- **A broadband noise bed** driven by that measured residual, tracking rpm in the upper bands. Left
+  out, a harmonic resynth sounds like an organ — the residual is 1–47% of these recordings' energy
+  and it is where the "air" lives.
+- **`test_engineharmonic.js`** — pins the material and the pitch law headlessly (the sound itself
+  needs the browser): normalisation, harmonic depth, 8 noise bands, the grid holding across the
+  bank, frequency exactly proportional to rpm, the stack still reaching 17.4 kHz at redline, and
+  the script load order that classic-scope globals depend on. 19 checks.
+
+### Why this method, on evidence
+The recordings were probed before anything was written. Granular/PSOLA — the obvious "keep the real
+audio, re-clock it" answer — was **ruled out by measurement**: no consistent firing period exists in
+these files at any cylinder count (best mean autocorrelation 0.155 at the model lag), so grains
+would have smeared. What the probe found instead is that they are **73–99% tonal** and every one is
+a harmonic stack on the *same* grid, integer multiples of rpm/120 — 9 of 12 within ±0.5%, with
+`eng_on_7644` simply starting on the 3rd harmonic of that grid rather than the 1st. A harmonic
+series with amplitudes that move with rpm and load is directly resynthesizable, so that is what this
+does.
+
+**This is not the invented V8 muted on 2026-07-23.** That was synthesis laid *over* the samples,
+which is exactly why it stopped sounding like the car. Nothing here is invented: every amplitude is
+measured from the car's own audio. Honest limit, stated so it isn't rediscovered by ear: harmonic
+mode does not widen the rev range by itself — frequency is exactly proportional to rpm, so a pinned
+run still spans 4.34 semitones. It buys continuity and timbre movement; the **rev** slider (which
+feeds this path too) is what buys span.
+
+## 2026-07-25 — Rev contrast: the engine sounds flat when you never let it drop
+
+### Added
+- **Rev expander** (`REV_EXPAND_DEFAULT`, 1.75, live on the header's **rev** slider, 1.00 = untouched).
+  Symptom, in the keeper's words: the Mach 6 held at high rpm goes *"wahhhhhh"* instead of revving.
+  Measured on the T-180 sample and he's right — of 6,669 driving frames, p5–p95 rpm is 7,088–9,105,
+  **88% of the run sits nearest the top TWO of nine sample bands and 27% above the highest recording**
+  (8,700), so the bank has almost nothing to crossfade and the whole session spans 4.3 semitones. The
+  samples were being rendered honestly; a pinned engine really is a drone. What was missing is contrast.
+  So rpm is now expanded about a pivot before it drives band selection and pitch —
+  `rpm' = pivot·(rpm/pivot)^expand` — which is a contrast curve, not a pitch shift: identity at the
+  pivot, stretching both directions away from it. On the sample: **4.34 → 7.59 semitones, 4 → 6 bands
+  in play**, so the timbre moves and not just the pitch, which is most of what "revvy" is.
+- **The pivot is per replay** — this run's median driving rpm (set from `ex.tel` at load), so the
+  expansion pushes away from *how you actually drove* and the engine's resting voice stays put. A
+  cruise and a qualifying lap both stay recognisable instead of one of them being shifted wholesale.
+- **`test_revexpand.js`** — measures the effect on a real replay rather than asserting the formula
+  back to itself: identity at the pivot, symmetric expansion, span widened, more bands in play, and
+  the p99 still inside `RATE_HI` (the top of the range flattening again is exactly the bug being
+  fixed, so it gets a regression check). Constants are parsed out of `audioengine.js` source, never
+  re-typed, so retuning the engine cannot leave this test green for the wrong reason.
+
+### Fixed
+- **Overrun mush at the top of the range** (`RATE_HI_OFF`, 1.5). The off-load bank stops at 6,944 rpm
+  and shared the on-load pitch ceiling of 1.26, so above ~8,750 a lift left the overrun layer
+  pitch-locked *below* the on-load layer — two detuned engines instead of one lifting. It now gets its
+  own wider ceiling and tracks up there, which is where the "blwahhh" lives. 17% of the sample run is
+  off-throttle, so this is not a corner case.
+
 ## 2026-07-25 — The logger watched a folder that doesn't exist on this machine
 
 ### Fixed
