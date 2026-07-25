@@ -69,10 +69,18 @@ uniform float uFogDensity; uniform vec3 uFogColor;
 uniform vec3 uSunDir;            // direction TO the sun/moon (time-of-day driven)
 uniform vec3 uSunCol;           // key-light colour + intensity (dim/cool at night)
 uniform vec3 uAmbSky, uAmbGround; // hemisphere ambient: sky above, ground below
-uniform vec3 uHeadA, uHeadB, uHeadDir; // headlight world positions + aim (cone spotlights)
-uniform float uHeadInt;         // headlight intensity (0 by day, up at night)
-uniform vec3 uBrakeA, uBrakeB, uBrakeDir; // tail-light world positions + backward aim
-uniform float uBrakeInt;        // brake-light spill intensity (rises under braking, at night)
+// LAMPS ARE PER CAR, up to MAXCARS of them. This was one car's worth of uniforms, which
+// meant that with several cars on track a car could only ever be lit by ONE other — so
+// some pairs lit each other and some didn't, seemingly at random. Two lamps per car, so
+// position array is 2*MAXCARS; aim and intensity are per car.
+const int MAXCARS = 4;
+uniform vec3 uHeadPos[2 * MAXCARS];   // headlight world positions (2 per car)
+uniform vec3 uHeadAim[MAXCARS];       // per-car aim
+uniform float uHeadInt[MAXCARS];      // per-car intensity (0 by day, up at night)
+uniform vec3 uBrakePos[2 * MAXCARS];  // tail-light world positions
+uniform vec3 uBrakeAim[MAXCARS];      // per-car backward aim
+uniform float uBrakeInt[MAXCARS];     // per-car brake spill (rises under braking, at night)
+uniform int uCarN;                    // how many of those slots are live
 uniform sampler2D uShadowMap0, uShadowMap1;   // near + far cascade depth maps
 uniform mat4 uLightVP0, uLightVP1;            // near + far light view-projections
 uniform float uShadowOn, uShadowTexel0, uShadowTexel1;   // enable + 1/mapSize per cascade
@@ -81,15 +89,15 @@ uniform sampler2D uHeadDepth;   // scene depth from the headlight's view (beam o
 uniform mat4 uHeadVP;           // headlight view-projection
 uniform float uHeadOccOn;       // enable headlight occlusion
 // one headlight: warm cone spotlight, distance-attenuated, cosine cone falloff
-float headlamp(vec3 p){
+float headlamp(vec3 p, vec3 aim){
   vec3 t = vWorld - p; float d = length(t);
-  float cone = smoothstep(0.85, 0.97, dot(t / max(d, 1e-3), uHeadDir));  // wider cone
+  float cone = smoothstep(0.85, 0.97, dot(t / max(d, 1e-3), aim));       // wider cone
   return cone / (1.0 + 0.15 * d + 0.035 * d * d);                        // reaches further
 }
 // brake light: a wide, soft red wash spilling behind the car (not a focused beam)
-float brakelamp(vec3 p){
+float brakelamp(vec3 p, vec3 aim){
   vec3 t = vWorld - p; float d = length(t);
-  float back = smoothstep(-0.15, 0.7, dot(t / max(d, 1e-3), uBrakeDir)); // wide, favours behind
+  float back = smoothstep(-0.15, 0.7, dot(t / max(d, 1e-3), aim));       // wide, favours behind
   return back / (1.0 + 0.35 * d + 0.14 * d * d);                         // short reach
 }
 // is this fragment blocked from the headlight by scene geometry? sample the beam depth map
@@ -163,17 +171,21 @@ void main(){
   vec3 wpS = vWorld + n * 0.06;
   float shF = uShadowOn > 0.5 ? shadowFactor(wpS, sbias) : 1.0;
   vec3 col = tex.rgb * (ambient + sunCol * (0.9 * wrap) * shF);
-  // headlights actually light the road ahead (warm cones from the two lamps), and the
-  // beam is occluded by scene geometry (banking, crests) so it can't shine through solids
-  if (uHeadInt > 0.001) {
-    float occ = uHeadOccOn > 0.5 ? headOcclusion() : 1.0;
-    float lit = headlamp(uHeadA) + headlamp(uHeadB);
-    col += tex.rgb * vec3(1.0, 0.85, 0.60) * (lit * uHeadInt * 5.5 * occ);
-  }
-  // brake lights spill red onto the road + surroundings behind the car (subtle)
-  if (uBrakeInt > 0.001) {
-    float b = brakelamp(uBrakeA) + brakelamp(uBrakeB);
-    col += tex.rgb * vec3(1.0, 0.05, 0.02) * (b * uBrakeInt * 4.0);
+  // Every car's headlights light the road ahead AND every other car. Occlusion is sampled
+  // from car 0's beam depth map only — there is one such map, and the car whose beam the
+  // chair is following is the one whose shadowing is worth being right.
+  float occ = uHeadOccOn > 0.5 ? headOcclusion() : 1.0;
+  for (int c = 0; c < MAXCARS; c++) {
+    if (c >= uCarN) break;
+    if (uHeadInt[c] > 0.001) {
+      float lit = headlamp(uHeadPos[2 * c], uHeadAim[c]) + headlamp(uHeadPos[2 * c + 1], uHeadAim[c]);
+      col += tex.rgb * vec3(1.0, 0.85, 0.60) * (lit * uHeadInt[c] * 5.5 * (c == 0 ? occ : 1.0));
+    }
+    // brake lights spill red onto the road + surroundings behind that car (subtle)
+    if (uBrakeInt[c] > 0.001) {
+      float b = brakelamp(uBrakePos[2 * c], uBrakeAim[c]) + brakelamp(uBrakePos[2 * c + 1], uBrakeAim[c]);
+      col += tex.rgb * vec3(1.0, 0.05, 0.02) * (b * uBrakeInt[c] * 4.0);
+    }
   }
   // aerial fog for depth (blend toward the sky colour). NOTE: output is UNCLAMPED HDR —
   // the ACES tonemap in the post pass owns the final tone; bright bits (> 1) bloom.
@@ -200,13 +212,12 @@ const tLoc = {
   sunCol: gl.getUniformLocation(progT, "uSunCol"),
   ambSky: gl.getUniformLocation(progT, "uAmbSky"),
   ambGround: gl.getUniformLocation(progT, "uAmbGround"),
-  headA: gl.getUniformLocation(progT, "uHeadA"),
-  headB: gl.getUniformLocation(progT, "uHeadB"),
-  headDir: gl.getUniformLocation(progT, "uHeadDir"),
+  headPos: gl.getUniformLocation(progT, "uHeadPos"),
+  headAim: gl.getUniformLocation(progT, "uHeadAim"),
+  brakePos: gl.getUniformLocation(progT, "uBrakePos"),
+  brakeAim: gl.getUniformLocation(progT, "uBrakeAim"),
+  carN: gl.getUniformLocation(progT, "uCarN"),
   headInt: gl.getUniformLocation(progT, "uHeadInt"),
-  brakeA: gl.getUniformLocation(progT, "uBrakeA"),
-  brakeB: gl.getUniformLocation(progT, "uBrakeB"),
-  brakeDir: gl.getUniformLocation(progT, "uBrakeDir"),
   brakeInt: gl.getUniformLocation(progT, "uBrakeInt"),
   shadowMap0: gl.getUniformLocation(progT, "uShadowMap0"),
   shadowMap1: gl.getUniformLocation(progT, "uShadowMap1"),

@@ -1763,22 +1763,25 @@ function solveGhostPoses() {
   }
 }
 
-/* The lamps of every OTHER car, for lighting one car.
+/* Every car on track as a lamp source: slot 0 is always the reference car, then the
+ * ghosts in order. Built once per frame and handed to setCarLamps for the track pass and
+ * again per car (with that car's slot skipped) for the body passes, so a ghost's
+ * headlights fall on the road and on the other cars exactly as the reference car's do.
  *
- * The shader carries exactly two headlamps and two brake lamps — one car's worth — so a
- * car cannot be lit by three others at once. It is lit by the NEAREST other car, which is
- * the one that actually matters: the car right behind you is what throws your bodywork
- * into relief, and the ones further back contribute a glow the eye would not attribute
- * anyway. */
-function nearestOtherCar(self, cars) {
-  let best = null, bestD = Infinity;
-  for (const c of cars) {
-    if (c === self) continue;
-    const dx = c.mat[12] - self.mat[12], dy = c.mat[13] - self.mat[13], dz = c.mat[14] - self.mat[14];
-    const d = dx*dx + dy*dy + dz*dz;
-    if (d < bestD) { bestD = d; best = c; }
+ * The ghost objects carry `self` back to their entry, so drawGhostCars can find which
+ * slot to skip without searching by matrix identity. */
+function allCarLamps(nightF, refBrakeInt, cm) {
+  const headOn = (carLights && carLights.head && carLights.head.length >= 2 && nightF > 0.02) ? nightF : 0;
+  const cars = [{ mat: cm, headInt: headOn, brakeInt: refBrakeInt }];
+  for (const g of ghostDraws) {
+    const gg = carGForces(g.f, g.run.ex);
+    const gdec = gg ? gg.brakeG - BRAKE_SCRUB * gg.latG * gg.latG : 0;
+    const gb = Math.max(0, Math.min(1, (gdec - BRAKE_DEADZONE_G) / BRAKE_RANGE_G));
+    const entry = { mat: g.mat, headInt: headOn, brakeInt: gb * nightF, ghost: g };
+    g.self = entry;
+    cars.push(entry);
   }
-  return bestD < CAR_LIGHT_RANGE * CAR_LIGHT_RANGE ? best : null;
+  return cars;
 }
 
 function drawGhostCars(mvp, headVP, nightF, allCars) {
@@ -1786,9 +1789,8 @@ function drawGhostCars(mvp, headVP, nightF, allCars) {
   for (const g of ghostDraws) {
     const gm = g.mat, gsteer = g.steer, f = g.f, run = g.run;
     // lit by whichever other car is closest — its headlights and its brake lights
-    const lit = (CAR_LIGHTS_ON && g.self) ? nearestOtherCar(g.self, allCars) : null;
-    setHeadlights(lit ? lit.mat : null, lit ? lit.headInt : 0, headVP);
-    setBrakelights(lit ? lit.mat : null, lit ? lit.brakeInt : 0);
+    // lit by every OTHER car, not one chosen neighbour: skip is this car's own slot
+    if (CAR_LIGHTS_ON) setCarLamps(allCars, headVP, allCars.indexOf(g.self));
     drawCarGroups(carGroups, gm);
     if (carWheels) {
       const rollDist = wheelRollDistance(f, run.ex);
@@ -1977,39 +1979,60 @@ function setSceneLighting(L) {   // push the lit-scene program's light + atmosph
   gl.uniform3f(tLoc.ambSky, L.ambSky[0], L.ambSky[1], L.ambSky[2]);
   gl.uniform3f(tLoc.ambGround, L.ambGround[0], L.ambGround[1], L.ambGround[2]);
 }
-// aim the two headlight cone spotlights from the car's lamp housings (world), slightly
-// down; intensity 0 by day. Set on progT before the track + car draws so both get lit.
-function setHeadlights(cm, headInt, headVP) {
-  if (headInt > 0.001 && cm && carLights && carLights.head.length >= 2) {
-    const A = mXfPt(carLights.head[0], cm), B = mXfPt(carLights.head[1], cm);
-    let dx = cm[8] + cm[4] * 0.06, dy = cm[9] + cm[5] * 0.06, dz = cm[10] + cm[6] * 0.06;   // aim slightly UP
-    const dl = Math.hypot(dx, dy, dz) || 1;
-    gl.uniform3f(tLoc.headA, A[0], A[1], A[2]);
-    gl.uniform3f(tLoc.headB, B[0], B[1], B[2]);
-    gl.uniform3f(tLoc.headDir, dx / dl, dy / dl, dz / dl);
-    gl.uniform1f(tLoc.headInt, headInt);
-    if (headVP && headReady) {   // beam occlusion depth map (track blocks the light)
-      gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, headDepthTex);
-      gl.uniform1i(tLoc.headDepth, 2); gl.uniformMatrix4fv(tLoc.headVP, false, headVP);
-      gl.uniform1f(tLoc.headOccOn, 1); gl.activeTexture(gl.TEXTURE0);
-    } else gl.uniform1f(tLoc.headOccOn, 0);
-  } else {
-    gl.uniform1f(tLoc.headInt, 0); gl.uniform1f(tLoc.headOccOn, 0);
+/* Push EVERY car's lamps to the lit-scene program at once.
+ *
+ * This replaced a pair of one-car setters, and the reason is the bug they caused: with a
+ * single set of lamp uniforms, a car could only be lit by one other car, so on a track
+ * with three ghosts some pairs lit each other and some didn't, with no pattern the eye
+ * could read. The shader now carries an array of up to MAXCARS, and every car is lit by
+ * every other one.
+ *
+ * `skip` is the index of the car being drawn, because a car must never be lit by its own
+ * lamps — the cones pool on its own livery. Pass -1 for the track, which every car lights.
+ *
+ * `cars` is [{ mat, headInt, brakeInt }]; the lamp housings come from carLights, which is
+ * one model shared by every car (they are all the same car for now).
+ */
+function setCarLamps(cars, headVP, skip) {
+  const N = Math.min(cars.length, 4);
+  const hp = new Float32Array(8 * 3), ha = new Float32Array(4 * 3), hi = new Float32Array(4);
+  const bp = new Float32Array(8 * 3), ba = new Float32Array(4 * 3), bi = new Float32Array(4);
+  let n = 0;
+  const haveHead = carLights && carLights.head && carLights.head.length >= 2;
+  const haveBrake = carLights && carLights.brake && carLights.brake.length >= 2;
+  for (let c = 0; c < N; c++) {
+    if (c === skip) continue;                     // never lit by yourself
+    const car = cars[c], m = car.mat;
+    if (!m) continue;
+    if (haveHead && car.headInt > 0.001) {
+      const A = mXfPt(carLights.head[0], m), B = mXfPt(carLights.head[1], m);
+      let dx = m[8] + m[4] * 0.06, dy = m[9] + m[5] * 0.06, dz = m[10] + m[6] * 0.06;  // aim slightly UP
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      hp.set(A, n * 6); hp.set(B, n * 6 + 3);
+      ha.set([dx / dl, dy / dl, dz / dl], n * 3);
+      hi[n] = car.headInt;
+    }
+    if (haveBrake && car.brakeInt > 0.001) {
+      const A = mXfPt(carLights.brake[0], m), B = mXfPt(carLights.brake[1], m);
+      let dx = -m[8], dy = -m[9], dz = -m[10];    // backward = −nose
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      bp.set(A, n * 6); bp.set(B, n * 6 + 3);
+      ba.set([dx / dl, dy / dl, dz / dl], n * 3);
+      bi[n] = car.brakeInt;
+    }
+    n++;
   }
-}
-// red brake-light wash pointing BACKWARD from the tail lamps; intensity rises with braking.
-function setBrakelights(cm, brakeInt) {
-  if (brakeInt > 0.001 && cm && carLights && carLights.brake.length >= 2) {
-    const A = mXfPt(carLights.brake[0], cm), B = mXfPt(carLights.brake[1], cm);
-    let dx = -cm[8], dy = -cm[9], dz = -cm[10];   // backward = −nose
-    const dl = Math.hypot(dx, dy, dz) || 1;
-    gl.uniform3f(tLoc.brakeA, A[0], A[1], A[2]);
-    gl.uniform3f(tLoc.brakeB, B[0], B[1], B[2]);
-    gl.uniform3f(tLoc.brakeDir, dx / dl, dy / dl, dz / dl);
-    gl.uniform1f(tLoc.brakeInt, brakeInt);
-  } else {
-    gl.uniform1f(tLoc.brakeInt, 0);
-  }
+  gl.uniform3fv(tLoc.headPos, hp); gl.uniform3fv(tLoc.headAim, ha); gl.uniform1fv(tLoc.headInt, hi);
+  gl.uniform3fv(tLoc.brakePos, bp); gl.uniform3fv(tLoc.brakeAim, ba); gl.uniform1fv(tLoc.brakeInt, bi);
+  gl.uniform1i(tLoc.carN, n);
+  // Beam occlusion has ONE depth map, baked for the reference car, so it is applied to
+  // slot 0 only (the shader does this). Skipping the reference car means slot 0 is
+  // somebody else's lamp, and their beam must not be occluded by another car's map.
+  if (headVP && headReady && skip !== 0) {
+    gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, headDepthTex);
+    gl.uniform1i(tLoc.headDepth, 2); gl.uniformMatrix4fv(tLoc.headVP, false, headVP);
+    gl.uniform1f(tLoc.headOccOn, 1); gl.activeTexture(gl.TEXTURE0);
+  } else gl.uniform1f(tLoc.headOccOn, 0);
 }
 
 /* ===================== cascaded shadow maps =====================
@@ -2866,8 +2889,9 @@ function render() {
     gl.uniformMatrix4fv(tLoc.model, false, IDENT4);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
-    setHeadlights(cm, headInt, headVP);         // headlights light the track ahead (occluded by geometry)
-    setBrakelights(cm, brakeInt);               // brake wash spills red behind
+    // EVERY car's lamps light the track — a ghost's headlights fall on the road ahead of
+    // it exactly like the reference car's. skip = -1: the track is lit by all of them.
+    setCarLamps(allCarLamps(nightF, brakeInt, cm), headVP, -1);
     setShadow();                                // the car's cast shadow onto the track
     gl.uniform1i(tLoc.tex, 0);
     gl.activeTexture(gl.TEXTURE0);
@@ -2940,22 +2964,12 @@ function render() {
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
-    // A car is never lit by its OWN lamps (the cones would pool on its own livery), but
-    // with several on track it IS lit by the nearest other one — which is the entire
-    // point of a car turning up in your mirrors at night.
-    const carList = [
-      { mat: cm, headInt: nightF > 0.02 ? nightF : 0, brakeInt: brakeInt },
-      ...ghostDraws.map(g => {
-        const gg = carGForces(g.f, g.run.ex);
-        const gdec = gg ? gg.brakeG - BRAKE_SCRUB * gg.latG * gg.latG : 0;
-        const gb = Math.max(0, Math.min(1, (gdec - BRAKE_DEADZONE_G) / BRAKE_RANGE_G));
-        return { mat: g.mat, headInt: nightF > 0.02 ? nightF : 0, brakeInt: gb * nightF, ghost: g };
-      }),
-    ];
-    for (const c of carList) if (c.ghost) c.ghost.self = c;    // so the ghost pass can exclude itself
-    const litBy = CAR_LIGHTS_ON ? nearestOtherCar(carList[0], carList) : null;
-    setHeadlights(litBy ? litBy.mat : null, litBy ? litBy.headInt : 0, headVP);
-    setBrakelights(litBy ? litBy.mat : null, litBy ? litBy.brakeInt : 0);
+    // A car is never lit by its OWN lamps (the cones would pool on its own livery), but it
+    // IS lit by every other car on track — which is the point of headlights appearing in
+    // your mirrors. skip = 0 here: this pass draws the reference car.
+    const carList = allCarLamps(nightF, brakeInt, cm);
+    if (CAR_LIGHTS_ON) setCarLamps(carList, headVP, 0);
+    else setCarLamps([], headVP, -1);
     // cars RECEIVE shadows now, so one body darkens another. Self-shadow acne was the
     // original reason this was off; the normal-offset plus the metric bias handles it.
     gl.uniform1f(tLoc.shadowOn, (CAR_SHADOWS && shadowsRendered) ? 1 : 0);
@@ -2964,10 +2978,9 @@ function render() {
     gl.activeTexture(gl.TEXTURE0);
     drawCarGroups(carGroups, cm);                              // body — keeps its crab
     drawGhostCars(mvp, headVP, nightF, carList);               // comparison laps, same car, own telemetry
-    // the ghost pass leaves whichever lamps lit the LAST ghost bound; restore the
-    // reference car's own lighting before its wheels, driver and glass are drawn
-    setHeadlights(litBy ? litBy.mat : null, litBy ? litBy.headInt : 0, headVP);
-    setBrakelights(litBy ? litBy.mat : null, litBy ? litBy.brakeInt : 0);
+    // the ghost pass left the last ghost's exclusion bound; put the reference car's own
+    // lamp set back before its wheels, driver and glass are drawn
+    if (CAR_LIGHTS_ON) setCarLamps(carList, headVP, 0);
     updateLapLegendLive();                                     // and their speed / delta, at this point on track
     if (carWheels) {                                           // wheels steer + roll, and sit at their REAL recorded positions
       const fp = tCur / ex.dt;
