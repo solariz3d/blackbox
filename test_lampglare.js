@@ -19,12 +19,20 @@ const path = require("path");
 let fails = 0;
 function ok(cond, msg) { if (!cond) { console.log("  FAIL " + msg); fails++; } }
 
-const MIN_PX = 2.5, MAX_PX = 70, NUDGE_M = 0.5, FALLOFF_EXP = 0.7;
+const MIN_PX = 5, MAX_PX = 70, NUDGE_M = 0.5, FALLOFF_EXP = 0.45, MIN_REACH = 1500;
 
 /** brightness of a lamp's glare at distance d — mirrors drawTrackLampGlare */
-function glare(d, fade, gate) {
+function glare(d, declaredFade, gate) {
+  // FADE_AT is a cost hint, not a visibility limit — Miandros declares 250 m on lamps 100 m
+  // in the air. The glare uses the larger of the author's number and our floor.
+  const fade = Math.max(declaredFade, MIN_REACH);
   if (d > fade) return 0;
   return Math.pow(1 - d / fade, FALLOFF_EXP) * gate;
+}
+/** what actually reaches the framebuffer, given the blend mode — the bug lived HERE */
+function contribution(b, blendSrcIsAlpha) {
+  const a = b;                       // sprite centre: core 1.0, halo 0.42, before shaping
+  return blendSrcIsAlpha ? a * a : a;
 }
 /** on-screen size in pixels, with the floor that keeps a distant lamp from vanishing */
 function sizePx(d, intensity, Hpx, th) {
@@ -34,29 +42,58 @@ function sizePx(d, intensity, Hpx, th) {
 
 const Hpx = 1080, th = Math.tan(0.9 / 2);
 
-console.log("the test track's own numbers: 180 m pool, 1000 m fade, 943 m circuit");
+console.log("premultiplied blend — the bug that made the first version reach nowhere");
+{
+  /* The fragment outputs vec4(colour*a, a), i.e. already premultiplied. Blending with
+   * SRC_ALPHA multiplies by a a second time, so the contribution goes quadratic. Harmless
+   * near the camera where a is close to 1, and ruinous exactly where this feature earns
+   * its keep. This is the assertion that would have caught it. */
+  /* The cost of the extra multiply is exactly 1/a, so it is stated against brightness
+   * rather than against any particular distance — the falloff has since been retuned and
+   * the property must not be pinned to numbers that moved. */
+  const dim = 0.2, bright = 0.95;
+  ok(Math.abs(contribution(dim, false) / contribution(dim, true) - 5) < 1e-9,
+     "a lamp at 0.2 brightness lost a factor of 5 to the second multiply");
+  ok(contribution(bright, false) / contribution(bright, true) < 1.06,
+     "and one at 0.95 lost almost nothing — which is why the bug hid in plain sight");
+  ok(contribution(dim, false) === dim, "premultiplied output reaches the framebuffer unchanged");
+}
+
+console.log("the test track's own numbers: 180 m pool, 1000 m declared fade, 943 m circuit");
 {
   const fade = 1000;
   // the complaint, restated as a number: at the far side of the track a lamp must still
-  // be meaningfully bright, not a rounding error
-  ok(glare(943, fade, 1) > 0.1, "a lamp across the whole track is still visible: " + glare(943, fade, 1).toFixed(3));
-  // and it must not simply be uniform — a light 50 m away should read as nearer than one
-  // at 900 m, or the depth cue is gone and the track looks like a flat sheet of dots
-  ok(glare(50, fade, 1) > glare(900, fade, 1) * 2, "near lamps are clearly brighter than far ones");
-  // the author's stated fade is respected exactly, with no pop at the boundary
-  ok(glare(1000, fade, 1) === 0, "brightness reaches zero AT the declared fade, not past it");
-  ok(glare(1001, fade, 1) === 0, "and stays zero beyond it");
-  ok(glare(999, fade, 1) < 0.02, "approaching the fade it is already near zero, so nothing pops out of existence");
+  // be plainly bright — not merely non-zero, which the first version technically was
+  ok(glare(943, fade, 1) > 0.6, "a lamp across the whole track is still strong: " + glare(943, fade, 1).toFixed(3));
+  ok(glare(500, fade, 1) > 0.8, "and at mid-distance it has barely dropped: " + glare(500, fade, 1).toFixed(3));
+  // it must not be flat either — a light 50 m away should read as nearer than one at
+  // 900 m, or the depth cue is gone and the track becomes a sheet of identical dots
+  ok(glare(50, fade, 1) > glare(900, fade, 1) * 1.15, "near lamps still read as nearer than far ones");
+  // and it does end, without a pop at the boundary
+  ok(glare(MIN_REACH, fade, 1) === 0, "brightness reaches zero at the reach");
+  ok(glare(MIN_REACH + 1, fade, 1) === 0, "and stays zero beyond it");
+  ok(glare(MIN_REACH - 1, fade, 1) < 0.05, "approaching it, already near zero — nothing pops out of existence");
+}
+
+console.log("the reach floor overrides a short FADE_AT, deliberately");
+{
+  // Miandros declares 250 m on floodlights standing 100 m in the air. That is a statement
+  // about processing cost, not about whether a stadium light can be seen from the far
+  // straight, and taking it literally is what left tracks dark past the next corner.
+  ok(glare(900, 250, 1) > 0.5, "a Miandros floodlight is visible from 900 m: " + glare(900, 250, 1).toFixed(2));
+  // a LONGER declared fade is still respected — the floor only ever raises
+  ok(glare(1900, 2000, 1) > 0, "nordic's declared 2000 m is not clipped back to the floor");
+  ok(glare(1900, 250, 1) === 0, "while a short one is raised to the floor, not to infinity");
 }
 
 console.log("falloff is gentler than illumination, and that is the point");
 {
   // Illumination falls off toward zero across its RANGE; glare must not, or the effect
-  // collapses back into the thing being fixed. At half the fade distance a quadratic pool
-  // is down to 25%; the glare should still be well over half.
+  // collapses back into the thing being fixed. At half the reach a quadratic pool is down
+  // to 25%; the glare should still be holding most of its strength.
   const quad = (1 - 0.5) * (1 - 0.5);
-  ok(glare(500, 1000, 1) > 0.55, "at half the fade distance: glare " + glare(500, 1000, 1).toFixed(2) + " vs a quadratic pool's " + quad);
-  ok(FALLOFF_EXP < 1, "the exponent is below 1, i.e. it holds up across the middle distances");
+  ok(glare(750, 1000, 1) > 0.7, "at half the reach: glare " + glare(750, 1000, 1).toFixed(2) + " vs a quadratic pool's " + quad);
+  ok(FALLOFF_EXP < 0.6, "the exponent is well below 1, i.e. it holds up right across a circuit");
 }
 
 console.log("the pixel floor — the reason a distant lamp does not disappear");
@@ -71,6 +108,9 @@ console.log("the pixel floor — the reason a distant lamp does not disappear");
   // sub-pixel sprites also shimmer as they cross the sample grid; the floor fixes the
   // flicker and the vanishing together
   ok(MIN_PX > 1, "the floor is above one pixel, so the sprite cannot alias in and out");
+  // 2.5 px was arithmetically sufficient and visually still nothing — a dot that small at
+  // a fraction of full brightness reads as a stuck sensor pixel, not a light
+  ok(MIN_PX >= 4, "and it is large enough to read AS a light, not merely to exist");
 }
 
 console.log("size still varies where it can be seen to vary");
@@ -107,13 +147,16 @@ console.log("constants match the shipped source");
   const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
   const fn = src.slice(src.indexOf("function drawTrackLampGlare"));
   const body = fn.slice(0, fn.indexOf("\n}"));
-  ok(body.includes("0.7"), "falloff exponent 0.7 present in drawTrackLampGlare");
-  ok(body.includes("2.5") && body.includes("70"), "pixel floor 2.5 and cap 70 present");
+  ok(body.includes("0.45"), "falloff exponent 0.45 present in drawTrackLampGlare");
+  ok(body.includes("Math.max(5,") && body.includes("70"), "pixel floor 5 and cap 70 present");
   ok(body.includes("0.55 + 0.22"), "world-size formula present");
   ok(body.includes("Math.min(4, L.intensity)"), "intensity clamp at 4 present");
   ok(body.includes("0.5 / d"), "half-metre depth nudge present");
   ok(body.includes("L.fadeAt || L.range"), "fades on FADE_AT, falling back to RANGE");
-  ok(body.includes("gl.ONE"), "blend is additive");
+  ok(body.includes("LAMP_GLARE_MIN_REACH"), "and raises a short fade to the reach floor");
+  ok(/blendFunc\(gl\.ONE,\s*gl\.ONE\)/.test(body),
+     "blend is PREMULTIPLIED additive — SRC_ALPHA here squares an already-premultiplied colour");
+  ok(!/blendFunc\(gl\.SRC_ALPHA/.test(body), "and the quadratic blend has not come back");
   ok(body.includes("depthMask(false)"), "glare does not write depth");
   ok(body.includes("gl.DEPTH_TEST"), "but is still depth-tested, so it can be occluded");
 }

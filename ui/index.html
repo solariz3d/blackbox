@@ -986,6 +986,14 @@ const lampLoc = {
 const lampBuf = gl.createBuffer();
 let TRACK_LAMP_GLOW = 1;
 let LAMP_GLARE_GAIN = 1.0;
+/* A floor under the author's FADE_AT, and it is knowingly overriding the config.
+ *
+ * FADE_AT is a performance hint about when CSP may stop processing a light source, not a
+ * statement that the lamp becomes invisible there — Miandros sets 250 m on lamps 100 m in
+ * the air, which is about cost, not about sight. Real lights carry much further than that,
+ * so the fade used for GLARE is the larger of the author's number and this. Illumination is
+ * untouched and still honours RANGE exactly; this only governs how far the lamp is seen. */
+let LAMP_GLARE_MIN_REACH = 1500;
 
 /* Draw every track lamp as an additive sprite, sized by distance but never allowed to
  * vanish. `th` is tan(fov/2), so the projection matches the car's glow layer. */
@@ -1000,23 +1008,25 @@ function drawTrackLampGlare(mvp, nightF, th) {
     if (gate <= 0.02) continue;
     const dx = L.pos[0] - eye[0], dy = L.pos[1] - eye[1], dz = L.pos[2] - eye[2];
     const d = Math.hypot(dx, dy, dz) || 1;
-    const fade = L.fadeAt || L.range;
+    const fade = Math.max(L.fadeAt || L.range, LAMP_GLARE_MIN_REACH);
     if (d > fade) continue;
     /* Brightness falls off far more slowly than the illumination does. That is not a
      * fudge: what carries a distant light to the eye is glare, and glare falls off with
      * the source's apparent brightness, not with the inverse square of a pool of light on
-     * tarmac. Linear in d/fade, raised to 0.7 so it holds most of its strength across the
-     * middle distances and only lets go near the author's stated fade. */
-    const b = Math.pow(1 - d / fade, 0.7) * gate * LAMP_GLARE_GAIN;
+     * tarmac. Linear in d/fade, raised to 0.45 so it holds most of its strength right
+     * across the circuit and only lets go approaching the fade. */
+    const b = Math.pow(1 - d / fade, 0.45) * gate * LAMP_GLARE_GAIN;
     if (b <= 0.004) continue;
-    /* Size: a real fixture's angular size, EXCEPT that it is not allowed below ~2.5 px.
-     * The floor is the whole point. A lamp 900 m away subtends far less than a pixel, so
-     * the honest projection makes it disappear — but a real light at that distance is
-     * still plainly visible, because the eye receives its glare rather than resolving its
-     * shape. Below about a pixel a sprite also starts to shimmer as it crosses the sample
-     * grid, so the floor fixes the flicker and the vanishing in one move. */
+    /* Size: a real fixture's angular size, EXCEPT that it is not allowed below 5 px. The
+     * floor is the whole point. A lamp 900 m away subtends about 0.7 px, so the honest
+     * projection makes it disappear — but a real light at that distance is still plainly
+     * visible, because the eye receives its glare rather than resolving its shape. Five
+     * pixels because two was arithmetically sufficient and visually still nothing: a
+     * 2-pixel dot at a fraction of full brightness is not a light, it is a stuck sensor
+     * pixel. Below about a pixel a sprite also shimmers as it crosses the sample grid, so
+     * the floor fixes the flicker and the vanishing in one move. */
     const world = 0.55 + 0.22 * Math.min(4, L.intensity);
-    const px = Math.max(2.5, Math.min(70, world * Hpx / (d * th)));
+    const px = Math.max(5, Math.min(70, world * Hpx / (d * th)));
     /* Pull the sprite toward the eye. Its position is the lamp mesh's bounding-sphere
      * CENTRE, so at equal depth the fixture's own front face wins the depth test and the
      * lamp hides inside its own housing. Half a metre clears a typical fixture without
@@ -1037,7 +1047,13 @@ function drawTrackLampGlare(mvp, nightF, th) {
   gl.enableVertexAttribArray(lampLoc.sb);
   gl.vertexAttribPointer(lampLoc.sb, 2, gl.FLOAT, false, 32, 24);
   gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE);          // additive: glare adds, never darkens
+  /* PREMULTIPLIED additive, like every other glow layer in this file, and the reason the
+   * first version of this reached nowhere. The fragment already outputs vec4(colour*a, a),
+   * so SRC_ALPHA multiplies by a a SECOND time and the contribution goes quadratic. The
+   * cost is 1/a, which is nothing up close where a is near 1 and severe exactly where this
+   * feature earns its keep: a lamp at 0.2 brightness arrived at 0.04, a fifth of its
+   * value — while the lamp beside the camera looked perfectly correct. */
+  gl.blendFunc(gl.ONE, gl.ONE);
   gl.depthMask(false);                          // a lamp behind a grandstand stays hidden,
   gl.enable(gl.DEPTH_TEST);                     // but glare must not occlude what follows
   gl.drawArrays(gl.POINTS, 0, v.length / 8);
