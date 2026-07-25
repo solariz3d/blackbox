@@ -857,6 +857,69 @@ fn read_replay_track(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(buf.get(off..off + tl)?).to_string())
 }
 
+/// The surface KEYs a track marks as drivable, from its own `data/surfaces.ini`.
+///
+/// **Not currently wired to anything — see `docs/TRACK_ROAD_DETECTION.md`.** Feeding these
+/// keys to `extractRoadMesh` instead of the built-in ROAD|KERB|PIT|RUNOFF recovered
+/// trento-bondone but broke centrifuge and the T-180 test track, so the change was
+/// reverted. The reader is kept because it is correct and the data is real: `IS_VALID_TRACK=1`
+/// is AC's own marker for drivable surface, and whatever the eventual fix is will want it.
+#[allow(dead_code)]
+fn track_surface_keys(name: String, config: Option<String>) -> Result<Vec<String>, String> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for lib in steam_libraries() {
+        let base = lib
+            .join("steamapps")
+            .join("common")
+            .join("assettocorsa")
+            .join("content")
+            .join("tracks")
+            .join(&name);
+        if !base.is_dir() {
+            continue;
+        }
+        // a layout keeps its own data/ folder; fall back to the track's shared one
+        if let Some(cfg) = config.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+            dirs.push(base.join(cfg).join("data"));
+        }
+        dirs.push(base.join("data"));
+    }
+    for d in dirs {
+        let Ok(txt) = std::fs::read_to_string(d.join("surfaces.ini")) else { continue };
+        let mut keys: Vec<String> = Vec::new();
+        let mut key: Option<String> = None;
+        let mut valid = false;
+        // sections are [SURFACE_n]; flush the previous one whenever a new header appears
+        let mut flush = |key: &mut Option<String>, valid: &mut bool, keys: &mut Vec<String>| {
+            if let (Some(k), true) = (key.take(), *valid) {
+                if !k.is_empty() {
+                    keys.push(k);
+                }
+            }
+            *valid = false;
+        };
+        for line in txt.lines() {
+            let l = line.trim();
+            if l.starts_with('[') {
+                flush(&mut key, &mut valid, &mut keys);
+                continue;
+            }
+            let Some(eq) = l.find('=') else { continue };
+            let (k, v) = (l[..eq].trim(), l[eq + 1..].trim());
+            if k.eq_ignore_ascii_case("KEY") {
+                key = Some(v.to_string());
+            } else if k.eq_ignore_ascii_case("IS_VALID_TRACK") {
+                valid = v.starts_with('1');
+            }
+        }
+        flush(&mut key, &mut valid, &mut keys);
+        if !keys.is_empty() {
+            return Ok(keys);
+        }
+    }
+    Ok(Vec::new()) // no surfaces.ini — caller falls back to the built-in defaults
+}
+
 fn tracks_dir() -> Result<PathBuf, String> {
     steam_libraries()
         .into_iter()

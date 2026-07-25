@@ -3947,6 +3947,13 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
     const roadChunks = []; // {verts, tris} per file for the edge index
     const collGroups = []; // {pos, idx} of solid meshes for the world collider
 
+    /* Road-key experiment REVERTED — see docs/TRACK_ROAD_DETECTION.md.
+     * Restricting the mesh-name match to the track's own surfaces.ini keys recovered
+     * trento-bondone but broke centrifuge and the T-180 test track, which the built-in
+     * ROAD|KERB|PIT|RUNOFF pattern already handled. Left as the default until the real
+     * naming rule is understood. */
+    const roadKeyPattern = null;
+
     for (const item of items) {
       try {
         const scene = KN5.extractScene(item.ab);
@@ -3983,7 +3990,13 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
         console.warn("scene path failed for " + item.name + ":", sceneErr);
       }
       try {
-        const road = KN5.extractRoadMesh(item.ab);
+        // Match this TRACK's own drivable surface keys, not the Kunos defaults. AC names
+        // a physical mesh <digit><SURFACE_KEY> and resolves the key in surfaces.ini, and
+        // real circuits define their own (spa: ASPH-SPA_BLACK, monza: MONZA-ASPH). With
+        // the hardcoded ROAD|KERB|PIT|RUNOFF, 15 of 62 installed tracks found no road at
+        // all — spa, monza, mugello, zandvoort among them — so smoke never collided and
+        // the edge readout never worked there.
+        const road = KN5.extractRoadMesh(item.ab, roadKeyPattern);
         if (road.tris.length) roadChunks.push(road);
       } catch (e) { console.warn("road extract failed for " + item.name + ":", e); }
     }
