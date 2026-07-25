@@ -9,3 +9,7 @@ node_modules/
 .DS_Store
 Thumbs.db
 *.swp
+
+# generated decoder dumps (make_eventmap.js writes these; ui/eventmap.js is the kept product)
+out.json
+*_events.json
