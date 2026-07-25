@@ -503,6 +503,7 @@ let lapOnly = true;
 // first one you took differently, which is the whole reason a delta bar exists.
 let lapCompare = false;
 let lapRefIndex = null;   // null = the fastest lap; the reference every overlay is measured against
+let currentReplayName = "";   // the loaded run, so the compare picker never offers it against itself
 
 /* the rendered/played frame window: the timed lap when known, else everything */
 function frameRange() {
@@ -3056,10 +3057,74 @@ function renderLapLegend(info) {
   el.innerHTML = `<div style="opacity:.55;margin-bottom:4px">lap comparison · green = faster here</div>${rows}${hint}`;
 }
 
-/* First click turns comparison on; with it already on, another click adds a replay to
- * compare against. Measured: every replay in the folder holds exactly one timed lap, so
- * the second lap almost always comes from a second FILE — making "add a run" the primary
- * action rather than a buried one. */
+/* Picking the lap to compare against — IN THE APP, never an OS folder dialog.
+ * BLACKBOX already knows every replay for the loaded track (replays_for_track) and
+ * already parses each one's fastest lap for the track browser, so the natural picker is
+ * a list of this track's laps by time. Sending the chair out to a file dialog to hunt
+ * for a filename that encodes the time in a timestamp would be handing him back a job
+ * the program has already done. The file input survives only as the browser fallback,
+ * where there is no native side to ask. */
+let lapPickEl = null;
+function ensureLapPicker() {
+  if (lapPickEl) return lapPickEl;
+  lapPickEl = document.createElement("div");
+  lapPickEl.id = "lappick";
+  lapPickEl.style.cssText = "position:absolute;left:12px;top:96px;z-index:8;min-width:290px;max-height:60vh;overflow:auto;" +
+    "font:12px/1.55 Cascadia Mono,Consolas,monospace;background:rgba(8,10,14,.94);border:1px solid rgba(255,255,255,.12);" +
+    "border-radius:6px;padding:8px 10px;color:#cfd6e4";
+  document.body.appendChild(lapPickEl);
+  return lapPickEl;
+}
+function hideLapPicker() { if (lapPickEl) lapPickEl.style.display = "none"; }
+
+async function showLapPicker() {
+  if (!inTauri) { document.getElementById("lapcmppick").click(); return; }   // browser: no native list
+  const el = ensureLapPicker();
+  el.style.display = "block";
+  const head = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">` +
+    `<span style="opacity:.55">compare against…</span>` +
+    `<span id="lappickx" style="cursor:pointer;opacity:.5;padding:0 4px">✕</span></div>`;
+  el.innerHTML = head + `<div style="opacity:.6">reading this track's replays…</div>`;
+  el.querySelector("#lappickx").onclick = hideLapPicker;
+
+  const track = replay && replay.track;
+  if (!track) { el.innerHTML = head + `<div style="opacity:.6">load a replay first</div>`; el.querySelector("#lappickx").onclick = hideLapPicker; return; }
+  let list;
+  try { list = await tinvoke("replays_for_track", { track }); }
+  catch (e) { el.innerHTML = head + `<div style="opacity:.7">${esc(String(e))}</div>`; el.querySelector("#lappickx").onclick = hideLapPicker; return; }
+
+  const others = (list || []).filter(r => r.name !== currentReplayName);
+  if (!others.length) {
+    el.innerHTML = head + `<div style="opacity:.6">no other replays recorded on this track</div>`;
+    el.querySelector("#lappickx").onclick = hideLapPicker; return;
+  }
+  el.innerHTML = head + others.map((r, i) =>
+    `<div class="lprow" data-i="${i}" style="cursor:pointer;padding:3px 4px;border-radius:3px;display:flex;gap:10px;justify-content:space-between">` +
+    `<span style="opacity:.85">${esc(fmtReplayDate(r))}</span><span class="lp" style="opacity:.5">reading…</span></div>`).join("");
+  el.querySelector("#lappickx").onclick = hideLapPicker;
+
+  // lap times, same way the track browser gets them: parse each replay once
+  const rows = [...el.querySelectorAll(".lprow")];
+  for (let i = 0; i < others.length; i++) {
+    const r = others[i], row = rows[i];
+    try {
+      const ab = await tinvoke("read_file", { path: r.path });
+      const cex = ACReplay.extractCar(ACReplay.parseReplay(ab), 0);
+      const best = fastestLap(cex);
+      row.querySelector(".lp").textContent = best ? fmtLapMs(best) : "no timed lap";
+      row.querySelector(".lp").style.opacity = best ? "1" : ".4";
+      if (best) {
+        row.onmouseenter = () => row.style.background = "rgba(255,255,255,.07)";
+        row.onmouseleave = () => row.style.background = "";
+        row.onclick = async () => {
+          try { addCompareRun(await tinvoke("read_file", { path: r.path }), r.name); hideLapPicker(); }
+          catch (err) { row.querySelector(".lp").textContent = String(err.message || err); }
+        };
+      }
+    } catch (e) { row.querySelector(".lp").textContent = "unreadable"; }
+  }
+}
+
 document.getElementById("lapcmppick").addEventListener("change", function () {
   const f = this.files && this.files[0];
   this.value = "";
@@ -3074,7 +3139,7 @@ document.getElementById("btnLapCmp").addEventListener("click", function () {
   if (!ex) return;
   const info = lapOverlayInfo();
   const have = info ? info.extra.length + compareRuns.length : 0;
-  if (lapCompare && have === 0) { document.getElementById("lapcmppick").click(); return; }  // on, but empty → pick a run
+  if (lapCompare && have === 0) { showLapPicker(); return; }   // on, but empty → pick a lap in-app
   lapCompare = !lapCompare;
   this.classList.toggle("on", lapCompare);
   buildGeometry();
@@ -3800,6 +3865,13 @@ function loadReplayBuffer(ab, name) {
   try {
     resetTrackScene(); // a new replay starts with a clean track + car
     replay = ACReplay.parseReplay(ab);
+    currentReplayName = name || "";     // so the compare picker can leave this run out of its own list
+    compareRuns = [];                   // comparisons belong to the run that was loaded when they were chosen
+    lapCompare = false;
+    const cmpBtn = document.getElementById("btnLapCmp");
+    if (cmpBtn) cmpBtn.classList.remove("on");
+    if (typeof hideLapPicker === "function") hideLapPicker();
+    if (typeof renderLapLegend === "function") renderLapLegend(null);
     selectCar(0);
     document.getElementById("fileinfo").textContent =
       `${name} · ${replay.track}${replay.trackConfig ? "/" + replay.trackConfig : ""} · ${replay.weather} · ${replay.intervalMs} ms`;
