@@ -1,6 +1,18 @@
 # Changelog
 
-## 2026-07-24 — Shadow cascade reach, and the groundwork for multiple ghosts
+## 2026-07-25 — The logger watched a folder that doesn't exist on this machine
+
+### Fixed
+- **`telemetry_logger.rs` never stamped anything on a OneDrive-redirected machine.** `replay_dir()`
+  hardcoded `%USERPROFILE%\Documents\Assetto Corsa\replay`, but Documents is OneDrive-redirected on
+  the laptop (`%OneDrive%\Documents\…`), so the once-a-second scan for new replays walked a path that
+  does not exist, found nothing forever, and stamped no telemetry — **silently**, because a missing
+  folder and a folder with no new replays look identical to the scan. Every replay recorded on that
+  machine therefore had no RPM/gas/brake/gear tail, which reads downstream as dead audio in BLACKBOX
+  (`BBAudio.update` gets nothing to resynth from), not as a logger error. Now both roots are checked
+  and whichever actually holds the folder wins — the same "paths are data, not code" fix already
+  applied to `lib.rs`'s `replay_dir`. The chosen path is written to `telemetry_logger.log` on startup,
+  and the no-folder case logs a WARNING naming the fallback, so this failure can never be silent again.
 
 ### Fixed
 - **A lit rectangle that travelled with the car** (screenshot-verified): the grandstand's shadow

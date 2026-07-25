@@ -116,9 +116,35 @@ fn push_f32(buf: &mut Vec<u8>, v: f32) {
     buf.extend_from_slice(&v.to_le_bytes());
 }
 
+/// Where AC saves replays. Documents is OneDrive-redirected on some machines (the laptop)
+/// and plain on others (the desktop), so the shell decides, not us: check both roots and take
+/// whichever actually holds the folder. Getting this wrong is SILENT — the folder scan simply
+/// finds nothing forever and no replay is ever stamped — so log the choice either way.
 fn replay_dir() -> PathBuf {
-    let up = std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\".into());
-    Path::new(&up).join("Documents").join("Assetto Corsa").join("replay")
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(up) = std::env::var("USERPROFILE") {
+        roots.push(Path::new(&up).join("Documents"));
+    }
+    if let Ok(od) = std::env::var("OneDrive") {
+        roots.push(Path::new(&od).join("Documents"));
+    }
+    let candidates: Vec<PathBuf> = roots
+        .iter()
+        .map(|r| r.join("Assetto Corsa").join("replay"))
+        .collect();
+    if let Some(hit) = candidates.iter().find(|p| p.is_dir()) {
+        log(&format!("watching replay folder: {}", hit.display()));
+        return hit.clone();
+    }
+    let fallback = candidates
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| PathBuf::from("C:\\"));
+    log(&format!(
+        "WARNING: no Assetto Corsa replay folder found — falling back to {} (nothing will be stamped until it exists)",
+        fallback.display()
+    ));
+    fallback
 }
 
 fn list_acreplays(dir: &Path) -> Vec<PathBuf> {
