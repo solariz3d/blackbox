@@ -21,13 +21,14 @@ console.log("map");
 check(!!M && !!M.events, "loads and defines window.BBEventMap");
 check(!!M.car, `records which car it was decoded from (${M.car})`);
 const ev = M.events.engine_custom || M.events.engine_ext_old;
+const EXTRA = ["turbine", "transmission", "wheel"];
 check(!!ev && ev.layers.length >= 8, `carries a playable event (${ev ? ev.layers.length : 0} looping layers)`);
 
 console.log("\nlayer data");
 let badSample = 0, badCurve = 0, badBox = 0;
 for (const L of ev.layers) {
   if (typeof L.sample !== "number" || L.sample < 0) badSample++;
-  if (!Array.isArray(L.curves) || L.curves.some(c => !Array.isArray(c) || c.some(p => !isFinite(p[0]) || !isFinite(p[1])))) badCurve++;
+  if (!Array.isArray(L.curves) || L.curves.some(c => !Array.isArray(c.pts) || c.pts.some(p => !isFinite(p[0]) || !isFinite(p[1])))) badCurve++;
   if (!(isFinite(L.from) && isFinite(L.to) && L.to > L.from)) badBox++;
 }
 check(badSample === 0, "every layer names an FSB5 sample index");
@@ -61,7 +62,9 @@ const liveAt = rpm => {
   for (const L of ev.layers) {
     if (L.param === "throttle" || rpm < L.from || rpm > L.to) continue;
     let g = 1;
-    for (const c of L.curves) g *= evalC(c, rpm);
+    // bus_volume curves are dB, instrument_gain curves are linear — mixing them up is the whole
+    // reason each curve carries its own units
+    for (const c of L.curves) g *= c.db ? Math.pow(10, evalC(c.pts, rpm) / 20) : evalC(c.pts, rpm);
     if (g > 0.01) n++;
   }
   return n;
@@ -77,7 +80,7 @@ const worst = Math.max(...probes.map(rpm => {
   for (const L of ev.layers) {
     if (L.param === "throttle" || rpm < L.from || rpm > L.to) continue;
     let g = Math.pow(10, (L.db || 0) / 20);
-    for (const c of L.curves) g *= evalC(c, rpm);
+    for (const c of L.curves) g *= c.db ? Math.pow(10, evalC(c.pts, rpm) / 20) : evalC(c.pts, rpm);
     sum += g;
   }
   return sum;
@@ -86,6 +89,11 @@ console.log(`  worst-case summed linear gain across the sweep: ${worst.toFixed(1
 const src = fs.readFileSync(path.join(__dirname, "ui", "audioengine.js"), "utf8");
 const lvl = parseFloat((src.match(/AC_LEVEL\s*=\s*([0-9.]+)/) || [])[1] || "1");
 check(worst * lvl < 8, `AC_LEVEL ${lvl} keeps the summed voices out of hard clipping (${(worst * lvl).toFixed(1)})`);
+
+console.log("\nthe rest of the car");
+for (const n of EXTRA) check(!!(M.events[n] && M.events[n].layers.length), n + ": " + (M.events[n] ? M.events[n].layers.length + " layers" : "MISSING"));
+check(M.events.transmission.layers.some(L => L.curves.some(c => c.db)), "transmission curves are flagged as dB (reading them as linear gain would be wildly wrong)");
+check(M.events.wheel.layers.some(L => L.param === "speed"), "tyre_rolling rides road speed");
 
 console.log(fails ? `\n${fails} FAILED` : "\nall checks passed");
 process.exit(fails ? 1 : 0);

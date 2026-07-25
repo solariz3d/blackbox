@@ -90,6 +90,30 @@ in any browser directly — the zero-dep soul is intact).
 
 Requires the Rust toolchain (cargo) + WebView2 (ships with Win10/11).
 
+## Engine sound, and the two things that must be installed
+
+The engine is **Assetto Corsa's own event, played as authored** — not an imitation of it. On load,
+BLACKBOX reads the replay car's own FMOD bank (`<car>/sfx/<car>.bank`), and plays the instruments
+CSP actually sounds: the rpm ladder with its authored trigger boxes, gain curves and autopitch roots
+(which are *not* the numbers in the sample names), plus the turbine spool, the gearbox on drivetrain
+speed, and tyre roll — around a dozen voices at once, where a hand-rolled crossfade plays two. Wind
+is the one exception: it rides the **camera's** airspeed, because BLACKBOX's viewer flies and AC's
+does not. Decode a car's recipe with `make_eventmap.js`; extract raw samples with `extract_bank.js`.
+
+Two optional installs decide how much a *future* replay can carry. Neither can change an existing one.
+
+- **`telemetry_logger.exe`** — records rpm, gear, throttle, brake, boost, slip and suspension travel
+  while you drive and staples them onto the saved `.acreplay`. AC publishes physics to shared memory
+  only while you *drive*, never during replay playback, so a replay recorded without it has no engine
+  data and no amount of post-processing recovers it.
+- **The CSP bridge** (`csp/blackbox_bridge/`) — a small Assetto Corsa app that mirrors CSP's extended
+  physics (`scriptControllerInputs`) into shared memory. Turbine thrust, turbine rpm and the
+  afterburner *button* live there and appear nowhere in AC's stock shared memory, so without it the
+  exhaust plume is inferred from turbo boost rather than read from your actual input. BLACKBOX offers
+  to install it (it is embedded in the exe); enable **BLACKBOX Bridge** in CSP's app list afterwards.
+  Replays recorded with it carry telemetry schema 6; without it, schema 5 — chosen at save time, so a
+  file never claims turbine data it does not have.
+
 ## Ideas / next
 
 - Sign the edge metric by side (outside vs inside of the racing line).

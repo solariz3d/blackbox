@@ -1,5 +1,115 @@
 # Changelog
 
+## 2026-07-25 — Turbine telemetry: a CSP bridge, schema 6, and a flame that fires when you fired it
+
+### The problem
+The T-180's afterburner is a **button**, and it lives in CSP's extended physics —
+`ac.getCarPhysics(0).scriptControllerInputs[12]`/`[17]`, exactly where the mod's own `graphics.lua`
+reads it. It is **not** in AC's shared memory (verified: `drs` and `kersInput` stay 0 while it is
+held), which is why BLACKBOX has always inferred the plume from turbo boost — a stand-in for the
+button, never a reading of it. Research confirmed there is **no general CSP telemetry page** to
+piggyback on; every CSP mapping is feature-specific, so the bridge had to be written.
+
+### Added
+- **`csp/blackbox_bridge/`** — a CSP app that mirrors `scriptControllerInputs[0..19]` for car 0 into
+  `Local\AcTools.CSP.Limited.BlackboxBridge.v0`: 120 bytes, hand-ordered for zero implicit padding,
+  published under a **seqlock** (odd while writing, even when published). It also publishes a
+  `statusFlags` word so failure is *visible* — a climbing frame counter with the ready bit clear
+  means "app scope cannot reach `getCarPhysics`", distinguishable from a real zero or a dead bridge.
+- **`install_bridge` / `bridge_status`** (Rust) — the app's three files are **embedded in the
+  BLACKBOX binary** (`include_str!`/`include_bytes!`), so the installer stays one exe with no
+  "resource not found" failure on someone else's machine. A chip in the UI offers the install, names
+  the exact folder it will write to, and does nothing until clicked: this writes into the user's own
+  game directory, and doing that silently is how a tool earns distrust.
+- **Telemetry schema 6** = schema 5 + `turbineRpm` (`[10]`), `thrust` (`[9]`), `afterburner`
+  (max of `[12]`/`[17]`) and a **switch bitmask** (bit *i* = input *i* > 0.5, capturing every toggle
+  the car declares — jump jacks, fuel-pump cutoff, steering modes — in 4 bytes). 76 bytes/sample
+  against 60; recording all 20 indices as floats would have more than doubled the blob for data that
+  is mostly binary.
+- **The flame reads the real thing** when present: afterburner forces the plume, thrust tracks it.
+  Without schema 6 the boost-derived stand-in is unchanged.
+
+### The rule that keeps this honest
+**Schema is chosen at save time, not record time.** The logger always buffers the wide sample, but if
+the bridge never published, the four CSP columns are stripped back out and the file says schema 5 —
+truthfully. A replay claiming schema 6 with dead channels would show a flame that never fires and
+read as a viewer bug forever. The bridge flag also resets when AC closes, so a stale `true` cannot
+mislabel the next session.
+
+### Honest status
+App-scope `ac.getCarPhysics` is **stub-level evidence, not runtime-proven**: CSP's `ac_apps` API stub
+declares both it and `scriptControllerInputs` (256 entries) while `ac_splashscreen` declares neither,
+and shipped non-car scripts call it — but no shipped *app* does. If the ready bit never sets, the
+ranked fallbacks (in `scratchpad/BRIDGE_NOTES.md` §6) end at `car.extraB`, which is the raw
+`__EXT_LIGHT_B` afterburner button on a stable API: less turbine detail, same flame at the right
+moment. **Existing replays can never gain these channels** — the value was never in the page the
+logger was reading, the same way `centrifuge.acreplay` can never gain throttle and brake.
+
+## 2026-07-25 — The rest of the car, and wind that belongs to the camera
+
+### Added
+- **The car is not one event.** Alongside the engine, BLACKBOX now plays the car's **`turbine`**
+  (10 layers of N1/N2 spool, afterburner and combustion — the jet half of this car's voice),
+  **`transmission`** (two `911gt3_gears` layers riding `drivetrain_speed`, roots 80 and 150) and
+  **`wheel`** (`tyre_rolling` on road speed). Measured on the shipped map: **28 of 34 voices audible
+  at 8300 rpm / 320 km/h** — engine 14, turbine 10, gearbox 2, tyre 2.
+- **Wind is listener-local.** It is driven by the **camera's own airspeed**, measured from the eye's
+  world motion, and routed straight to the master bus — no panner, no distance falloff, no doppler.
+  Park beside a car doing 400 km/h and there is no wind; fly with it and there is. This distinction
+  does not exist in AC, whose listener *is* the driver, so its `wind` event rides `air_pressure` and
+  the speed→gain mapping here is **ours, not the sound designer's** — the only invented element left
+  in the engine, marked as such in the source.
+- **`turbine_fuelpump`** as well; **not** included: `turbo` (authored at −80 dB — the designer muted
+  it, so we honour that) and the `wind` event's own `air_pressure` curve (superseded, see above).
+
+### Fixed
+- **Gain curves come in two unit systems and we were assuming one.** `instrument_gain` (prop #4) is
+  linear 0..1, but `bus_volume` (prop #0) is **decibels** — transmission authors its curves in dB
+  running −42 → +10. Carrying only linear curves would have made the gearbox wildly wrong the moment
+  it was switched on. Each curve now carries its own units, and a curve may ride a *different*
+  parameter than the one gating its instrument.
+- **`AC_LEVEL` 0.22 → 0.11.** The summed authored gain roughly doubles with the extra events (~11 →
+  ~22 at speed); the old level sat inside the limiter, which pumps audibly on a mix this dense.
+
+### Why 14/18 voices is correct, not a bug
+The four silent engine layers at 8300 rpm are the idle ones (`idle_2826` ×2, `idle_1837` ×2), whose
+trigger boxes end at 4000 and 5000 rpm — AC shuts idle off above that. Swept across 0–12000 rpm no
+layer is ever dead; the count moving between ~11 and ~15 is the authored mix working.
+
+### Known missing
+`skid_ext`, `limiter`, `gear_grind` and the surface sounds are **empty stubs in the car bank** — they
+live in AC's shared `content/sfx/common.bank` (41.8 MB), which is not loaded yet. Tyre *squeal* is
+therefore still absent; tyre *roll* is present. The parser and decoder already work on any bank, and
+BLACKBOX already computes per-wheel slip for the tyre marks and smoke, which is the signal AC drives
+skid volume with.
+
+## 2026-07-25 — One engine, raw: the AC event and nothing else
+
+### Removed
+- **The other two engines.** The crossfaded sample ladder and the harmonic resynthesis were both
+  *our* designs playing AC's samples; the authored event beat them by ear, so they and their
+  generator/tests are gone (`ui/engineprofile.js`, `make_engineprofile.js`, `test_engineharmonic.js`,
+  `test_revexpand.js`). With them go the **rev-contrast expander** (it existed to widen a two-voice
+  crossfade — a twelve-voice authored mix doesn't need it) and the `eng:`/`raw:` header buttons.
+  Two engines that sound alike and unlike the game are not two options; they are one dead end.
+- **The whole colouring chain**, permanently: the EQ curve (body/presence/air/top-air), the parallel
+  grit waveshaper, the "menace" growl oscillators, the synthetic firing/sub body, and the
+  reverb/echo sends. Every part of it was tuned to fatten nine thin samples. Against AC's own mix it
+  was colouring us *away* from the game, which is exactly what the RAW A/B showed.
+
+### What is left
+Bank → authored event → panner → ceiling. `ui/audioengine.js` is ~half its former size and the
+signal path is: the car's own samples, a 3D panner with the exhaust cone and doppler, a transparent
+40 Hz high-pass, and the master limiter. `setDistance()` is now a no-op kept for API compatibility —
+distance is the panner's job once the wet sends are gone.
+
+### Changed
+- The HUD reads `♪ 8342 rpm · 14/18 voices · engine_custom · t180_mach6`, or **`no engine loaded`**
+  when the bank or the event map didn't bind. Silence now has a stated cause instead of being
+  mistaken for a taste problem.
+- A car with no decoded map plays **nothing** and logs the regeneration command. That is deliberate:
+  the previous fallback quietly played the Mach 6's samples under another car's name.
+
 ## 2026-07-25 — Play AC's own engine event, decoded from the bank
 
 ### Added

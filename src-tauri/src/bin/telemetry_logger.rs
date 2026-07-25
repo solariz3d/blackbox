@@ -70,6 +70,12 @@ impl Page {
     fn f32(&self, off: usize) -> f32 {
         unsafe { (self.view.add(off) as *const f32).read_unaligned() }
     }
+    /// volatile: the bridge page is written by another process while we read it, and the seqlock
+    /// only works if the compiler actually re-reads `seq` instead of caching it
+    #[inline]
+    fn u32(&self, off: usize) -> u32 {
+        unsafe { (self.view.add(off) as *const u32).read_volatile() }
+    }
     #[inline]
     fn i32(&self, off: usize) -> i32 {
         unsafe { (self.view.add(off) as *const i32).read_unaligned() }
@@ -107,7 +113,69 @@ const GR_STATUS: usize = 4;
 
 const AC_LIVE: i32 = 2;
 
-// ---- one telemetry sample (schema 5: 60 bytes, little-endian f32) ---------------
+/* ---- the CSP bridge: turbine state AC's shared memory does not carry ------------
+ *
+ * The T-180's afterburner is a BUTTON living in CSP's extended physics
+ * (`ac.getCarPhysics(0).scriptControllerInputs[12]` / `[17]`, read by the mod's own graphics.lua),
+ * and the turbine's thrust and rpm live beside it at [9] and [10]. None of that appears in
+ * `acpmf_physics` — verified: `drs` and `kersInput` stay 0 while the button is held — which is why
+ * every replay recorded before this bridge existed shows a plume inferred from turbo boost rather
+ * than the driver's actual input. No general CSP telemetry page exists to piggyback on; the bridge
+ * is a CSP app (csp/blackbox_bridge/) that mirrors the array into this mapping.
+ *
+ * Wire format is a seqlock: `seq` is odd while the writer is mid-update, even when published, so a
+ * reader retries while it is odd or changed across the read. 120 bytes, hand-ordered for zero
+ * implicit padding — do not reorder without changing the app to match.
+ */
+const BRIDGE_MAPPING: &str = r"Local\AcTools.CSP.Limited.BlackboxBridge.v0";
+const BRIDGE_MAGIC: u32 = 0x3058_4242; // 'BBX0'
+const BR_MAGIC: usize = 0;
+const BR_SEQ: usize = 8;
+const BR_FRAME: usize = 12;
+const BR_SWITCH_MASK: usize = 16;
+const BR_INPUTS: usize = 40; // f32[20]
+// the T-180 family's own index convention, read off its graphics.lua. Other cars assign these
+// slots differently, which is why the bridge publishes the whole window and the meaning is applied
+// here, at the consumer, where it can be corrected per car.
+const IN_THRUST: usize = 9;
+const IN_TURBINE_RPM: usize = 10;
+const IN_AFTERBURNER_L: usize = 12;
+const IN_AFTERBURNER_R: usize = 17;
+
+struct BridgeSnap {
+    frame: u32,
+    switch_mask: u32,
+    inputs: [f32; 20],
+}
+
+/// Seqlock read of the bridge page. `None` = not publishing, or torn beyond retry.
+fn read_bridge(p: &Page) -> Option<BridgeSnap> {
+    if p.u32(BR_MAGIC) != BRIDGE_MAGIC {
+        return None;
+    }
+    for _ in 0..16 {
+        let s1 = p.u32(BR_SEQ);
+        if s1 & 1 != 0 {
+            std::hint::spin_loop();
+            continue; // writer mid-update
+        }
+        let frame = p.u32(BR_FRAME);
+        let switch_mask = p.u32(BR_SWITCH_MASK);
+        let mut inputs = [0f32; 20];
+        for (k, v) in inputs.iter_mut().enumerate() {
+            *v = p.f32(BR_INPUTS + k * 4);
+        }
+        if p.u32(BR_SEQ) == s1 {
+            return Some(BridgeSnap { frame, switch_mask, inputs });
+        }
+    }
+    None
+}
+
+// ---- one telemetry sample (schema 6: 76 bytes, little-endian f32) ---------------
+// 15 base floats (schema 5) + turbineRpm, thrust, afterburner, switchMask. The wide sample is
+// always buffered; append_telemetry narrows it back to schema 5 when the bridge never published.
+const SAMPLE_BYTES: usize = 76;
 // timeMs, rpm, gear, gas, brake, speedKmh, slip[4], turboBoost, suspTravel[4]  (15 floats)
 // timeMs = ms since this driving stint began. BLACKBOX tail-aligns telemetry to the replay by
 // time (both streams end at the save moment), so a session-length buffer maps onto a short
@@ -178,17 +246,35 @@ fn already_stamped(replay: &Path) -> bool {
 /// plays natively in AC/Content Manager (verified: they tolerate trailing bytes) AND carries
 /// telemetry for BLACKBOX, which finds the blob from the tail via the footer.
 ///   [ …replay… ][ "BBTL" | u16 ver | u16 schema | u32 count | u32 bytesPerSample | samples ][ u32 blobLen | "BBX1" ]
-fn append_telemetry(replay: &Path, samples: &[u8], count: u32) {
+/// `bridge_live` = the CSP bridge actually published during this stint.
+///
+/// Schema is chosen HERE, not at record time, and the rule is deliberate: a replay that claims
+/// schema 6 with dead turbine channels is worse than an honest schema 5 — the viewer would show a
+/// flame that never fires and it would read as a bug in BLACKBOX forever. So the buffer always
+/// carries the wide sample, and if the bridge never published, the four CSP columns are stripped
+/// back out on the way to disk and the file says schema 5, truthfully.
+fn append_telemetry(replay: &Path, samples: &[u8], count: u32, bridge_live: bool) {
     if already_stamped(replay) {
         return;
     }
-    let mut blob = Vec::with_capacity(samples.len() + 16);
+    let (schema, bps, payload): (u16, u32, Vec<u8>) = if bridge_live {
+        (6, SAMPLE_BYTES as u32, samples.to_vec())
+    } else {
+        let mut narrow = Vec::with_capacity(count as usize * 60);
+        for s in samples.chunks_exact(SAMPLE_BYTES) {
+            narrow.extend_from_slice(&s[..60]); // drop turbRpm, thrust, afterburner, switchMask
+        }
+        (5, 60, narrow)
+    };
+    let mut blob = Vec::with_capacity(payload.len() + 16);
     blob.extend_from_slice(b"BBTL");
     blob.extend_from_slice(&5u16.to_le_bytes()); // version 5
-    blob.extend_from_slice(&5u16.to_le_bytes()); // schema 5 = timeMs,rpm,gear,gas,brake,speed,slip[4],turboBoost,suspTravel[4] (15 f32)
+    // schema 5 = timeMs,rpm,gear,gas,brake,speed,slip[4],turboBoost,suspTravel[4]        (15 f32)
+    // schema 6 = schema 5 + turbineRpm,thrust,afterburner,switchMask (CSP bridge)        (19 f32)
+    blob.extend_from_slice(&schema.to_le_bytes());
     blob.extend_from_slice(&count.to_le_bytes());
-    blob.extend_from_slice(&60u32.to_le_bytes()); // bytes per sample (15 × f32)
-    blob.extend_from_slice(samples);
+    blob.extend_from_slice(&bps.to_le_bytes());
+    blob.extend_from_slice(&payload);
     let mut footer = Vec::new();
     footer.extend_from_slice(&(blob.len() as u32).to_le_bytes());
     footer.extend_from_slice(b"BBX1");
@@ -213,6 +299,11 @@ fn main() {
 
     let mut phys: Option<Page> = None;
     let mut graf: Option<Page> = None;
+    // the CSP bridge is optional: without it we simply record schema 5 as before
+    let mut bridge: Option<Page> = None;
+    let mut bridge_live = false;          // did it ever actually publish this stint?
+    let mut bridge_logged = false;
+    let mut last_bridge_scan = std::time::Instant::now();
 
     let mut samples: Vec<u8> = Vec::new();
     let mut count: u32 = 0;
@@ -229,6 +320,17 @@ fn main() {
             graf = Page::open("Local\\acpmf_graphics");
             if phys.is_some() {
                 log("connected to Assetto Corsa shared memory.");
+            }
+        }
+        // the bridge is a separate CSP app the user enables in-game, so it can appear (and vanish)
+        // independently of AC itself. Retry ~1 Hz rather than every tick — OpenFileMapping on a
+        // missing name at 333 Hz is pure syscall churn.
+        if bridge.is_none() && last_bridge_scan.elapsed() >= Duration::from_secs(1) {
+            last_bridge_scan = std::time::Instant::now();
+            bridge = Page::open(BRIDGE_MAPPING);
+            if bridge.is_some() && !bridge_logged {
+                bridge_logged = true;
+                log("CSP bridge mapping found.");
             }
         }
 
@@ -271,6 +373,28 @@ fn main() {
                     for w in 0..4 {
                         push_f32(&mut samples, p.f32(PH_SUSP_TRAVEL + w * 4));
                     }
+                    // ---- CSP bridge channels (schema 6). Zeroes when the bridge is absent, and
+                    // append_telemetry then strips these columns and writes schema 5 instead, so a
+                    // file never claims turbine data it does not have.
+                    let snap = bridge.as_ref().and_then(read_bridge);
+                    match &snap {
+                        Some(b) => {
+                            push_f32(&mut samples, b.inputs[IN_TURBINE_RPM]);
+                            push_f32(&mut samples, b.inputs[IN_THRUST]);
+                            // either turbine's afterburner lights the plume
+                            push_f32(&mut samples, b.inputs[IN_AFTERBURNER_L].max(b.inputs[IN_AFTERBURNER_R]));
+                            push_f32(&mut samples, b.switch_mask as f32); // exact to 2^24 switches
+                            if !bridge_live && b.frame > 0 {
+                                bridge_live = true;
+                                log("CSP bridge is publishing — recording turbine/afterburner (schema 6).");
+                            }
+                        }
+                        None => {
+                            for _ in 0..4 {
+                                push_f32(&mut samples, 0.0);
+                            }
+                        }
+                    }
                     count += 1;
                     last_sample = Some(std::time::Instant::now());
                     // cap the rolling buffer at ~25 min so a session left open all day can't grow
@@ -279,7 +403,7 @@ fn main() {
                     const CAP: u32 = 25 * 60 * 333;         // ~25 min at ~333 Hz
                     if count > CAP {
                         let drop = 5u32 * 60 * 333;         // trim oldest 5 min
-                        samples.drain(0..(drop as usize) * 60); // 60 bytes/sample (schema 5)
+                        samples.drain(0..(drop as usize) * SAMPLE_BYTES);
                         count -= drop;
                     }
                 }
@@ -289,6 +413,12 @@ fn main() {
             // NEXT session (new car/track) starts fresh instead of tail-aligning onto old telemetry.
             phys = None;
             graf = None;
+            // AC closing takes the bridge's mapping with it — drop ours so the next session
+            // re-opens it, and re-arm the "did it publish" flag so a stale true can't make the
+            // next replay claim schema 6 it has no data for
+            bridge = None;
+            bridge_live = false;
+            bridge_logged = false;
             samples.clear();
             count = 0;
             stint_start = None;
@@ -318,7 +448,7 @@ fn main() {
                         // AC's autosave, seconds apart). Both must get the SAME telemetry; each
                         // tail-aligns itself to its own replay length. The buffer keeps rolling and
                         // is cleared only when AC closes. (already_stamped guards against re-appending.)
-                        append_telemetry(p, &samples, count);
+                        append_telemetry(p, &samples, count, bridge_live);
                     }
                 }
             }

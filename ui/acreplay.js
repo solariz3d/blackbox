@@ -98,8 +98,16 @@ function parseTelemetry(arrayBuffer) {
   const dataOff = blobStart + 16;
   if (count < 1 || bps < 4 || dataOff + count*bps > n) return null;
   // field index (in f32 units) within one sample, per schema; -1 = channel absent.
-  const F = { time:-1, rpm:-1, gear:-1, gas:-1, brake:-1, speed:-1, slip:-1, boost:-1, susp:-1 };
-  if (schema === 5)      { F.time=0; F.rpm=1; F.gear=2; F.gas=3; F.brake=4; F.speed=5; F.slip=6; F.boost=10; F.susp=11; }
+  const F = { time:-1, rpm:-1, gear:-1, gas:-1, brake:-1, speed:-1, slip:-1, boost:-1, susp:-1,
+              turbRpm:-1, thrust:-1, afterburner:-1, switches:-1 };
+  /* Schema 6 = schema 5 + the CSP script-controller channels. Those live in CSP's extended physics
+   * (`ac.getCarPhysics(0).scriptControllerInputs`), NOT in AC's shared memory, which is why no
+   * earlier replay can ever have them — the value was never in the page the logger reads. A car's
+   * indices are its own; these four are what the T-180 mod's own graphics.lua reads:
+   *   [10] turbine rpm · [9] thrust · [12]/[17] afterburner · plus a bitmask of every switch. */
+  if (schema === 6)      { F.time=0; F.rpm=1; F.gear=2; F.gas=3; F.brake=4; F.speed=5; F.slip=6; F.boost=10; F.susp=11;
+                           F.turbRpm=15; F.thrust=16; F.afterburner=17; F.switches=18; }
+  else if (schema === 5) { F.time=0; F.rpm=1; F.gear=2; F.gas=3; F.brake=4; F.speed=5; F.slip=6; F.boost=10; F.susp=11; }
   else if (schema === 4) { F.rpm=0; F.gear=1; F.gas=2; F.brake=3; F.speed=4; F.slip=5; F.boost=11; F.susp=12; }
   else if (schema === 3) { F.rpm=0; F.gear=1; F.gas=2; F.brake=3; F.speed=4; F.slip=5; F.boost=11; }
   else return null; // schema 1/2 were experimental (position-based) — no engine channels to use
@@ -121,7 +129,9 @@ function alignTelemetry(tel, N, dt) {
     rpm: new Float32Array(N), gear: new Float32Array(N), gas: new Float32Array(N),
     brake: new Float32Array(N), speed: new Float32Array(N), boost: new Float32Array(N),
     slip: new Float32Array(N*4), susp: new Float32Array(N*4),
-    has: { boost: F.boost>=0, slip: F.slip>=0, susp: F.susp>=0 },
+    turbRpm: new Float32Array(N), thrust: new Float32Array(N), afterburner: new Float32Array(N), switches: new Float32Array(N),
+    has: { boost: F.boost>=0, slip: F.slip>=0, susp: F.susp>=0,
+           turbine: F.turbRpm>=0, afterburner: F.afterburner>=0, switches: F.switches>=0 },
     mode: F.time>=0 ? "time" : "count",
   };
   let sampleForFrame;
@@ -149,6 +159,10 @@ function alignTelemetry(tel, N, dt) {
     out.rpm[i]=get(j,F.rpm); out.gear[i]=get(j,F.gear); out.gas[i]=get(j,F.gas);
     out.brake[i]=get(j,F.brake); out.speed[i]=get(j,F.speed);
     if (F.boost>=0) out.boost[i]=get(j,F.boost);
+    if (F.turbRpm>=0) out.turbRpm[i]=get(j,F.turbRpm);
+    if (F.thrust>=0) out.thrust[i]=get(j,F.thrust);
+    if (F.afterburner>=0) out.afterburner[i]=get(j,F.afterburner);
+    if (F.switches>=0) out.switches[i]=get(j,F.switches);
     if (F.slip>=0) for (let k=0;k<4;k++) out.slip[i*4+k]=get(j,F.slip+k);
     if (F.susp>=0) for (let k=0;k<4;k++) out.susp[i*4+k]=get(j,F.susp+k);
   }

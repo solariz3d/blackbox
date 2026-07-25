@@ -348,9 +348,6 @@
   <button id="btnShadow" class="on">shadows</button>
   <button id="btnTyres" class="on" title="skid marks + smoke — click to cycle: lap · keep · off">tyres · lap</button>
   <span id="volCtl" title="Volume" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85"><span id="volIcon" title="mute / unmute" style="cursor:pointer">🔊</span><input id="volSlider" type="range" min="0" max="100" value="100" style="width:78px;vertical-align:middle"></span>
-  <span id="revCtl" title="Rev contrast — stretches how far the engine's voice moves for the rpm you actually used. 1.00 = untouched. Pinned-revs driving barely moves the sample bank; this pushes the deviation from this run's median rpm, so the same lap sounds revvier without inventing rpm." style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85">rev<input id="revSlider" type="range" min="100" max="260" value="175" style="width:64px;vertical-align:middle"><span id="revVal" style="opacity:.65;min-width:3.2ch">1.75</span></span>
-  <button id="btnRaw" title="RAW — bypass everything BLACKBOX adds that Assetto Corsa does not: the EQ curve, the grit waveshaper, the 'menace' growl, and the reverb/echo sends. Leaves the car's own samples, the 3D panner and the master ceiling. This is the A/B for 'does it sound like the game'.">raw: off</button>
-  <button id="btnEngMode" title="Engine sound method. HARMONIC resynthesizes the car's own measured harmonic signature at the exact cycle frequency (rpm/120 Hz) — continuous, no pitch clamp. SAMPLE is the original crossfaded recordings. Straight A/B; switch it mid-lap.">eng: harm</button>
   <button id="btnLap" class="on">lap only</button>
   <button id="btnPlay">pause</button>
   <select id="rate" aria-label="Playback rate">
@@ -395,6 +392,7 @@
     </div>
     <div class="chip" id="chipLaps"></div>
     <div class="chip" id="chipTrack" style="color:var(--accent)">NO TRACK LOADED — the ribbon is your driven line, not the road. Click "load track kn5…" to render the real track.</div>
+    <div class="chip hidden" id="chipBridge" style="color:var(--accent)"></div>
   </div>
   <div id="help" class="hidden">drag look · WASD fly · Shift/Ctrl up/down · Space pause · wheel zoom · <span id="audioind" style="opacity:.5">M sound</span></div>
   <div id="transport" class="hidden">
@@ -482,7 +480,6 @@
 <script src="carrender.js"></script>
 <script src="fsb5.js"></script>
 <script src="eventmap.js"></script>
-<script src="engineprofile.js"></script>
 <script src="audioengine.js"></script>
 <script src="roadedge.js"></script>
 <script src="intro.js"></script>
@@ -520,6 +517,7 @@ let worldColl = null;   // full-world collider grid for the drone follow-cam (co
 let smokeColl = null;   // fine-celled collider for per-frame smoke-vs-track collision (many cheap queries)
 let trackAABB = null;   // track world bounds { cx,cy,cz, radius } — sizes the static shadow bake
 let sceneGroups = null; // textured visual scene draw batches
+const windPrev = { t: 0, p: [0, 0, 0], kph: 0 };   // camera airspeed for the listener-local wind
 
 // second program (VST/FST textured+lit scene) + progT + tLoc → glcore.js
 // IDENT4 → mathutil.js
@@ -599,8 +597,19 @@ const thrBuf = gl.createBuffer();
 function turbineIntensity(i) {
   const N = ex.N;
   if (i < 1 || i >= N - 1 || ex.gap[i]) return 0;
-  // REAL telemetry: the plume IS engine thrust — drive it off actual turbo boost
-  // pressure (1.0 idle → ~1.94 at load), throttle-gated so a lift collapses it.
+  /* BEST: the turbine's own state, as the mod itself reads it. The afterburner is a BUTTON
+   * (CSP `scriptControllerInputs[12]`/`[17]`) and the plume is real thrust (`[9]`) — neither is
+   * visible in AC's shared memory, so this only exists in replays recorded with the BLACKBOX CSP
+   * bridge installed (schema 6). When it's there, the flame fires when the driver fired it. */
+  if (ex.tel && ex.tel.has.turbine) {
+    const thrust = Math.max(0, Math.min(1, ex.tel.thrust[i]));
+    const ab = Math.max(0, Math.min(1, ex.tel.afterburner[i]));
+    // afterburner is the dramatic one: it forces the plume to full and past it, thrust alone idles it
+    return Math.min(1, Math.max(thrust, ab * (0.85 + 0.15 * thrust)));
+  }
+  // FALLBACK when the replay predates the bridge: infer the plume from turbo boost
+  // pressure (1.0 idle → ~1.94 at load), throttle-gated so a lift collapses it. This is a
+  // stand-in for the button, not a reading of it — it cannot know when you pressed it.
   if (ex.tel && ex.tel.has.boost) {
     const boostN = Math.max(0, Math.min(1, (ex.tel.boost[i] - 1.05) / 0.85));
     const thr = Math.max(0, Math.min(1, ex.tel.gas[i]));
@@ -2194,6 +2203,22 @@ function render() {
     let afx = atgt[0] - aeye[0], afy = atgt[1] - aeye[1], afz = atgt[2] - aeye[2];
     const afl = Math.hypot(afx, afy, afz) || 1; afx /= afl; afy /= afl; afz /= afl;
     BBAudio.setListener(aeye[0], aeye[1], aeye[2], afx, afy, afz, aup[0], aup[1], aup[2]);
+    // WIND rides the CAMERA's own airspeed, not the car's — it is what the listener hears from
+    // moving through air. Parked beside a car at 400 km/h there is no wind; chasing it there is.
+    // Measured from the eye's actual world motion, so free-fly, orbit and follow-cam all feed it
+    // without special cases. Smoothed hard: a single dropped frame must not gust.
+    {
+      const tn = performance.now();
+      if (windPrev.t) {
+        const dt = Math.min(0.25, (tn - windPrev.t) / 1000);
+        if (dt > 0.001) {
+          const mps = Math.hypot(aeye[0] - windPrev.p[0], aeye[1] - windPrev.p[1], aeye[2] - windPrev.p[2]) / dt;
+          windPrev.kph += (Math.min(mps * 3.6, 1500) - windPrev.kph) * 0.12;   // one-pole smoother
+          BBAudio.setWind(windPrev.kph);
+        }
+      }
+      windPrev.t = tn; windPrev.p[0] = aeye[0]; windPrev.p[1] = aeye[1]; windPrev.p[2] = aeye[2];
+    }
     if (!ex.gap[i]) {
       // emit from the REAR of the car (turbine nozzle, model-space → world via the car matrix), and
       // aim the source backward so the engine projects OUT THE BACK, not from the middle.
@@ -2682,39 +2707,31 @@ document.getElementById("btnLine").addEventListener("click", function () {
   });
   apply(+slider.value);
 })();
-(function () {   // RAW — strip our own colouring so the car's bank is heard unprocessed
-  const btn = document.getElementById("btnRaw");
-  if (!btn) return;
-  btn.addEventListener("click", () => {
-    if (!window.BBAudio) return;
-    const on = BBAudio.setRaw(!BBAudio.isRaw());
-    btn.textContent = "raw: " + (on ? "on" : "off");
-    btn.classList.toggle("on", on);
-  });
-})();
-(function () {   // engine method A/B — harmonic resynthesis vs the original sample bank
-  const btn = document.getElementById("btnEngMode");
-  if (!btn) return;
-  const LBL = { ac: "eng: AC", harmonic: "eng: harm", sample: "eng: smpl" };
-  const paint = m => { btn.textContent = LBL[m] || LBL.sample; btn.classList.toggle("on", m !== "sample"); };
-  // cycle AC → harmonic → sample, skipping AC when this car has no decoded event map
-  btn.addEventListener("click", () => {
-    if (!window.BBAudio) return;
-    const cur = BBAudio.getEngineMode();
-    const order = BBAudio.hasAcEvent() ? ["ac", "harmonic", "sample"] : ["harmonic", "sample"];
-    const next = order[(order.indexOf(cur) + 1) % order.length];
-    paint(BBAudio.setEngineMode(next));
-  });
-  // no profile file (stale build / generator never run) → say so instead of offering a dead button
-  if (window.BBAudio && !BBAudio.hasHarmonic()) { btn.disabled = true; btn.textContent = "eng: smpl"; btn.title = "engineprofile.js missing — run: node make_engineprofile.js"; }
-  else paint(window.BBAudio ? BBAudio.getEngineMode() : "harmonic");
-})();
-(function () {   // rev-contrast slider → the sample bank's rpm expander (1.00 = untouched)
-  const slider = document.getElementById("revSlider"), out = document.getElementById("revVal");
-  if (!slider) return;
-  const apply = v => { const x = v / 100; if (out) out.textContent = x.toFixed(2); if (window.BBAudio) BBAudio.setRevExpand(x); };
-  slider.addEventListener("input", function () { apply(+this.value); });
-  apply(+slider.value);
+(function () {   // the CSP bridge — offered, never installed behind the user's back
+  /* The turbine's afterburner is a button in CSP's extended physics that AC's shared memory never
+   * exposes, so a replay can only carry it if this small app was running while you drove. That
+   * means writing into the user's Assetto Corsa folder, which is theirs — so this asks, states
+   * exactly where it will write, and does nothing until clicked. Nothing here affects existing
+   * replays; it changes what future ones record. */
+  const chip = document.getElementById("chipBridge");
+  if (!chip || !inTauri) return;
+  const show = html => { chip.innerHTML = html; chip.classList.remove("hidden"); };
+  const check = async () => {
+    let s;
+    try { s = await tinvoke("bridge_status"); } catch (e) { return; }   // no AC install → nothing to offer
+    if (s.installed && s.current) { chip.classList.add("hidden"); return; }
+    const verb = s.installed ? "UPDATE" : "INSTALL";
+    show(`TURBINE TELEMETRY — the afterburner button lives in CSP's extended physics and is invisible to AC's shared memory, so replays can't carry it unless a small CSP app is running while you drive. <b>${verb}</b> it into <code>${esc(s.path)}</code>? <button id="btnBridge">${verb.toLowerCase()} bridge</button> <span class="dim">then enable "BLACKBOX Bridge" in CSP's app list. Existing replays are unaffected.</span>`);
+    const b = document.getElementById("btnBridge");
+    if (b) b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        const path = await tinvoke("install_bridge");
+        show(`Bridge installed to <code>${esc(path)}</code> — enable <b>BLACKBOX Bridge</b> in CSP's app list, then drive. Replays saved after that carry turbine and afterburner data.`);
+      } catch (e) { show("bridge install failed: " + esc(String(e))); }
+    });
+  };
+  check();
 })();
 (function () {   // auto-hide the header + the top-right "drag look" help: fade them out when the pointer is idle, bring them back on activity
   const header = document.querySelector("header");
@@ -3114,15 +3131,10 @@ async function loadCarSound(carId) {
     if (!path) return;
     const ab = await tinvoke("read_file", { path });
     const info = await BBAudio.setCarBank(ab, carId);
-    if (info) console.log(`[BBAudio] ${carId}: ${info.on} on-load, ${info.off} off-load, ${info.turbine} turbine, ${info.backfire} backfire layers from its own bank`);
-    // the engine may have handed itself back to the sample bank (profile belongs to another car) —
-    // repaint the button so the header never claims a mode that isn't running
-    if (info && info.modeChanged) {
-      const b = document.getElementById("btnEngMode");
-      if (b) { b.textContent = "eng: smpl"; b.classList.remove("on"); b.title = `harmonic profile belongs to another car — ${carId} is playing its own sampled layers`; }
-    }
+    if (info && info.voices) console.log(`[BBAudio] ${carId}: playing ${info.event} — ${info.voices} layers from its own bank`);
+    else if (info && info.wrongCar) console.warn(`[BBAudio] no engine: the event map is ${info.wrongCar}, this replay is ${carId}`);
   } catch (e) {
-    console.warn("[BBAudio] car bank unavailable for " + carId + " — keeping the built-in engine:", e);
+    console.warn("[BBAudio] car bank unavailable for " + carId + " — no engine sound:", e);
   }
 }
 
@@ -3735,14 +3747,6 @@ function selectCar(i) {
   // guessing kinematically. null when the file has no BBTL blob → kinematic fallback stands.
   ex.tel = ACReplay.alignTelemetry(replay.telemetry, ex.N, ex.dt);
   { const tb = detectTelemetryBackfires(ex); if (tb && tb.length) ex.shifts = tb; }     // real gear/lift/limiter pops override the kinematic guess
-  // Rev expander pivot: this run's MEDIAN driving rpm. The expander magnifies deviation from the
-  // pivot, so anchoring it to how the car was actually driven keeps the resting voice put and only
-  // stretches the movement around it — a hard-charging run and a cruise both stay recognisable.
-  if (window.BBAudio && ex.tel && ex.tel.rpm) {   // `has` covers only boost/slip/susp — rpm is always there when a tail exists
-    const v = [];
-    for (let i = 0; i < ex.N; i++) if (ex.tel.rpm[i] > 1000 && isFinite(ex.speed[i]) && ex.speed[i] > 30) v.push(ex.tel.rpm[i]);
-    if (v.length > 50) { v.sort((a, b) => a - b); BBAudio.setRevPivot(v[v.length >> 1]); }
-  }
   { const sl = computeWheelSlip(ex); ex.slip = sl.slip; ex.smokeSlip = sl.smokeSlip; }  // marks (instant) + smoke (fast-decel gated)
   {
     const mesh = buildTireMarkMesh(ex);
@@ -3842,13 +3846,13 @@ function loop(ts) {
         const d = BBAudio.dbg(); const el = document.getElementById("audioind");
         // name the SOURCE, not just the method: "it sounds the same as before" has to be
         // diagnosable without the console — either the car's bank is feeding this or it isn't
+        // the live voice count is the headline: it should sit around a dozen, and a 0 means the
+        // car's bank or its event map didn't bind — a diagnosis, not a taste question
         const s = BBAudio.sourceInfo();
         const car = s.car ? s.car.replace(/^ohyeah2389_|^ma_/, "") : "";
-        // AC mode: the live voice count is the headline — it's the number that was 2 and should be ~12
-        const src = s.mode === "ac" ? `${s.event} · ${s.live}/${s.voices} voices · ${car}`
-                  : s.car ? `${s.layers}+${s.off} layers ${s.rpmLo}-${s.rpmHi} · ${car}` : "built-in wavs";
-        const method = s.mode === "ac" ? "AC event" : d.mode === "harmonic" ? `${d.hz} Hz harmonic` : `${d.bands} bands`;
-        if (el) el.textContent = `♪ ${d.rpm} rpm${d.expand > 1.005 && s.mode !== "ac" ? ` →${d.rpmA}` : ""} · ${method} · ${src}${s.raw ? " · RAW" : ""}`;
+        if (el) el.textContent = s.voices
+          ? `♪ ${d.rpm} rpm · ${s.live}/${s.voices} voices · ${s.event} · ${car}`
+          : `♪ ${d.rpm} rpm · no engine loaded`;
         // backfire cracks on the same shift/lift frames that fire the visual pops
         if (playing && !scrubbing && ex.shifts && bfPrevFrame >= 0 && i > bfPrevFrame && i - bfPrevFrame < 30) {
           for (const sf of ex.shifts) if (sf > bfPrevFrame && sf <= i) { BBAudio.backfire(); break; }

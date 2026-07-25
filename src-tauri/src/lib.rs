@@ -353,6 +353,66 @@ fn find_car(car_id: String) -> Result<Vec<TrackFile>, String> {
     Err(format!("car '{}' not found in any Steam library", car_id))
 }
 
+/* ---- the CSP bridge: install it into the user's Assetto Corsa -------------------
+ *
+ * The turbine's afterburner is a BUTTON in CSP's extended physics, invisible to AC's stock shared
+ * memory — so a replay only carries it if a small CSP app was mirroring that array while you drove.
+ * BLACKBOX therefore has to put that app into the user's own AC install; nothing about a replay can
+ * add it after the fact.
+ *
+ * The three files are EMBEDDED in this binary rather than shipped beside it, so the NSIS installer
+ * stays a single exe and there is no "resource not found" failure mode on someone else's machine.
+ * Installing is explicit (a button), never automatic on launch: this writes into a game folder the
+ * user did not ask us to touch, and a silent write there is exactly the kind of thing that makes
+ * people distrust a tool.
+ */
+const BRIDGE_LUA: &str = include_str!("../../csp/blackbox_bridge/blackbox_bridge.lua");
+const BRIDGE_MANIFEST: &str = include_str!("../../csp/blackbox_bridge/manifest.ini");
+const BRIDGE_ICON: &[u8] = include_bytes!("../../csp/blackbox_bridge/icon.png");
+
+/// Where the bridge app lives (or would live) — `<assettocorsa>/apps/lua/blackbox_bridge`.
+fn bridge_dir() -> Option<PathBuf> {
+    for lib in steam_libraries() {
+        let ac = lib.join("steamapps").join("common").join("assettocorsa");
+        if ac.is_dir() {
+            return Some(ac.join("apps").join("lua").join("blackbox_bridge"));
+        }
+    }
+    None
+}
+
+#[derive(serde::Serialize)]
+struct BridgeStatus {
+    installed: bool,
+    path: String,
+    current: bool, // installed copy matches the version built into this exe
+}
+
+#[tauri::command]
+fn bridge_status() -> Result<BridgeStatus, String> {
+    let dir = bridge_dir().ok_or("Assetto Corsa not found in any Steam library")?;
+    let lua = dir.join("blackbox_bridge.lua");
+    let installed = lua.is_file();
+    let current = installed
+        && std::fs::read_to_string(&lua).map(|s| s == BRIDGE_LUA).unwrap_or(false);
+    Ok(BridgeStatus { installed, path: dir.to_string_lossy().to_string(), current })
+}
+
+/// Copy the embedded CSP app into the AC install. Idempotent — safe to run again to update.
+#[tauri::command]
+fn install_bridge() -> Result<String, String> {
+    let dir = bridge_dir().ok_or("Assetto Corsa not found in any Steam library")?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {}", dir.display(), e))?;
+    let write = |name: &str, bytes: &[u8]| -> Result<(), String> {
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).map_err(|e| format!("{}: {}", p.display(), e))
+    };
+    write("blackbox_bridge.lua", BRIDGE_LUA.as_bytes())?;
+    write("manifest.ini", BRIDGE_MANIFEST.as_bytes())?;
+    write("icon.png", BRIDGE_ICON)?;
+    Ok(dir.to_string_lossy().to_string())
+}
+
 /// The car's FMOD sound bank: `<car>/sfx/<car_id>.bank`. Every car ships its OWN engine — there are
 /// 16 T-180 variants on this machine and they do not sound alike — so the audio has to come from
 /// the replay's car, not from wavs baked into the app. The frontend reads it with `read_file` and
@@ -1604,6 +1664,8 @@ pub fn run() {
             find_track,
             find_car,
             find_car_bank,
+            bridge_status,
+            install_bridge,
             find_driver,
             list_tracks,
             replays_for_track,
