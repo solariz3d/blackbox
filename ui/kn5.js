@@ -259,13 +259,23 @@ function extractScene(arrayBuffer, opts) {
   const wheelByCorner = new Map();
   const steerWheelByMat = new Map();   // the in-cockpit steering wheel (spins with steer)
   let steerWheelData = null;
-  let meshCount = 0, skippedTransparent = 0, lodSkipped = 0;
+  let meshCount = 0, skippedTransparent = 0, lodSkipped = 0, logicSkipped = 0;
 
-  function readNode(parentM, wheel, steer) {
+  function readNode(parentM, wheel, steer, hidden) {
     const cls = i32();
     const name = str();
     const children = i32();
     u8(); // active
+    /* AC's LOGIC OBJECTS are geometry the game never draws: AC_PIT_n (pit boxes),
+     * AC_START_n (grid slots), AC_TIME_n_L/R (timing gates), AC_HOTLAP_START_n,
+     * AC_AUDIO_*, AC_CREW_*. The game reads their transforms and hides the meshes; a
+     * renderer that just draws every mesh in the kn5 puts them all on screen — which is
+     * what "the spawn points render in the map" was. Hide the whole SUBTREE, because the
+     * marker is usually an empty transform with placeholder geometry beneath it.
+     *
+     * Still parsed, never drawn: the format is a sequential walk, so the bytes must be
+     * consumed to find what follows. Skipping the read would desynchronise the parser. */
+    hidden = hidden || /^AC_/i.test(name);
     let m = parentM;
     let childWheel = wheel;
     let childSteer = steer;
@@ -304,7 +314,9 @@ function extractScene(arrayBuffer, opts) {
       const isRenderable = u8();
       if (isRenderable !== 0) {
         const mat = materials[materialId];
-        if (lod0Only && lodIn > 0) {
+        if (hidden) {
+          logicSkipped++;   // inside an AC_* logic object — the game never draws these
+        } else if (lod0Only && lodIn > 0) {
           lodSkipped++;   // lower-detail LOD (renders only past lodIn) — drop it
         } else if (skipTransparent && mat && mat.blendMode === 1) {
           skippedTransparent++;
@@ -340,7 +352,7 @@ function extractScene(arrayBuffer, opts) {
       throw kn5ParseError("unknown node class " + cls, off - 4);
     }
 
-    for (let c = 0; c < children; c++) readNode(m, isDriveshaft ? null : childWheel, childSteer);
+    for (let c = 0; c < children; c++) readNode(m, isDriveshaft ? null : childWheel, childSteer, hidden);
   }
 
   readNode(IDENT, null, null);
@@ -403,7 +415,7 @@ function extractScene(arrayBuffer, opts) {
 
   return {
     textures, materials, groups, wheels, steerWheel,
-    stats: { meshCount, triCount: triTotal, skippedTransparent, lodSkipped },
+    stats: { meshCount, triCount: triTotal, skippedTransparent, lodSkipped, logicSkipped },
   };
 }
 

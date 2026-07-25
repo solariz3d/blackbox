@@ -19,7 +19,20 @@ const CAR_DIR = "G:/SteamLibrary/steamapps/common/assettocorsa/content/cars/ohye
 const CENTRIFUGE = "G:/SteamLibrary/steamapps/common/assettocorsa/content/tracks/centrifuge/centrifuge.kn5";
 
 // Baseline captured on the UNCHANGED extractScene (node, before the lod0Only edit).
-const CENTRIFUGE_BASELINE = { meshCount: 144, triCount: 3237590 };
+//
+// RE-PINNED 2026-07-25 for an INTENTIONAL change: extractScene now hides AC's logic
+// objects (AC_PIT_n, AC_START_n, AC_TIME_n, AC_AUDIO_*, AC_CREW_*), which the game reads
+// for their transforms and never draws. Blackbox was rendering them — the "spawn points
+// showing up in the map".
+//
+// The drop is 31 meshes carrying 372 triangles: TWELVE triangles each. That is the
+// evidence the re-pin is honest rather than convenient — real track geometry does not
+// average a dozen triangles a mesh; flat pit-box and grid-slot markers do. Centrifuge's
+// own logicSkipped count is 31, matching exactly.
+//
+// This guard still does its job: it catches any FURTHER unintended drift in extractScene.
+const CENTRIFUGE_BASELINE = { meshCount: 113, triCount: 3237218 };
+const CENTRIFUGE_LOGIC_HIDDEN = 31;
 
 let failures = 0;
 function check(cond, msg) {
@@ -129,6 +142,11 @@ check(cen.stats.meshCount === CENTRIFUGE_BASELINE.meshCount,
   "meshCount unchanged (" + cen.stats.meshCount + " === " + CENTRIFUGE_BASELINE.meshCount + ")");
 check(cen.stats.triCount === CENTRIFUGE_BASELINE.triCount,
   "triCount unchanged (" + cen.stats.triCount + " === " + CENTRIFUGE_BASELINE.triCount + ")");
+// Pin the REASON for the re-pin, not just the new numbers. Without this a future drop
+// could be waved through as "the logic filter again" when the filter had nothing to do
+// with it — the count has to actually be the logic filter's.
+check(cen.stats.logicSkipped === CENTRIFUGE_LOGIC_HIDDEN,
+  "logic objects hidden (" + cen.stats.logicSkipped + " === " + CENTRIFUGE_LOGIC_HIDDEN + ")");
 
 console.log("\n" + (failures === 0 ? "ALL GREEN" : failures + " FAILURE(S)"));
 process.exit(failures === 0 ? 0 : 1);
