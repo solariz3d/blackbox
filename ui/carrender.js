@@ -452,7 +452,32 @@ function armSolve(arm, ang, C, ax, shoulderMax) {
   const reach = (arm.L1 + arm.L2) * 0.999;                   // ik2bone's own clamp threshold
   const over = v3len(v3sub(W, arm.S0)) - reach;
   const S = over > 0 ? v3add(arm.S0, v3sc(v3nrm(v3sub(W, arm.S0)), Math.min(over, shoulderMax))) : arm.S0;
-  const { E } = ik2bone(S, W, arm.L1, arm.L2, arm.pole);
+  /* WRIST BEND GOES IN THE ELBOW (docs/DRIVER_WRIST.md attempt 4).
+   * A relative rotation is twist + bend. WRIST_FOLLOW absorbs the TWIST in the forearm —
+   * measurably, and measurably it cannot touch the bend (test_wristbend.js): it rotates
+   * the forearm about its own axis, so elbow→wrist doesn't move, and the hand is welded
+   * to the rim, so that doesn't move either. The angle between them is untouched by
+   * construction, which is why three attempts at pronation never fixed what the eye sees.
+   * The bend's only free variable is WHERE THE ELBOW SITS. ik2bone places it on a circle
+   * about the shoulder→wrist axis and `pole` picks the point, so swinging the pole turns
+   * the forearm's direction while leaving the wrist on the grip and the hand on the rim.
+   * Aim it at the elbow that would make the forearm collinear with the hand — which is
+   * what a driver's elbow does rather than folding the wrist. */
+  let pole = arm.pole;
+  if (WRIST_POLE > 0 && arm.G0) {
+    const hv = v3nrm(v3sub(arm.G0, arm.W0));                 // bind hand axis: wrist → grip contact
+    const hd = v3dot(ax, hv), hcx = v3cross(ax, hv);         // welded to the rim: same orbit as W
+    const hA = [hv[0]*c + hcx[0]*s + ax[0]*hd*o,
+                hv[1]*c + hcx[1]*s + ax[1]*hd*o,
+                hv[2]*c + hcx[2]*s + ax[2]*hd*o];
+    const want = v3sub(v3sub(W, v3sc(hA, arm.L2)), S);       // ideal elbow, relative to the shoulder
+    if (v3len(want) > 1e-4) {
+      const a0 = v3nrm(arm.pole), a1 = v3nrm(want);          // blend DIRECTIONS; ik2bone only uses the direction
+      const k = Math.min(1, WRIST_POLE);
+      pole = k >= 1 ? a1 : v3add(v3sc(a0, 1 - k), v3sc(a1, k));
+    }
+  }
+  const { E } = ik2bone(S, W, arm.L1, arm.L2, pole);
   return { S, E, W, ok: over <= shoulderMax };
 }
 

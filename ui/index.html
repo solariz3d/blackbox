@@ -580,6 +580,12 @@ let DRIVER_GRIP_BIAS = 0.012;     // m: seats the bar DEEPER into the finger cur
 // gradient. docs/DRIVER_WRIST.md has the full history. Set WRIST_FOLLOW to 0 to revert by eye.
 let WRIST_FOLLOW = 1.0;
 let WRIST_RAMP = 0.3;             // the proximal forearm's share of the twist (the END twist bone always gets 100%)
+// attempt 4: the BEND, which is a different quantity and the one the eye complains about. FOLLOW
+// absorbs rotation ABOUT the forearm axis and provably cannot change the angle BETWEEN the forearm
+// and the hand (test_wristbend.js: 0.00° at every wheel angle). That angle's only free variable is
+// the elbow, so the IK pole is aimed at the elbow position that puts the forearm in line with the
+// hand. 0 = the old bind-pose pole; 1 = fully hand-led. Lower it if the elbow silhouette reads odd.
+let WRIST_POLE = 1.0;
 let DRIVER_GRIP_UP = 0.0;         // base grip-height offset (rad): 0 = the rig's natural symmetric grip (rim-orbit coupling made raising it lopsided — tune eyes-on)
 let DRIVER_GRIP_SPIN_SIGN = 1;    // flip if the hands orbit opposite the wheel
 const driverRig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };

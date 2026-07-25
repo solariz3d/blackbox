@@ -22,6 +22,7 @@ Object.assign(global, MU);
 global.DRIVER_SHOULDER_REACH = 0.15;
 global.WRIST_FOLLOW = 1.0;
 global.WRIST_RAMP = 0.3;
+global.WRIST_POLE = 0.0;   // these tests pin the TWIST; the bend fix has its own suite
 
 const { gripSat, armSolve, gripLockCalib, driverSeatedPose, snapToMesh, palmGrip } = require("./ui/carrender.js");
 
