@@ -351,9 +351,14 @@ function axisSpinModel(carMat, ax, ang, piv) {
 // Procedural driver pose: read lateral/longitudinal G from the telemetry and lean
 // the body + turn the head into the corner. Returns {body, head} model matrices
 // (⊗ carMat), smoothed so the motion is slow and weighty.
-function driverPose(fp, carMat, steer, src) {
+function driverPose(fp, carMat, steer, src, rig) {
   const E = src || ex;                                   // this ghost's run, else the primary
   const st = steer != null ? steer : carSteerAngle;      // this ghost's steer, else the primary's
+  // Each car needs its OWN smoothed rig. These values (headYaw, headRoll, bodyRoll,
+  // bodyPitch) ease toward their targets over frames, so two cars sharing one object
+  // would blend into a single driver: both heads chasing whichever car was posed last,
+  // at a rate neither of them is actually turning.
+  const R = rig || driverRig;
   const P = E.pos, N = E.N, dt = E.dt;
   const i = Math.max(1, Math.min(N - 2, Math.round(fp)));
   const w = Math.max(3, Math.round(0.1 / dt));
@@ -373,8 +378,8 @@ function driverPose(fp, carMat, steer, src) {
   const yawT = clamp(st * DRIVER_HEAD_SIGN, DRIVER_HEAD_YAW_MAX);
   const hrollT = clamp(-latG * 0.035, 0.08);         // a little head tilt with the G (body leans too now)
   const k = 1 - Math.exp(-3.0 / 60);                 // slow settle (~3/s)
-  driverRig.headYaw += (yawT - driverRig.headYaw) * k;
-  driverRig.headRoll += (hrollT - driverRig.headRoll) * k;
+  R.headYaw += (yawT - R.headYaw) * k;
+  R.headRoll += (hrollT - R.headRoll) * k;
   // subtle head BOB from G-load — nudged opposite the acceleration (inertia): sideways with lateral G,
   // fore/aft with braking/accel. Small + smoothed so it reads as weight, not wobble.
   const longG = (dvx * hx + dvy * hy + dvz * hz) / 9.81;
@@ -387,22 +392,22 @@ function driverPose(fp, carMat, steer, src) {
    * and you genuinely see drivers move with it. */
   const bRollT = clamp(-latG * 0.009, 0.02), bPitchT = 0;
   void longG;
-  driverRig.bodyRoll = (driverRig.bodyRoll || 0) + (bRollT - (driverRig.bodyRoll || 0)) * k;
-  driverRig.bodyPitch = (driverRig.bodyPitch || 0) + (bPitchT - (driverRig.bodyPitch || 0)) * k;
+  R.bodyRoll = (R.bodyRoll || 0) + (bRollT - (R.bodyRoll || 0)) * k;
+  R.bodyPitch = (R.bodyPitch || 0) + (bPitchT - (R.bodyPitch || 0)) * k;
   // The body is a RIGID seated pose (the car's own driver_base_pos.knh, in car
   // space) — hands already on the wheel. Only the head moves, pivoting about the
   // real neck joint (also in car space), then everything rides carMat to world.
   const pv = (carDriver && carDriver.neckPivot) || [0, 1.08, 0.09];
   // head yaw (looks to the line) + a little roll with G — but NO separate positional bob: the head's
   // shift is now purely the CONSEQUENCE of the torso lean it rides on (a separate bob = moonwalk).
-  const headExtra = mMul(rotP(1, driverRig.headYaw, pv[0], pv[1], pv[2]), rotP(2, driverRig.headRoll, pv[0], pv[1], pv[2]));
+  const headExtra = mMul(rotP(1, R.headYaw, pv[0], pv[1], pv[2]), rotP(2, R.headRoll, pv[0], pv[1], pv[2]));
   // torso lean about the hips; the head rides ON the leaned body so shoulders + head move together
   /* Sway about the GRIP, not the hips. Leaning the rigid seated pose about the hips swings the
    * shoulders AND the arms, but the wheel does not move with them, so the hands slid around the rim
    * and the grip read as loose. A driver holding a wheel is hinged at his hands: the grip is the
    * fixed point and the body sways about it. Measured: 4.9 mm of hand drift at max lean → 1.5 mm. */
   const hip = (carDriver && carDriver.wheelC) ? carDriver.wheelC : [0, 0.4, 0.02];
-  const bodyExtra = mMul(rotP(2, driverRig.bodyRoll, hip[0], hip[1], hip[2]), rotP(0, driverRig.bodyPitch, hip[0], hip[1], hip[2]));
+  const bodyExtra = mMul(rotP(2, R.bodyRoll, hip[0], hip[1], hip[2]), rotP(0, R.bodyPitch, hip[0], hip[1], hip[2]));
   const bodyMat = mMul(carMat, bodyExtra);
   return {
     body: new Float32Array(bodyMat),

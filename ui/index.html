@@ -1534,8 +1534,15 @@ function lapOverlayInfo() {
   return { wins, refI, ref: wins[refI], extra };
 }
 
+/* The field is capped at four cars — the reference plus three. Not arbitrary: each ghost
+ * is a full car AND a per-frame skinned-driver vertex upload, so the cost is linear in
+ * cars and the driver is the expensive part. Four is also the point past which a chase
+ * camera stops being able to show them together. */
+const MAX_CARS = 4;
+
 /** Add another replay's best lap as a comparison run. */
 function addCompareRun(ab, name) {
+  if (compareRuns.length >= MAX_CARS - 1) throw new Error(`four cars on track is the limit`);
   const rep = ACReplay.parseReplay(ab);
   const cex = ACReplay.extractCar(rep, 0);
   const wins = Ghosts.lapWindows(cex);
@@ -1547,6 +1554,8 @@ function addCompareRun(ab, name) {
     win,
     dists: Ghosts.lapDistances(cex, win),
     color: LAP_COLORS[(compareRuns.length + 1) % LAP_COLORS.length],
+    offsetS: 0,                                    // race stagger, seconds; only used in time align
+    rig: { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 },   // this car's own driver
   });
   lapCompare = true;
   const btn = document.getElementById("btnLapCmp");
@@ -1649,7 +1658,24 @@ function refDistanceNow(refFrame) {
   return refAligned.dists[i0] + (refAligned.dists[i1] - refAligned.dists[i0]) * f;
 }
 
+/* Two ways to place a ghost, because they answer different questions.
+ *
+ *   DISTANCE (default) — draw it where IT was at the same point on track. The gap you see
+ *   IS the time delta. This is the coaching view: who was ahead through this corner.
+ *
+ *   TIME — run every lap on one clock, each with its own start offset. Nobody is "ahead
+ *   by definition"; they start where you place them and race. This is the watching view,
+ *   and the offset is what makes it a race rather than a synchronised demonstration —
+ *   without it four laps of the same driver launch as one car and never separate.
+ */
+let lapAlign = "distance";   // "distance" | "time"
+
 function ghostFrameAt(run, refFrame) {
+  if (lapAlign === "time") {
+    const elapsed = refFrame - (refAligned ? refAligned.win.start : 0);   // frames into the reference lap
+    const f = run.win.start + elapsed + (run.offsetS || 0) / run.ex.dt;
+    return (f >= run.win.start && f <= run.win.end) ? f : NaN;
+  }
   const d = refDistanceNow(refFrame);
   if (!isFinite(d)) return NaN;
   const f = Ghosts.frameAtDistance(run.dists, d);
@@ -1719,7 +1745,29 @@ function drawGhostCars(mvp) {
         }
       }
     }
+    // cockpit wheel + driver, on this run's own steer and its OWN smoothed rig. The rig
+    // holds eased values (head yaw/roll, body lean); sharing one between cars would make
+    // every driver's head chase whichever car was posed last, at a rate none of them are
+    // actually turning. The skinned mesh is a per-car vertex upload, so N cars is N
+    // uploads a frame — the real cost of a full-fidelity ghost, and why the roster is capped.
+    const animS = carDriver && carDriver.steerAnim;
+    const effLock = animS ? animS.lock : Math.min(STEER_WHEEL_MAX, (carDriver && carDriver.gripLock) || Infinity);
+    const kSteer = (carSteerRef > 1e-3 && isFinite(effLock)) ? effLock / carSteerRef : STEER_WHEEL_RATIO;
+    const gspin = Math.max(-effLock, Math.min(effLock, gsteer * kSteer * STEER_WHEEL_SIGN));
+    if (carSteerWheel)
+      drawCarGroups(carSteerWheel.groups, axisSpinModel(gm, carSteerWheel.ax[STEER_WHEEL_AXIS], gspin, carSteerWheel.pivot));
+    if (carDriver) {
+      if (!run.rig) run.rig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
+      const dp = driverPose(f, gm, gsteer, run.ex, run.rig);
+      if (animS) driverSkinUpload(driverAnimWorlds(animS, animT(animS, gspin * DRIVER_GRIP_SPIN_SIGN)));
+      else driverSeatedSkin(gspin * DRIVER_GRIP_SPIN_SIGN);
+      for (const sm of carDriver.skinned) drawCarGroups([sm.grp], dp.body);
+      drawCarGroups(carDriver.headGroups, dp.head);   // ghosts are never the camera car, so no head-hide
+    }
   }
+  // No need to restore the skin buffer here: this runs BEFORE the reference car's own
+  // driver block, which uploads its pose every frame regardless. Restoring would be a
+  // second full vertex upload per frame to undo something nothing has read yet.
 }
 
 function buildGeometry() {
@@ -3147,7 +3195,7 @@ function renderLapLegend(info) {
     el = document.createElement("div");
     el.id = "lapcmp";
     el.style.cssText = "position:absolute;left:12px;top:96px;z-index:6;font:12px/1.5 Cascadia Mono,Consolas,monospace;" +
-      "background:rgba(8,10,14,.82);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:8px 10px;color:#cfd6e4;pointer-events:none";
+      "background:rgba(8,10,14,.82);border:1px solid rgba(255,255,255,.08);border-radius:6px;padding:8px 10px;color:#cfd6e4";
     document.body.appendChild(el);
   }
   if (!lapCompare || !info) { el.style.display = "none"; return; }
@@ -3172,10 +3220,36 @@ function renderLapLegend(info) {
     ...compareRuns.map((r, i) => row(r.color, r.label, r.win.timeMs, false) +
       `<div style="margin:0 0 3px 15px;opacity:.75"><span class="lclive" data-i="${i}">—</span></div>`),
   ].join("");
-  const hint = (info.extra.length + compareRuns.length) === 0
-    ? '<div style="opacity:.6;margin-top:5px">nothing to compare yet — click <b>compare laps</b> again to add another replay</div>'
+  const full = compareRuns.length >= MAX_CARS - 1;
+  const addRow = `<div id="lcadd" style="margin-top:6px;cursor:${full ? "default" : "pointer"};opacity:${full ? ".4" : ".8"}">` +
+    (full ? `four cars is the limit` : `+ add a lap`) + `</div>`;
+  // distance = coaching (gap on screen IS the delta); race = one clock, staggered starts
+  const modeRow = `<div style="margin-top:6px;opacity:.75">align: ` +
+    `<span id="lcmd" style="cursor:pointer;text-decoration:underline">${lapAlign === "time" ? "race (one clock)" : "distance (delta)"}</span></div>`;
+  // offsets only mean anything on a shared clock; in distance align a ghost is placed by
+  // where it was, so shifting it in time would describe a lap nobody drove
+  const offRows = (lapAlign === "time" && compareRuns.length)
+    ? `<div style="margin-top:5px;opacity:.75">start offset</div>` + compareRuns.map((r, i) =>
+        `<div style="display:flex;gap:6px;align-items:center">${swatch(r.color)}` +
+        `<span class="lcoff" data-i="${i}" data-d="-1" style="cursor:pointer;padding:0 5px">−</span>` +
+        `<span style="min-width:52px;display:inline-block;text-align:center">${(r.offsetS || 0).toFixed(1)}s</span>` +
+        `<span class="lcoff" data-i="${i}" data-d="1" style="cursor:pointer;padding:0 5px">+</span></div>`).join("")
     : "";
-  el.innerHTML = `<div style="opacity:.55;margin-bottom:4px">lap comparison · green = faster here</div>${rows}${hint}`;
+  el.innerHTML = `<div style="opacity:.55;margin-bottom:4px">lap comparison · green = faster here</div>` +
+    rows + addRow + modeRow + offRows;
+
+  const add = document.getElementById("lcadd");
+  if (add && !full) add.onclick = showLapPicker;
+  const md = document.getElementById("lcmd");
+  if (md) md.onclick = () => { lapAlign = lapAlign === "time" ? "distance" : "time"; renderLapLegend(lapOverlayInfo()); };
+  for (const b of el.querySelectorAll(".lcoff")) {
+    b.onclick = () => {
+      const r = compareRuns[+b.dataset.i];
+      if (!r) return;
+      r.offsetS = Math.round(((r.offsetS || 0) + (+b.dataset.d) * 0.5) * 10) / 10;
+      renderLapLegend(lapOverlayInfo());
+    };
+  }
 }
 
 /* Picking the lap to compare against — IN THE APP, never an OS folder dialog.
@@ -3237,9 +3311,17 @@ async function showLapPicker() {
       if (best) {
         row.onmouseenter = () => row.style.background = "rgba(255,255,255,.07)";
         row.onmouseleave = () => row.style.background = "";
+        // stays open after a pick: building a four-car field means choosing three, and
+        // reopening the list between each one would be three round trips for one decision
         row.onclick = async () => {
-          try { addCompareRun(await tinvoke("read_file", { path: r.path }), r.name); hideLapPicker(); }
-          catch (err) { row.querySelector(".lp").textContent = String(err.message || err); }
+          if (row.dataset.added) return;
+          try {
+            addCompareRun(await tinvoke("read_file", { path: r.path }), r.name);
+            row.dataset.added = "1";
+            row.style.opacity = ".45";
+            row.querySelector(".lp").textContent = "on track";
+            if (compareRuns.length >= MAX_CARS - 1) hideLapPicker();   // field full, nothing left to choose
+          } catch (err) { row.querySelector(".lp").textContent = String(err.message || err); }
         };
       }
     } catch (e) { row.querySelector(".lp").textContent = "unreadable"; }
@@ -3258,13 +3340,15 @@ document.getElementById("lapcmppick").addEventListener("change", function () {
 
 document.getElementById("btnLapCmp").addEventListener("click", function () {
   if (!ex) return;
-  const info = lapOverlayInfo();
-  const have = info ? info.extra.length + compareRuns.length : 0;
-  if (lapCompare && have === 0) { showLapPicker(); return; }   // on, but empty → pick a lap in-app
   lapCompare = !lapCompare;
   this.classList.toggle("on", lapCompare);
   buildGeometry();
-  if (!lapCompare) renderLapLegend(null);
+  if (!lapCompare) { renderLapLegend(null); hideLapPicker(); return; }
+  // turning it on with no runs loaded: go straight to picking one, since an empty
+  // comparison is a toggle that visibly does nothing. Adding MORE runs is the legend's
+  // "+ add a lap" — the button stays a plain on/off so it can always be turned off.
+  const info = lapOverlayInfo();
+  if (info && info.extra.length + compareRuns.length === 0) showLapPicker();
 });
 
 document.getElementById("btnLap").addEventListener("click", function () {

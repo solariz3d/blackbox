@@ -4,8 +4,22 @@
 the car that the replay says it is."*
 
 **Where it is now.** A comparison lap draws the full car body, wheels with their own recorded
-suspension, its own steer, its own windscreen, and it casts a shadow. What it does not yet have is
-the driver, the lights, smoke, tyre marks, or sound.
+suspension, its own steer, its own windscreen, **its own driver** (own smoothed rig, own hands on
+its own steering wheel), and it casts a shadow. Up to **four cars** on track. What it does not yet
+have is lights, smoke, tyre marks, or sound.
+
+**Two ways to place a car**, because they answer different questions:
+
+- **distance** (default, coaching) — each ghost is drawn where *it* was at the same point on track,
+  so the gap on screen **is** the time delta.
+- **race** (watching) — every lap on one clock with a per-run start offset. Nobody is ahead by
+  definition; they start where you place them and race. The offset is what makes it a race rather
+  than a synchronised demonstration: without it, four laps by the same driver launch as one car and
+  never separate.
+
+**Why four.** Each ghost is a full car *and* a per-frame skinned-driver vertex upload, so cost is
+linear in cars and the driver is the expensive part. Four is also about where a chase camera stops
+being able to hold them all in frame.
 
 Every one of those is missing for the *same reason*, and it is worth stating once because it decides
 the order of the work:
@@ -21,7 +35,7 @@ which is a bigger change than adding a parameter.
 
 | effect | what blocks it | shape of the fix |
 |---|---|---|
-| **driver** | `driverRig` — one rig of smoothed values (`headYaw`, `headRoll`, bob). Two cars sharing it means both drivers' heads follow one car's steering, visibly wrong. `driverPose(fp, carMat, steer, src)` is *already* parameterised; only the rig state isn't. | give each run its own rig object; pass it in alongside `src`. |
+| ~~**driver**~~ **DONE** | was `driverRig`, one object of smoothed values shared by every car — two drivers would both chase whichever car was posed last, at a rate neither was turning. | `driverPose(fp, carMat, steer, src, rig)`; each run carries its own rig. Note the skinned mesh is a **vertex upload per car per frame**, which is the real cost of a full-fidelity ghost. |
 | **brake / head lights** | `setHeadlights(cm, 0, headVP)` and `setBrakelights(cm, 0)` set **scene** uniforms — the shader carries two lamps (`uHeadA`, `uHeadB`) belonging to one car. A second car's lamps have nowhere to go. | either an array of lamps in the shader (real, costs a uniform loop), or draw ghost lamp glow as emissive geometry only and accept it doesn't light the road. The second is much cheaper and probably enough. |
 | **smoke** | `smoke.accum` is a `Float32Array(4)` — one car's four wheels. The puff pool and the `AIR` field are world-space and already shared correctly, so **only the accumulator is per-car.** | per-run accumulator. This is the smallest fix of the three and the most visible. Note `BODY_WAKE_K` was set to 0 *because* there was one car; with ghosts it becomes meaningful again. |
 | **tyre marks** | `markVBO` / `markCount` — one prebuilt ribbon per loaded run. | build one per run; draw them all. |
