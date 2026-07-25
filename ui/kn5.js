@@ -324,7 +324,13 @@ function extractScene(arrayBuffer, opts) {
       const materialId = i32();
       u32();            // layer
       const lodIn = f32(); f32(); // lodIn, lodOut (lod0Only filters on lodIn)
-      off += 16;        // bounding sphere center+radius
+      // Bounding sphere, in the parent node's LOCAL space. Previously skipped, and its
+      // absence is why every mesh-based light landed on the world origin: a class-2 mesh
+      // carries no transform, so using the parent's origin puts every mesh under a root
+      // node at [0,0,0]. Sakura's 143 lamps all resolved to the same point. The sphere
+      // centre is where the geometry actually is.
+      const bsX = f32(), bsY = f32(), bsZ = f32();
+      f32();            // bounding radius (unused)
       const isRenderable = u8();
       // MESHES = in a LIGHT_SERIES names MESHES, not transform nodes — the two are
       // different classes in a kn5, and collecting only transforms resolved zero lights on
@@ -337,7 +343,11 @@ function extractScene(arrayBuffer, opts) {
       // about equally, so handling only MESHES leaves half the tracks dark.
       if (wantNodes && name) {
         const mm = materials[materialId];
-        nodes.push({ name, pos: [m[12], m[13], m[14]], mat: (mm && mm.name) || "" });
+        // local bounding-sphere centre through the parent's world matrix (row-vector)
+        const wx = bsX*m[0] + bsY*m[4] + bsZ*m[8]  + m[12];
+        const wy = bsX*m[1] + bsY*m[5] + bsZ*m[9]  + m[13];
+        const wz = bsX*m[2] + bsY*m[6] + bsZ*m[10] + m[14];
+        nodes.push({ name, pos: [wx, wy, wz], mat: (mm && mm.name) || "" });
       }
       if (isRenderable !== 0) {
         const mat = materials[materialId];

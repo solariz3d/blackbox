@@ -122,9 +122,22 @@ function resolveTrackLights(iniText, nodes, opts) {
     // slightly blue lamp at 3x. Reading it as alpha would make every light dim and equal.
     const intensity = col.length > 3 ? num(col[3], 1) : 1;
 
-    const d = list(k.DIRECTION).map(Number);
-    const dir = d.length >= 3 ? [num(d[0], 0), num(d[1], -1), num(d[2], 0)] : [0, -1, 0];
+    /* DIRECTION is usually a vector but can be the word NORMAL, meaning "aim along the
+     * surface normal of the mesh this light sits on" (Miandros uses it for wall lamps).
+     * We do not have per-mesh normals here, and guessing one would aim lamps confidently
+     * in the wrong direction. Treated as a POINT light instead: omnidirectional is wrong
+     * in a way that is obviously soft, rather than wrong in a way that looks deliberate. */
+    const dirRaw = String(k.DIRECTION || "").trim();
+    const normalAimed = /^normal$/i.test(dirRaw);
+    const d = list(dirRaw).map(Number);
+    const dir = (!normalAimed && d.length >= 3 && d.every(isFinite))
+      ? [num(d[0], 0), num(d[1], -1), num(d[2], 0)] : [0, -1, 0];
     const range = num(k.RANGE, 60);
+    /* FADE_AT is the author's stated distance at which the lamp stops being drawn, and it
+     * is often much larger than RANGE — Miandros fades at 385 m on 200 m lamps, because a
+     * stadium floodlight is visible from far outside the pool of light it casts. Culling
+     * on RANGE alone would drop lights the author expected to still be on screen. */
+    const fadeAt = num(k.FADE_AT, 0);
     // SPOT is the cone's full angle in DEGREES; 360 (or absent) means a point light.
     const spot = num(k.SPOT, 360);
     const sharpness = num(k.SPOT_SHARPNESS, 0.3);
@@ -137,6 +150,9 @@ function resolveTrackLights(iniText, nodes, opts) {
       out.push({
         pos: [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]],
         color, intensity, range, dir, spot, sharpness, night,
+        // a NORMAL-aimed lamp has no usable direction, so it is a point light
+        spotUsable: !normalAimed && spot < 359,
+        fadeAt: fadeAt > 0 ? fadeAt : range,
       });
     };
 
@@ -163,14 +179,16 @@ function resolveTrackLights(iniText, nodes, opts) {
   return out;
 }
 
-/** The n lights most worth drawing from `eye` — nearest first, out-of-range dropped. */
+/** The n lights most worth drawing from `eye` — nearest first, out-of-reach dropped. */
 function cullLights(lights, eye, n) {
   const scored = [];
   for (const L of lights) {
     const dx = L.pos[0] - eye[0], dy = L.pos[1] - eye[1], dz = L.pos[2] - eye[2];
     const d2 = dx * dx + dy * dy + dz * dz;
-    // past its own range plus a margin a lamp contributes nothing the eye can see
-    const reach = (L.range + 40);
+    // FADE_AT when the author gave one, else RANGE — a stadium floodlight is meant to be
+    // seen from well outside the pool it lights, and culling on RANGE alone hid exactly
+    // the lamps that make a night lap legible.
+    const reach = (L.fadeAt || L.range) + 40;
     if (d2 > reach * reach) continue;
     scored.push({ L, d2 });
   }

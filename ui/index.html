@@ -1839,6 +1839,12 @@ let CAR_SHADOWS = 1;
  * handful actually lighting the car and the road around it are always present, and the
  * ones beyond are contributing less than the eye can separate anyway. */
 let TRACK_LIGHTS_ON = 1;
+/* CSP's COLOR intensities are photometric-ish and run high — Miandros declares 28.76 on
+ * its stadium floodlights, sakura 10 to 20. Fed straight into a forward renderer with a
+ * range-normalised falloff, a value like that is ~28x the surface colour at close range:
+ * a white blob, not a lamp. There is no honest conversion between CSP's units and ours,
+ * so this is an explicit gain to be set by eye rather than a pretence at a formula. */
+let TRACK_LIGHT_GAIN = 0.16;
 const MAX_TLIGHTS = 12;
 let trackLights = [];          // every resolved lamp, world space
 const _tlPos = new Float32Array(MAX_TLIGHTS * 3);
@@ -2134,16 +2140,18 @@ function setTrackLights(eye, nightF) {
     const near = TrackLights.cullLights(trackLights, eye, MAX_TLIGHTS);
     for (const L of near) {
       const gate = L.night ? nightF : 1;
-      const amp = L.intensity * gate;
+      const amp = L.intensity * gate * TRACK_LIGHT_GAIN;
       if (amp <= 0.002) continue;               // a lamp that is off costs no slot
       _tlPos[n*3] = L.pos[0]; _tlPos[n*3+1] = L.pos[1]; _tlPos[n*3+2] = L.pos[2];
       _tlCol[n*3] = L.color[0]*amp; _tlCol[n*3+1] = L.color[1]*amp; _tlCol[n*3+2] = L.color[2]*amp;
       const d = L.dir, dl = Math.hypot(d[0], d[1], d[2]) || 1;
       _tlDir[n*3] = d[0]/dl; _tlDir[n*3+1] = d[1]/dl; _tlDir[n*3+2] = d[2]/dl;
-      // SPOT is the cone's FULL angle in degrees; the shader wants cos(half). 360 (or
-      // more) means a point light, flagged with -1 so it skips the cone test entirely.
+      // SPOT is the cone's FULL angle in degrees; the shader wants cos(half). A point
+      // light is flagged -1 so the cone test is skipped entirely. spotUsable is false for
+      // a lamp declared DIRECTION = NORMAL, whose true aim we cannot know — pointing it
+      // somewhere confident and wrong is worse than lighting in all directions.
       _tlArg[n*2] = L.range;
-      _tlArg[n*2+1] = (L.spot >= 359) ? -1 : Math.cos(Math.min(179, L.spot) * 0.5 * Math.PI / 180);
+      _tlArg[n*2+1] = L.spotUsable ? Math.cos(Math.min(179, L.spot) * 0.5 * Math.PI / 180) : -1;
       if (++n >= MAX_TLIGHTS) break;
     }
   }
