@@ -478,6 +478,7 @@
 <script src="glcore.js"></script>
 <script src="acreplay.js"></script>
 <script src="ghosts.js"></script>
+<script src="tracklights.js"></script>
 <script src="kn5.js"></script>
 <script src="kn5tex.js"></script>
 <script src="carrender.js"></script>
@@ -1832,6 +1833,18 @@ let lapAlign = "time";   // "time" (race, cars spread by pace) | "distance" (car
 // to 0 if acne ever returns on the bodywork.
 let CAR_LIGHTS_ON = 1;
 let CAR_SHADOWS = 1;
+/* Track lights — the lamps the track author placed, from CSP's LIGHT_SERIES config.
+ * A track can declare hundreds (nordic 207, thunderhead 156) and the shader carries
+ * MAX_TLIGHTS slots, so the nearest few are chosen each frame. 12 is enough that the
+ * handful actually lighting the car and the road around it are always present, and the
+ * ones beyond are contributing less than the eye can separate anyway. */
+let TRACK_LIGHTS_ON = 1;
+const MAX_TLIGHTS = 12;
+let trackLights = [];          // every resolved lamp, world space
+const _tlPos = new Float32Array(MAX_TLIGHTS * 3);
+const _tlCol = new Float32Array(MAX_TLIGHTS * 3);
+const _tlDir = new Float32Array(MAX_TLIGHTS * 3);
+const _tlArg = new Float32Array(MAX_TLIGHTS * 2);
 const CAR_LIGHT_RANGE = 40;   // metres; past this another car's lamps do nothing visible
 
 function ghostFrameAt(run, refFrame) {
@@ -2109,6 +2122,39 @@ function lightingFor(t) {
   const d = lp(a.dir, b.dir), dl = Math.hypot(d[0], d[1], d[2]) || 1;
   return { dir: [d[0]/dl, d[1]/dl, d[2]/dl], sun: lp(a.sun, b.sun), ambSky: lp(a.ambSky, b.ambSky), ambGround: lp(a.ambGround, b.ambGround), fog: lp(a.fog, b.fog) };
 }
+/* Upload the nearest track lights for this frame.
+ *
+ * Night-gated lamps are scaled by nightF here rather than in the shader, so a daytime lap
+ * costs nothing: they scale to zero, get skipped by the intensity test, and the slots go
+ * to lamps that are actually on. `eye` is the camera, not the car — you light what is on
+ * screen, and a chase cam can be a long way from the car it follows. */
+function setTrackLights(eye, nightF) {
+  let n = 0;
+  if (TRACK_LIGHTS_ON && trackLights.length && window.TrackLights) {
+    const near = TrackLights.cullLights(trackLights, eye, MAX_TLIGHTS);
+    for (const L of near) {
+      const gate = L.night ? nightF : 1;
+      const amp = L.intensity * gate;
+      if (amp <= 0.002) continue;               // a lamp that is off costs no slot
+      _tlPos[n*3] = L.pos[0]; _tlPos[n*3+1] = L.pos[1]; _tlPos[n*3+2] = L.pos[2];
+      _tlCol[n*3] = L.color[0]*amp; _tlCol[n*3+1] = L.color[1]*amp; _tlCol[n*3+2] = L.color[2]*amp;
+      const d = L.dir, dl = Math.hypot(d[0], d[1], d[2]) || 1;
+      _tlDir[n*3] = d[0]/dl; _tlDir[n*3+1] = d[1]/dl; _tlDir[n*3+2] = d[2]/dl;
+      // SPOT is the cone's FULL angle in degrees; the shader wants cos(half). 360 (or
+      // more) means a point light, flagged with -1 so it skips the cone test entirely.
+      _tlArg[n*2] = L.range;
+      _tlArg[n*2+1] = (L.spot >= 359) ? -1 : Math.cos(Math.min(179, L.spot) * 0.5 * Math.PI / 180);
+      if (++n >= MAX_TLIGHTS) break;
+    }
+  }
+  for (let i = n; i < MAX_TLIGHTS; i++) { _tlCol[i*3] = _tlCol[i*3+1] = _tlCol[i*3+2] = 0; }
+  gl.uniform3fv(tLoc.tLightPos, _tlPos);
+  gl.uniform3fv(tLoc.tLightCol, _tlCol);
+  gl.uniform3fv(tLoc.tLightDir, _tlDir);
+  gl.uniform2fv(tLoc.tLightArg, _tlArg);
+  gl.uniform1i(tLoc.tLightN, n);
+}
+
 function setSceneLighting(L) {   // push the lit-scene program's light + atmosphere uniforms
   gl.uniform3f(tLoc.fogC, L.fog[0], L.fog[1], L.fog[2]);
   gl.uniform3f(tLoc.sun, L.dir[0], L.dir[1], L.dir[2]);
@@ -3038,6 +3084,7 @@ function render() {
     gl.uniformMatrix4fv(tLoc.model, false, IDENT4);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
+    setTrackLights(camEye(), nightF);   // the track's own lamps, nearest first
     // EVERY car's lamps light the track — a ghost's headlights fall on the road ahead of
     // it exactly like the reference car's. skip = -1: the track is lit by all of them.
     setCarLamps(allCarLamps(nightF, brakeInt, cm), headVP, -1);
@@ -3120,6 +3167,7 @@ function render() {
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
+    setTrackLights(camEye(), nightF);   // the cars are lit by the track's lamps too
     // A car is never lit by its OWN lamps (the cones would pool on its own livery), but it
     // IS lit by every other car on track — which is the point of headlights appearing in
     // your mirrors. skip = 0 here: this pass draws the reference car.
@@ -3954,9 +4002,11 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
      * naming rule is understood. */
     const roadKeyPattern = null;
 
+    const lightNodes = [];   // {name, pos, mat} across every model, for LIGHT_SERIES
     for (const item of items) {
       try {
-        const scene = KN5.extractScene(item.ab);
+        const scene = KN5.extractScene(item.ab, { collectNodes: true });
+        if (scene.nodes && scene.nodes.length) lightNodes.push(...scene.nodes);
         const texByName = {};
         for (const t of scene.textures) texByName[t.name] = t;
         for (const g of scene.groups) {
@@ -3999,6 +4049,23 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
         const road = KN5.extractRoadMesh(item.ab, roadKeyPattern);
         if (road.tris.length) roadChunks.push(road);
       } catch (e) { console.warn("road extract failed for " + item.name + ":", e); }
+    }
+
+    /* The track's own lamps. Resolved once here, not per frame: a LIGHT_SERIES has to be
+     * matched against every node in every model, and the answer never changes while the
+     * track is loaded. Both config sources are passed — the track's own and CSP's — since
+     * for several circuits only the latter has any. */
+    trackLights = [];
+    if (inTauri && replay && replay.track && window.TrackLights) {
+      try {
+        const cfgs = await tinvoke("track_light_configs", { name: replay.track });
+        if (cfgs && cfgs.length) {
+          trackLights = TrackLights.resolveTrackLights(cfgs, lightNodes);
+          if (trackLights.length) {
+            console.log(`track lights: ${trackLights.length} (${trackLights.filter(l => l.night).length} night) from ${cfgs.length} config(s)`);
+          }
+        }
+      } catch (e) { console.warn("track lights unavailable:", e); }
     }
 
     if (allGroups.length) {
@@ -4080,6 +4147,7 @@ function resetTrackScene() {
     }
     sceneGroups = null;
   }
+  trackLights = [];   // lamps belong to the track that was unloaded, not the next one
   if (carGroups) {
     for (const g of carGroups) {
       gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);

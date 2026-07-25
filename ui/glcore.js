@@ -81,6 +81,17 @@ uniform vec3 uBrakePos[2 * MAXCARS];  // tail-light world positions
 uniform vec3 uBrakeAim[MAXCARS];      // per-car backward aim
 uniform float uBrakeInt[MAXCARS];     // per-car brake spill (rises under braking, at night)
 uniform int uCarN;                    // how many of those slots are live
+
+// TRACK LIGHTS — the floodlights and lamp posts the track author placed, read from CSP's
+// LIGHT_SERIES config. Static in the world, unlike the car lamps above, so they are a
+// separate set: a track can declare hundreds (nordic 207, thunderhead 156) and the CPU
+// sends only the nearest handful each frame.
+const int MAXTLIGHTS = 12;
+uniform vec3 uTLightPos[MAXTLIGHTS];   // world position
+uniform vec3 uTLightCol[MAXTLIGHTS];   // colour * intensity, already night-scaled
+uniform vec3 uTLightDir[MAXTLIGHTS];   // aim, for spots
+uniform vec2 uTLightArg[MAXTLIGHTS];   // x = range (m), y = cos(half-angle), <0 = point light
+uniform int uTLightN;
 uniform sampler2D uShadowMap0, uShadowMap1;   // near + far cascade depth maps
 uniform mat4 uLightVP0, uLightVP1;            // near + far light view-projections
 uniform float uShadowOn, uShadowTexel0, uShadowTexel1;   // enable + 1/mapSize per cascade
@@ -182,6 +193,30 @@ void main(){
   vec3 wpS = vWorld + n * 0.06;
   float shF = uShadowOn > 0.5 ? shadowFactor(wpS, sbias) : 1.0;
   vec3 col = tex.rgb * (ambient + sunCol * (0.9 * wrap) * shF);
+  /* Track lights. Inverse-square would be physically right and looks wrong here: a lamp
+   * with a declared RANGE is an artistic statement about how far it should reach, so the
+   * falloff is normalised to that range and hits exactly zero at its edge. Without that a
+   * light culled at its range boundary pops as it enters the sent set. */
+  for (int i = 0; i < MAXTLIGHTS; i++) {
+    if (i >= uTLightN) break;
+    vec3 t = uTLightPos[i] - vWorld;
+    float d = length(t);
+    float range = uTLightArg[i].x;
+    if (d > range) continue;
+    vec3 Ld = t / max(d, 1e-3);
+    float ndl = max(dot(n, Ld), 0.0);          // a surface facing away is not lit
+    if (ndl <= 0.0) continue;
+    float att = 1.0 - d / max(range, 1e-3);
+    att *= att;                                 // quadratic-ish, but zero AT the range
+    float cone = 1.0;
+    float cosHalf = uTLightArg[i].y;
+    if (cosHalf > -0.5) {                       // a spot, not a point
+      float c = dot(-Ld, uTLightDir[i]);
+      cone = smoothstep(cosHalf, mix(cosHalf, 1.0, 0.35), c);
+    }
+    col += tex.rgb * uTLightCol[i] * (ndl * att * cone);
+  }
+
   // Every car's headlights light the road ahead AND every other car. Occlusion is sampled
   // from car 0's beam depth map only — there is one such map, and the car whose beam the
   // chair is following is the one whose shadowing is worth being right.
@@ -228,6 +263,11 @@ const tLoc = {
   brakePos: gl.getUniformLocation(progT, "uBrakePos"),
   brakeAim: gl.getUniformLocation(progT, "uBrakeAim"),
   carN: gl.getUniformLocation(progT, "uCarN"),
+  tLightPos: gl.getUniformLocation(progT, "uTLightPos"),
+  tLightCol: gl.getUniformLocation(progT, "uTLightCol"),
+  tLightDir: gl.getUniformLocation(progT, "uTLightDir"),
+  tLightArg: gl.getUniformLocation(progT, "uTLightArg"),
+  tLightN: gl.getUniformLocation(progT, "uTLightN"),
   headInt: gl.getUniformLocation(progT, "uHeadInt"),
   brakeInt: gl.getUniformLocation(progT, "uBrakeInt"),
   shadowMap0: gl.getUniformLocation(progT, "uShadowMap0"),

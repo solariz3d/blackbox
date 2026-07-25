@@ -857,6 +857,67 @@ fn read_replay_track(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(buf.get(off..off + tl)?).to_string())
 }
 
+/// Every light configuration that applies to a track, as raw ini text.
+///
+/// Two sources, because a track's lights are not necessarily in the track's folder:
+///   1. `<track>/extension/ext_config.ini` — the author's own config
+///   2. `extension/config/tracks/loaded/<track>.ini` — CSP's own, shipped with the patch
+///
+/// The second is not a fallback. For several circuits it is the ONLY place lights exist:
+/// ks_nordschleife declares 65 light series there and none in its own folder,
+/// ks_nurburgring 34, macau 18, mugello 8. Reading only the track folder finds nothing and
+/// gives no sign anything was missed, which is exactly how this went unnoticed.
+///
+/// Returned as text rather than parsed here so the parsing lives in one place
+/// (`ui/tracklights.js`), where it is unit-tested without a Steam install.
+#[tauri::command]
+fn track_light_configs(name: String) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for lib in steam_libraries() {
+        let ac = lib.join("steamapps").join("common").join("assettocorsa");
+        if !ac.is_dir() {
+            continue;
+        }
+        let own = ac
+            .join("content")
+            .join("tracks")
+            .join(&name)
+            .join("extension")
+            .join("ext_config.ini");
+        if let Ok(t) = std::fs::read_to_string(&own) {
+            out.push(t);
+        }
+        // CSP's own per-track config, plus the `<track>__*.ini` companions it splits
+        // large configs into (macau ships seven of them).
+        let loaded = ac
+            .join("extension")
+            .join("config")
+            .join("tracks")
+            .join("loaded");
+        if let Ok(rd) = std::fs::read_dir(&loaded) {
+            for e in rd.flatten() {
+                let p = e.path();
+                let Some(stem) = p.file_stem().and_then(|s| s.to_str()) else { continue };
+                let is_ini = p.extension().and_then(|s| s.to_str())
+                    .map(|s| s.eq_ignore_ascii_case("ini")).unwrap_or(false);
+                if !is_ini {
+                    continue;
+                }
+                let base = stem.split("__").next().unwrap_or(stem);
+                if base.eq_ignore_ascii_case(&name) {
+                    if let Ok(t) = std::fs::read_to_string(&p) {
+                        out.push(t);
+                    }
+                }
+            }
+        }
+        if !out.is_empty() {
+            return Ok(out);
+        }
+    }
+    Ok(out)
+}
+
 /// The surface KEYs a track marks as drivable, from its own `data/surfaces.ini`.
 ///
 /// **Not currently wired to anything — see `docs/TRACK_ROAD_DETECTION.md`.** Feeding these
@@ -1822,6 +1883,7 @@ pub fn run() {
             read_file,
             list_screenshots,
             find_track,
+            track_light_configs,
             find_car,
             find_car_bank,
             find_common_bank,
