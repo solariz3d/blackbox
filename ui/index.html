@@ -6363,6 +6363,59 @@ addEventListener("keydown", (e) => {
 // still available from a dev build's console, where one exists
 window.spikes = function () { resolveSpikes(); console.table(spikeLog.map(s => ({ ...s, verdict: spikeVerdict(s) }))); };
 
+/* THE SAME REPORT, WRITTEN TO DISK.
+ *
+ * Every version of this instrument so far has needed a human as the courier — read the
+ * console, or press P and screenshot the panel — and the reading that decides the diagnosis
+ * needs eight samples plus a base rate, caught during a hitch nobody can schedule. Asking
+ * repeatedly for that reading is a design failure, not an impatience problem.
+ *
+ * So the app writes it. The web side cannot touch the filesystem; the native side can, and
+ * this is exactly the sort of thing that native shell is for.
+ *
+ * Only while spikes are actually accruing, and only when the count has changed, so an idle
+ * session does no disk I/O at all. Whole-file overwrite of a bounded ring — a history would
+ * grow without limit and tell us nothing the last twelve do not. */
+let _perfWroteAt = 0, _perfLastCount = -1;
+function perfReport() {
+  const bud = frameBudgetMs();
+  const L = [];
+  L.push(`blackbox perf — panel ${displayHz || "?"} Hz (${displayName || "unknown monitor"})`);
+  L.push(`budget ${bud ? bud.toFixed(3) : "?"} ms · spike threshold ${bud ? (bud * SPIKE_FACTOR).toFixed(2) : "?"} ms`);
+  L.push(`frames ${allFrames} · spikes ${allSpikes} · missed periods last second ${vsyncMissedShown}`);
+  L.push(`ema ${frameMsEMA.toFixed(3)} ms · worst(1s) ${frameMsWorst.toFixed(2)} ms`);
+  if (allFrames > 0) {
+    const base = 100 * simFrames / allFrames;
+    const onSim = allSpikes ? 100 * simSpikes / allSpikes : 0;
+    L.push(`sim(60Hz) runs on ${base.toFixed(1)}% of frames · ${onSim.toFixed(1)}% of spikes land there (${simSpikes}/${allSpikes})`);
+  }
+  // isOn(), not .enabled — the flag is module-private and only exposed through the getter.
+  // Reading .enabled would have quietly reported "off" forever, which is exactly the kind of
+  // always-plausible wrong value this whole log exists to avoid.
+  const audioOn = (typeof BBAudio !== "undefined" && typeof BBAudio.isOn === "function") ? BBAudio.isOn() : null;
+  L.push(`audio ${audioOn === null ? "?" : audioOn ? "ON" : "off"} · cars ${1 + (typeof ghostDraws !== "undefined" ? ghostDraws.length : 0)}` +
+         ` · smoke ${smoke.pool.length} · air ${AIR.cells.size} · trees ${cullStat.trees}/${cullStat.treesTotal}`);
+  L.push("");
+  L.push("      at   frame     cpu     gpu  sim  bake    chunks trees  smk   heapMB  verdict");
+  for (const s of spikeLog) {
+    L.push(
+      String(s.at).padStart(8) + s.frameMs.toFixed(2).padStart(8) + s.cpuMs.toFixed(2).padStart(8) +
+      (s.gpuMs === null ? "-" : s.gpuMs.toFixed(2)).padStart(8) +
+      (s.sim > 0 ? "SIM" : "-").padStart(5) + (s.bakedThisFrame ? "YES" : "-").padStart(6) +
+      String(s.chunks).padStart(10) + String(s.trees).padStart(6) + String(s.smoke).padStart(5) +
+      (s.heapMB === null ? "-" : s.heapMB.toFixed(1)).padStart(9) + "  " + spikeVerdict(s));
+  }
+  return L.join("\n");
+}
+function maybeWritePerf(ts) {
+  if (!TAURI || !allSpikes) return;
+  if (allSpikes === _perfLastCount) return;      // nothing new happened
+  if (ts - _perfWroteAt < 3000) return;          // at most every three seconds
+  _perfWroteAt = ts; _perfLastCount = allSpikes;
+  resolveSpikes();
+  try { tinvoke("write_perf_log", { body: perfReport() }); } catch (_) {}
+}
+
 function loop(ts) {
   const _cpu0 = performance.now();
   _treeTime = ts * 0.001;   // one sway clock per frame — lit and depth must agree
@@ -6507,6 +6560,7 @@ function loop(ts) {
     timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)})${_hud}${_spk} · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
     drawScrub();
     renderSpikePanel();      // only does work while the panel is open
+    maybeWritePerf(ts);      // and hand the same reading to disk, so nobody has to relay it
   }
   render();
   /* Wall time spent INSIDE this function. Note what it does and does not include: our own

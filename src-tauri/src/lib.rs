@@ -613,6 +613,23 @@ fn display_info(window: tauri::Window) -> DisplayInfo {
     }
 }
 
+/// Write the perf log where it can be read from outside the app.
+///
+/// The spike instrument was console-only, then on-screen — and both put a human in the loop
+/// as the messenger. That is fine for one reading and useless for a stall that needs eight
+/// samples and a base rate to judge. The web side cannot write files; the native side can,
+/// so it does, and the diagnosis stops depending on someone remembering to press a key at
+/// the moment a hitch happens.
+///
+/// Overwrites rather than appends: this is a live snapshot of a bounded ring, not a
+/// history, and an append-only file would grow unbounded during a long session for no gain.
+#[tauri::command]
+fn write_perf_log(body: String) -> Result<String, String> {
+    let p = std::env::temp_dir().join("blackbox_perf.txt");
+    std::fs::write(&p, body).map_err(|e| format!("{}: {}", p.display(), e))?;
+    Ok(p.to_string_lossy().to_string())
+}
+
 /// Copy the embedded CSP app into the AC install. Idempotent — safe to run again to update.
 #[tauri::command]
 fn install_bridge() -> Result<String, String> {
@@ -2107,6 +2124,7 @@ pub fn run() {
             list_screenshots,
             find_track,
             display_info,
+            write_perf_log,
             track_light_configs,
             find_car,
             find_car_bank,
