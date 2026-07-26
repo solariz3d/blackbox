@@ -2848,8 +2848,10 @@ function renderHeadlightDepth(cm, headVP) {
     }
   };
   if (sceneGroups) drawG(sceneGroups, IDENT4, frustumPlanes(headVP));   // ONLY the track occludes the beam — the car
-  drawTreesDepth(headVP, frustumPlanes(headVP));   // canopies dapple the headlight beam too
-  gl.useProgram(progDepth);
+  // beam skip: trees deliberately do NOT occlude the headlight beam — beams are
+  // road-aimed, canopy occlusion of one is invisible, and drawing the whole visible
+  // forest into the beam depth map every night frame was pure cost. The cascades still
+  // carry the canopy, so the dappled ground shadows are untouched.
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);       // must not occlude its own headlights (nose spar → black blob)
 }
 
@@ -3429,7 +3431,19 @@ function render() {
   // fog thins with chase distance (soft far-fade when pulled back), but clamp the
   // effective distance to a floor so zooming the follow cam in close doesn't blow the
   // density up and wash the background out — keeps the far fade without the close haze.
-  const fogD = 0.35 / Math.max(cam.dist, 120);
+  /* THE MAGIC-TREES BUG, FOUND AT LAST (2026-07-26, after LOD, mip-alpha, texture
+   * completeness, suppression and three cull systems were each exonerated by measurement):
+   * fog density scaled with camera ZOOM, and in follow cam the 120 floor made it
+   * 0.35/120 = 0.0029 — 24x the app's baseline. At that density 800 m is 90% fogged and
+   * 1.2 km is 97%: everything distant dissolved into the fog colour — which at night
+   * matches the sky — and "spawned in" on approach. Sakura's four giant landmark sakuras,
+   * 126-181 m tall and MEANT to be seen across the map, were erased past ~800 m.
+   *
+   * The cap keeps the close-camera atmospheric haze the constant was tuned for, but
+   * bounds visibility at roughly 4 km — the whole track reads, the landmarks stand, and
+   * zoomed-out cameras keep their thinner fog untouched. Raise the cap toward 0.0029 for
+   * more soup, lower it for clearer air; the keeper's law is that nothing may vanish. */
+  const fogD = Math.min(0.00055, 0.35 / Math.max(cam.dist, 120));
 
   // car matrix computed up front so its headlights can light the TRACK too (not just
   // the car). carModelMatrix is now pure — it RETURNS {mat, steer} rather than setting
@@ -5145,7 +5159,9 @@ function buildTreeSys(harvest, groups) {
 
 /* Per-run draws re-point attribs 3/4 WHILE the VAO is bound (VAO-owned state, invisible
  * outside it) because WebGL2 has no baseInstance. */
-function drawTreeRuns(planes, loc) {
+function drawTreeRuns(planes, loc, eye) {
+  // lit pass: runs sorted near-first each call, so close canopy fills depth and the
+  // corridor behind it z-rejects — the same order-matters move that paid on the track
   let drawn = 0;
   for (const ty of treeSys.types) {
     if (!ty) continue;
@@ -5153,8 +5169,14 @@ function drawTreeRuns(planes, loc) {
     if (loc === instLoc) { gl.uniform3fv(instLoc.tintA, ty.tintA); gl.uniform3fv(instLoc.tintB, ty.tintB); }
     gl.bindVertexArray(ty.vao);
     gl.bindBuffer(gl.ARRAY_BUFFER, treeSys.instBuf);
+    const visible = [];
     for (const r of ty.ranges) {
-      if (planes && !sphereInFrustum(planes, r.centre, r.radius)) continue;
+    if (planes && !sphereInFrustum(planes, r.centre, r.radius)) continue;
+    if (eye) { const dx = r.centre[0]-eye[0], dz = r.centre[2]-eye[2]; r._d2 = dx*dx+dz*dz; }
+    visible.push(r);
+    }
+    if (eye) visible.sort((a, b) => a._d2 - b._d2);
+    for (const r of visible) {
       gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 32, r.byteOff);
       gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 32, r.byteOff + 16);
       gl.drawElementsInstanced(gl.TRIANGLES, ty.idxCount, gl.UNSIGNED_SHORT, 0, r.count);
@@ -5190,12 +5212,36 @@ function drawTreesLit(vp, L, nightF, fogDv, planes) {
     gl.uniformMatrix4fv(instLoc.lightVP1, false, c1.vp);
     gl.uniform1f(instLoc.shadowTexel0, 1 / c0.size); gl.uniform1f(instLoc.shadowTexel1, 1 / c1.size);
     gl.uniform1f(instLoc.shadowDepth0, c0.depth || 1);
-    gl.uniform1f(instLoc.shadowSoft, 1 + nightF * SHADOW_NIGHT_SOFT);
+    gl.uniform1f(instLoc.shadowSoft, 1);   // trees: PCF softness inside a canopy is
+    // invisible detail — leaves are noise-shaped already. The track keeps its soft night
+    // pools; the forest takes the 9-tap path and saves 4-17 taps on every surviving
+    // fragment of the single largest night fill surface.
   }
+  /* TREE DEPTH PREPASS — the deep-stack killer, measured into existence at the last turn
+   * (90 fps with the remastered forest: enough canopy layers that even 52-tri trees drown
+   * in fill). The forest rasterizes ONCE colour-off through the alpha-tested instanced
+   * depth shader (same instWorld, same sway clock, so positions are bit-identical), which
+   * primes the depth buffer; the lit pass then shades each pixel EXACTLY ONCE at LEQUAL
+   * instead of once per overlapping card. Cost: a second raster of the forest at one
+   * texture tap per fragment. Payback: the lit pass's 10-20 taps + shading run once per
+   * pixel, not once per layer. The flat-0.5 prepass threshold vs the lit pass's
+   * distance-lowered ramp means a ring of low-alpha texels at distance still overdraws —
+   * correct image, partial saving there, full saving everywhere else. */
+  gl.useProgram(progInstDepth);
+  gl.uniformMatrix4fv(instDepthLoc.lightVP, false, vp);
+  gl.uniform1f(instDepthLoc.time, _treeTime);
+  gl.uniform1i(instDepthLoc.tex, 0);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.colorMask(false, false, false, false);
+  drawTreeRuns(planes, instDepthLoc);
+  gl.colorMask(true, true, true, true);
+  gl.useProgram(progInstLit);
+  gl.depthFunc(gl.LEQUAL);   // lit fragments tie the prepass depth exactly; LESS would hole them
   gl.uniform1i(instLoc.tex, 0);
   gl.activeTexture(gl.TEXTURE0);
-  cullStat.trees = drawTreeRuns(planes, instLoc);
+  cullStat.trees = drawTreeRuns(planes, instLoc, camEye());
   cullStat.treesTotal = treeSys.count;
+  gl.depthFunc(gl.LESS);   // restore the renderer-wide default before anything else draws
   GT.end();
 }
 
