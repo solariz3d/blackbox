@@ -145,7 +145,18 @@ function resolveTrackLights(iniText, nodes, opts) {
     const off = list(k.OFFSET).map(Number);
     const offset = off.length >= 3 ? [num(off[0], 0), num(off[1], 0), num(off[2], 0)] : [0, 0, 0];
 
-    const push = (p) => {
+    /* `radius` is the matched mesh's bounding-sphere radius, and it decides whether this
+     * light has a POINT you can draw. A series names meshes, and not every mesh it names is
+     * a lamp fixture: the T-180 test track's own config reads
+     *
+     *     MESHES = TorusLight?, StartFinishGate_SUB2, Roof_SUB2
+     *
+     * so the author is deliberately making the entire roof of the tube a light — a 682 m
+     * glowing ceiling washing down onto the track, which is exactly right as illumination.
+     * It has no location though. Its centre is a point in mid-air inside the structure, and
+     * anything drawn there is both nowhere near a visible lamp and buried behind geometry.
+     * 0 means "no mesh" — an explicitly positioned light, which is always a real point. */
+    const push = (p, radius) => {
       if (out.length >= max) return;
       out.push({
         pos: [p[0] + offset[0], p[1] + offset[1], p[2] + offset[2]],
@@ -153,6 +164,7 @@ function resolveTrackLights(iniText, nodes, opts) {
         // a NORMAL-aimed lamp has no usable direction, so it is a point light
         spotUsable: !normalAimed && spot < 359,
         fadeAt: fadeAt > 0 ? fadeAt : range,
+        radius: radius || 0,
       });
     };
 
@@ -172,7 +184,7 @@ function resolveTrackLights(iniText, nodes, opts) {
         const nm = matchName(n.name);
         const hit = meshPats.some(re => re.test(nm)) ||
                     (n.mat && matPats.some(re => re.test(matchName(n.mat))));
-        if (hit) push(n.pos);
+        if (hit) push(n.pos, n.radius);
       }
     }
   }

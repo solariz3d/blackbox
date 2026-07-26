@@ -986,6 +986,11 @@ const lampLoc = {
 const lampBuf = gl.createBuffer();
 let TRACK_LAMP_GLOW = 1;
 let LAMP_GLARE_GAIN = 1.0;
+/* Above this bounding radius a matched mesh is a lit STRUCTURE, not a fixture, and gets no
+ * glare sprite — it is seen as its own emissive geometry instead. 20 m is comfortably above
+ * the biggest real lamp in the library (sakura's 18 m lantern cluster, nordic's 13 m lamp
+ * heads) and far below the smallest structure (thunderhead's 224 m stadium light banks). */
+let LAMP_FIXTURE_MAX_RADIUS = 20;
 /* NO DISTANCE LIMIT, and that is the design rather than an oversight.
  *
  * A light source is visible from however far away you can see it — that is what makes it a
@@ -1011,6 +1016,18 @@ function drawTrackLampGlare(mvp, nightF, th) {
   for (const L of trackLights) {
     const gate = L.night ? nightF : 1;
     if (gate <= 0.02) continue;
+    /* A glare sprite needs a POINT to sit on, and not every light has one. The T-180 test
+     * track names its roof as a light source — deliberately, a 682 m glowing ceiling — and
+     * a sprite at the centre of that is a dot hanging in mid-air inside the structure,
+     * which is both nowhere near a visible lamp and hidden behind geometry until you are
+     * almost touching it. Half that track's 60 lights are meshes of this kind, and on
+     * thunderhead it is 42 of 54.
+     *
+     * They are not dropped, only their sprite is: they still light the scene through the
+     * shader, and they are still SEEN — as their own emissive geometry, which is what a
+     * glowing ceiling actually looks like. A sprite would be a worse drawing of a thing
+     * already drawn correctly. */
+    if (L.radius > LAMP_FIXTURE_MAX_RADIUS) continue;
     const dx = L.pos[0] - eye[0], dy = L.pos[1] - eye[1], dz = L.pos[2] - eye[2];
     const d = Math.hypot(dx, dy, dz) || 1;
     // no distance term at all — see the note on the constants above
@@ -1026,14 +1043,26 @@ function drawTrackLampGlare(mvp, nightF, th) {
      * near lamp from a far one — which is right, and is how real lights behave: what
      * changes across a mile is their size, not their brightness. Below about a pixel a
      * sprite also shimmers as it crosses the sample grid, so the floor fixes the flicker
-     * and the vanishing in one move. */
-    const world = 0.55 + 0.22 * Math.min(4, L.intensity);
+     * and the vanishing in one move.
+     *
+     * The world size is the FIXTURE'S OWN radius now that the parser keeps it, rather than
+     * a number derived from intensity. A lamp's brightness and a lamp's size are unrelated
+     * — sakura's lanterns are 1 m across and Miandros's floodlights are metres wide at
+     * thirty times the declared intensity — and the measurement was sitting in the kn5. */
+    const world = Math.max(0.5, Math.min(8, L.radius || 1));
     const px = Math.max(5, Math.min(70, world * Hpx / (d * th)));
     /* Pull the sprite toward the eye. Its position is the lamp mesh's bounding-sphere
      * CENTRE, so at equal depth the fixture's own front face wins the depth test and the
-     * lamp hides inside its own housing. Half a metre clears a typical fixture without
-     * letting the glare punch through a wall in front of it. */
-    const k = 0.5 / d;
+     * lamp hides inside its own housing.
+     *
+     * This was a flat half metre, which works near the camera and cannot work far from it:
+     * depth precision falls off with the square of distance, so half a metre is several
+     * depth units at 100 m and less than one at 3 km — the sprite ties with its own housing
+     * and loses. Scaled with distance it stays resolvable everywhere, and stays a fraction
+     * of a percent of the distance, so it cannot pull a lamp through a wall standing in
+     * front of it. Also never less than the fixture's own radius, or a wide lamp still
+     * swallows its own glare. */
+    const k = Math.max(0.5, d * 0.004, (L.radius || 0) * 1.1) / d;
     v.push(L.pos[0] - dx * k, L.pos[1] - dy * k, L.pos[2] - dz * k,
            L.color[0], L.color[1], L.color[2], px, b);
   }
@@ -1955,12 +1984,19 @@ let CAR_SHADOWS = 1;
  * handful actually lighting the car and the road around it are always present, and the
  * ones beyond are contributing less than the eye can separate anyway. */
 let TRACK_LIGHTS_ON = 1;
-/* CSP's COLOR intensities are photometric-ish and run high — Miandros declares 28.76 on
- * its stadium floodlights, sakura 10 to 20. Fed straight into a forward renderer with a
- * range-normalised falloff, a value like that is ~28x the surface colour at close range:
- * a white blob, not a lamp. There is no honest conversion between CSP's units and ours,
- * so this is an explicit gain to be set by eye rather than a pretence at a formula. */
-let TRACK_LIGHT_GAIN = 0.16;
+/* CSP's COLOR intensities are photometric-ish and span a huge range — Miandros declares
+ * 28.76 on its stadium floodlights, sakura 10 to 20, the T-180 test track 3. Fed straight
+ * into a forward renderer with a range-normalised falloff, 28 is a white blob rather than a
+ * lamp; there is no honest conversion between CSP's units and ours, so this stays an
+ * explicit gain set by eye rather than a pretence at a formula.
+ *
+ * It is TWO numbers because one cannot do the job. A gain low enough to tame 28.76 leaves a
+ * 3.0 lamp contributing almost nothing, which is how a night track ends up dark everywhere
+ * a floodlight is not. So the outlier is clamped first and the gain is then set for the
+ * common case — the clamp costs Miandros some of its declared punch, and that is the right
+ * trade against every other track being unlit. */
+let TRACK_LIGHT_MAX_INTENSITY = 6;
+let TRACK_LIGHT_GAIN = 0.5;
 /* Same honesty as above, for the two material terms read out of the kn5.
  *
  * EMISSIVE. Authors write ksEmissive well past 1 — aurora's road strips are 3.0, one of its
@@ -2269,7 +2305,12 @@ function setTrackLights(eye, nightF) {
     const near = TrackLights.cullLights(trackLights, eye, MAX_TLIGHTS);
     for (const L of near) {
       const gate = L.night ? nightF : 1;
-      const amp = L.intensity * gate * TRACK_LIGHT_GAIN;
+      // CLAMP, then gain. A single gain cannot serve a library whose declared intensities
+      // span 3 to 28.76: tuned so Miandros's floodlights do not blow out, 0.16 left every
+      // ordinary track — the T-180 test track's own lamps are 3.0 — barely lit at all,
+      // which is what "everything is dark" was. Clamping the outlier first lets the gain
+      // be set for the common case instead of against the extreme.
+      const amp = Math.min(L.intensity, TRACK_LIGHT_MAX_INTENSITY) * gate * TRACK_LIGHT_GAIN;
       if (amp <= 0.002) continue;               // a lamp that is off costs no slot
       _tlPos[n*3] = L.pos[0]; _tlPos[n*3+1] = L.pos[1]; _tlPos[n*3+2] = L.pos[2];
       _tlCol[n*3] = L.color[0]*amp; _tlCol[n*3+1] = L.color[1]*amp; _tlCol[n*3+2] = L.color[2]*amp;

@@ -32,8 +32,10 @@ function contribution(b, blendSrcIsAlpha) {
   return blendSrcIsAlpha ? a * a : a;
 }
 /** on-screen size in pixels, with the floor that keeps a distant lamp from vanishing */
-function sizePx(d, intensity, Hpx, th) {
-  const world = 0.55 + 0.22 * Math.min(4, intensity);
+function sizePx(d, radius, Hpx, th) {
+  // the fixture's own measured radius, not a number derived from intensity: brightness and
+  // size are unrelated, and the measurement is in the kn5
+  const world = Math.max(0.5, Math.min(8, radius || 1));
   return Math.max(MIN_PX, Math.min(MAX_PX, world * Hpx / (d * th)));
 }
 
@@ -74,6 +76,56 @@ console.log("a light source has no distance limit — the source, not its emissi
   }
 }
 
+console.log("a lit STRUCTURE is not a fixture, and gets no sprite");
+{
+  const MAX_R = 20;
+  /* The T-180 test track's own series, verbatim:
+   *     MESHES = TorusLight?, StartFinishGate_SUB2, Roof_SUB2
+   * The author is deliberately making the roof of the tube a light — a 682 m glowing
+   * ceiling washing down on the track, correct as illumination. It has no POINT though:
+   * a sprite at its centre hangs in mid-air inside the structure, invisible behind
+   * geometry until you are almost touching it. That was "they spawn in the sky" and
+   * "they only show up when I get really close", one cause, two symptoms.
+   *
+   * Radii measured from the real files, so the threshold is checked against the actual
+   * gap rather than a number that merely sounds safe. */
+  const fixtures = [
+    ["sakura lantern", 1.0], ["sakura lantern cluster", 12.7], ["nordic lamp head", 13.1],
+    ["t180 TorusLight", 7.8], ["sakura biggest lantern", 18.0],
+  ];
+  const structures = [
+    ["t180 Roof", 682.3], ["t180 StartFinishGate", 186.0],
+    ["thunderhead stadium light bank", 224.1], ["sakura templo", 88.3],
+  ];
+  for (const [what, r] of fixtures) ok(r <= MAX_R, what + " (r=" + r + ") is a fixture and keeps its sprite");
+  for (const [what, r] of structures) ok(r > MAX_R, what + " (r=" + r + ") is a structure and loses its sprite");
+  // the threshold is only meaningful if there is real daylight between the two groups
+  const biggestFixture = Math.max(...fixtures.map(f => f[1]));
+  const smallestStructure = Math.min(...structures.map(s => s[1]));
+  ok(smallestStructure > 4 * biggestFixture,
+     `the gap is wide, not a knife-edge: largest fixture ${biggestFixture} m vs smallest structure ${smallestStructure} m`);
+  // and a light with no mesh at all — explicit POSITION — is always a real point
+  ok((0 || 0) <= MAX_R, "an explicitly positioned light has radius 0 and always keeps its sprite");
+}
+
+console.log("the depth nudge scales, because depth precision does not");
+{
+  /* A flat half metre works near the camera and cannot work far from it: depth resolution
+   * falls off with the square of distance, so the sprite ties with its own housing and
+   * loses. Approximate resolution of a 24-bit buffer at distance z with near plane n:
+   * z^2 / (n * 2^24). */
+  const res = (z, n) => (z * z) / (n * (1 << 24));
+  const flat = (d) => 0.5;
+  const scaled = (d, r) => Math.max(0.5, d * 0.004, (r || 0) * 1.1);
+  const near = 0.3;
+  ok(flat(3000) < res(3000, near), "at 3 km a flat 0.5 m nudge is below one depth unit — it cannot separate");
+  ok(scaled(3000, 0) > 3 * res(3000, near), "the scaled nudge stays several units clear");
+  ok(scaled(50, 0) === 0.5, "and does not inflate up close, where 0.5 m was already plenty");
+  ok(scaled(1000, 0) / 1000 < 0.01, "it stays under 1% of the distance, so it cannot pull a lamp through a wall");
+  // a wide fixture must clear its own housing regardless of how near it is
+  ok(scaled(30, 13) > 13, "a 13 m lamp head is nudged past its own radius");
+}
+
 console.log("illumination stays local — the other half of the separation");
 {
   const TL = require("./ui/tracklights.js");
@@ -108,14 +160,15 @@ console.log("the pixel floor — the reason a distant lamp does not disappear");
   ok(MIN_PX >= 4, "and it is large enough to read AS a light, not merely to exist");
 }
 
-console.log("size still varies where it can be seen to vary");
+console.log("size varies with the FIXTURE, and where it can be seen to vary");
 {
   ok(sizePx(30, 1, Hpx, th) > sizePx(200, 1, Hpx, th), "a close lamp is bigger than a mid-distance one");
-  ok(sizePx(1, 30, Hpx, th) <= MAX_PX, "and a lamp right at the camera is capped, not a screen-filling blob");
-  // intensity is clamped before it reaches the size: CSP writes 28.76 on Miandros's
-  // floodlights, and letting that scale the sprite directly gives a 6x wider lamp
-  const big = sizePx(100, 28.76, Hpx, th), small = sizePx(100, 4, Hpx, th);
-  ok(big === small, "intensity is clamped at 4, so a 28.76 floodlight is not 7x the sprite");
+  ok(sizePx(1, 5, Hpx, th) <= MAX_PX, "and a lamp right at the camera is capped, not a screen-filling blob");
+  // a 13 m nordic lamp head should read as bigger than a 1 m sakura lantern at the same
+  // distance — that is real information, and it was previously overwritten by intensity
+  ok(sizePx(150, 13, Hpx, th) > sizePx(150, 1, Hpx, th), "a big fixture reads bigger than a small one alongside it");
+  ok(sizePx(150, 13, Hpx, th) === sizePx(150, 40, Hpx, th),
+     "and the world size is capped at 8 m, so an outlier radius cannot make a wall of light");
 }
 
 console.log("night gating");
@@ -143,9 +196,9 @@ console.log("constants match the shipped source");
   const fn = src.slice(src.indexOf("function drawTrackLampGlare"));
   const body = fn.slice(0, fn.indexOf("\n}"));
   ok(body.includes("Math.max(5,") && body.includes("70"), "pixel floor 5 and cap 70 present");
-  ok(body.includes("0.55 + 0.22"), "world-size formula present");
-  ok(body.includes("Math.min(4, L.intensity)"), "intensity clamp at 4 present");
-  ok(body.includes("0.5 / d"), "half-metre depth nudge present");
+  ok(body.includes("Math.min(8, L.radius"), "world size comes from the fixture's radius");
+  ok(body.includes("LAMP_FIXTURE_MAX_RADIUS"), "structures are excluded from the sprite pass");
+  ok(body.includes("d * 0.004"), "the depth nudge scales with distance");
   // the load-bearing negative: no distance term may creep back into brightness
   ok(!/const b = [^;]*\bd\b/.test(body), "brightness does not reference distance");
   ok(!body.includes("fadeAt"), "and the glare pass does not consult FADE_AT at all");

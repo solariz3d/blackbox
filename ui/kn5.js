@@ -355,7 +355,13 @@ function extractScene(arrayBuffer, opts) {
       // node at [0,0,0]. Sakura's 143 lamps all resolved to the same point. The sphere
       // centre is where the geometry actually is.
       const bsX = f32(), bsY = f32(), bsZ = f32();
-      f32();            // bounding radius (unused)
+      /* The RADIUS matters as much as the centre, because it says whether the centre means
+       * anything. A LIGHT_SERIES names meshes, and some of the meshes it names are not lamp
+       * fixtures at all: the T-180 test track's TrackBottom_Light.010 has a 257 m radius —
+       * a whole strip of lights authored as one object. Its centre is a point in mid-air
+       * inside the structure, which is both nowhere near a lamp and buried behind geometry.
+       * A consumer needs the size to tell a fixture from a fixture-farm. */
+      const bsR = f32();
       const isRenderable = u8();
       // MESHES = in a LIGHT_SERIES names MESHES, not transform nodes — the two are
       // different classes in a kn5, and collecting only transforms resolved zero lights on
@@ -372,7 +378,10 @@ function extractScene(arrayBuffer, opts) {
         const wx = bsX*m[0] + bsY*m[4] + bsZ*m[8]  + m[12];
         const wy = bsX*m[1] + bsY*m[5] + bsZ*m[9]  + m[13];
         const wz = bsX*m[2] + bsY*m[6] + bsZ*m[10] + m[14];
-        nodes.push({ name, pos: [wx, wy, wz], mat: (mm && mm.name) || "" });
+        // radius is scaled by the parent transform too, or a metre on a scaled node is
+        // not a metre. Row-vector basis: the length of the transformed X axis.
+        const sc = Math.hypot(m[0], m[1], m[2]) || 1;
+        nodes.push({ name, pos: [wx, wy, wz], mat: (mm && mm.name) || "", radius: bsR * sc });
       }
       if (isRenderable !== 0) {
         const mat = materials[materialId];
