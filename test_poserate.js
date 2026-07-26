@@ -105,16 +105,29 @@ console.log("a real steering movement re-poses immediately, cap or no cap");
   ok(SPIN_EPS < 0.01, `the movement threshold is ${SPIN_EPS} rad (~0.4 deg), narrower than the grip itself`);
 }
 
-console.log("several cars: the cap switches itself OFF rather than corrupting them");
+console.log("several cars: each is capped independently");
 {
-  /* This is the property that makes a shared skin buffer safe. The caller alternates
-   * between cars, so the key never matches the previous one and every car re-poses. If this
-   * ever regressed to a per-car map, ghosts would wear each other's arms. */
-  const g = makeGate();
-  const cars = ["ref", "ghost1", "ghost2"];
-  let posed = 0, frames = 0;
-  for (let i = 0; i < 120; i++) for (const c of cars) { frames++; if (g(c, i * (1000 / 360), 0.5)) posed++; }
-  ok(posed === frames, `with 3 cars every draw re-poses (${posed}/${frames}) — no car can show another's arms`);
+  /* INVERTED DELIBERATELY. This used to assert that with ghosts on track every car re-posed
+   * every frame — because one shared skin buffer meant a skipped car would draw whichever
+   * car posed last, wearing another driver's arms. Correct then, and it meant the cap did
+   * nothing in the heaviest case: four cars, four full IK solves a frame.
+   *
+   * Each car now keeps its own skinned vertices, so a skipped car re-uploads its own last
+   * result and the cap applies per car. The old assertion is not weakened here, it is
+   * obsolete — the constraint that forced it is gone. */
+  const gates = new Map();
+  const gate = (k) => { if (!gates.has(k)) gates.set(k, makeGate()); return gates.get(k); };
+  const cars = ["ref", "ghost1", "ghost2", "ghost3"];
+  let posed = 0, draws = 0;
+  for (let i = 0; i < 360; i++) for (const c of cars) { draws++; if (gate(c)(c, i * (1000 / 360), 0.5)) posed++; }
+  ok(posed < draws / 2, `4 cars over a second: ${posed} poses for ${draws} draws, not one each`);
+  ok(posed <= cars.length * (HZ + 1), `and no car exceeds its own ${HZ} Hz target (${posed} total)`);
+  // the safety property that replaces the old one: a car's pose depends only on its own key
+  const gA = makeGate(), gB = makeGate();
+  gA("a", 0, 0.5); gB("b", 0, 0.9);
+  ok(!gA("a", 1, 0.5), "car A skips on its own timing");
+  ok(!gB("b", 1, 0.9), "car B skips on its own timing, with its own steering");
+  ok(gA("a", 1, 0.9), "and A re-poses when A's OWN steering moves, not when B's does");
 }
 
 console.log("constants match the shipped source");
@@ -123,9 +136,12 @@ console.log("constants match the shipped source");
   ok(/let DRIVER_POSE_HZ = \d+/.test(cr), `DRIVER_POSE_HZ present (currently ${HZ})`);
   ok(HZ >= 30 && HZ <= 240, `and in a sane range — ${HZ} Hz`);
   ok(cr.includes("Math.abs(spin - p.spin) > 0.007"), "the movement escape hatch is present");
-  ok(/_dposeLast\s*=\s*\{\s*key:/.test(cr), "the cache records WHICH car posed last");
-  ok(!/_dpose\s*=\s*new Map\(\)/.test(cr),
-     "and is not a per-car map — that would corrupt ghosts through the shared skin buffer");
+  ok(/const _dpose = new Map\(\)/.test(cr), "the cache is per car");
+  ok(/sm\._perCar/.test(cr), "and each car keeps its own skinned vertices");
+  ok(/driverSkinReupload\(k\)/.test(cr),
+     "a skipped car re-uploads its OWN skin — the GL buffer is shared, so it must");
+  ok(/if \(!slot\) return false/.test(cr),
+     "and falls through to a full pose when a car has no cached skin yet");
   const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
   ok(src.includes("driverPoseReset(); driverSeatedSkin(0, 0)"),
      "load-time seating forces a pose through rather than letting the cap defer it");

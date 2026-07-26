@@ -417,7 +417,7 @@ function driverPose(fp, carMat, steer, src, rig) {
 }
 
 // upload the driver's skinned meshes for a given posed skeleton `world` (array of mat4)
-function driverSkinUpload(world) {
+function driverSkinUpload(world, key) {
   for (const sm of carDriver.skinned) {
     /* Reused bone-matrix palette, built once per mesh and refilled in place.
      *
@@ -437,7 +437,26 @@ function driverSkinUpload(world) {
       const ni = sm.boneNodeIdx[b];
       if (ni >= 0) rvMulInto(bm[b], sm.invBind[b], world[ni]);
     }
-    const bp = sm.bindPos, bn = sm.bindNrm, bw = sm.bw, bi = sm.bi, op = sm.skinPos, on = sm.skinNrm, nv = bp.length / 3;
+    /* PER-CAR skinned output. sm.skinPos/skinNrm are one buffer shared by every car, which
+     * is what forced each car to re-pose every frame: skipping a car's pose left whichever
+     * car posed last in the buffer, so a ghost would wear another driver's arms.
+     *
+     * Each car now keeps its own skinned vertices, so a skipped frame can re-upload that
+     * car's OWN last result instead of recomputing it. The GL buffer is still shared, so
+     * the upload happens every frame regardless — what is saved is the IK solve and the
+     * skinning maths, which is the expensive half. Memory is a few hundred KB per car.
+     *
+     * Falls back to the shared buffer when no key is given, so the load-time seating path
+     * and anything else calling driverSkinUpload directly behaves exactly as before. */
+    let op = sm.skinPos, on = sm.skinNrm;
+    if (key !== undefined) {
+      if (!sm._perCar) sm._perCar = new Map();
+      let slot = sm._perCar.get(key);
+      if (!slot) { slot = { p: new Float32Array(sm.skinPos.length), n: new Float32Array(sm.skinNrm.length) };
+                   sm._perCar.set(key, slot); }
+      op = slot.p; on = slot.n;
+    }
+    const bp = sm.bindPos, bn = sm.bindNrm, bw = sm.bw, bi = sm.bi, nv = bp.length / 3;
     for (let v = 0; v < nv; v++) {
       const x = bp[v*3], y = bp[v*3+1], z = bp[v*3+2], nx = bn[v*3], ny = bn[v*3+1], nz = bn[v*3+2];
       let ox=0,oy=0,oz=0,onx=0,ony=0,onz=0;
@@ -451,6 +470,27 @@ function driverSkinUpload(world) {
     gl.bindBuffer(gl.ARRAY_BUFFER, sm.grp.posBuf); gl.bufferData(gl.ARRAY_BUFFER, op, gl.DYNAMIC_DRAW);
     gl.bindBuffer(gl.ARRAY_BUFFER, sm.grp.nrmBuf); gl.bufferData(gl.ARRAY_BUFFER, on, gl.DYNAMIC_DRAW);
   }
+}
+
+/**
+ * Push a car's already-computed skin to the GL buffers without re-solving it.
+ *
+ * The GL buffer is shared by every car, so even a skipped car has to put ITS vertices back
+ * before it draws — otherwise it renders whatever the previous car uploaded. What the skip
+ * avoids is the IK solve and the skinning loop, which is the expensive half; the upload is
+ * bandwidth and happens either way.
+ *
+ * Returns false when this car has no cached skin yet, so the caller can fall through to a
+ * full pose rather than drawing an empty buffer on the first frame a ghost appears.
+ */
+function driverSkinReupload(key) {
+  for (const sm of carDriver.skinned) {
+    const slot = sm._perCar && sm._perCar.get(key);
+    if (!slot) return false;
+    gl.bindBuffer(gl.ARRAY_BUFFER, sm.grp.posBuf); gl.bufferData(gl.ARRAY_BUFFER, slot.p, gl.DYNAMIC_DRAW);
+    gl.bindBuffer(gl.ARRAY_BUFFER, sm.grp.nrmBuf); gl.bufferData(gl.ARRAY_BUFFER, slot.n, gl.DYNAMIC_DRAW);
+  }
+  return true;
 }
 
 // Glued-grip steering: the hands ride the wheel's REAL grip points at any steer,
@@ -817,20 +857,21 @@ function driverSeatedPose(spin) {
  * Skipping also skips the upload, which is correct — the VBO still holds the last skin, and
  * re-uploading identical vertices would keep the bandwidth while dropping only the maths.
  *
- * THE SKIN BUFFERS ARE SHARED BY EVERY CAR, and that constrains what may be skipped. There
- * is one driver model; each car poses into it, uploads, and draws, in sequence. So skipping
- * car A's pose does not leave A's arms in the buffer — it leaves whichever car posed LAST,
- * which with ghosts on track would put one driver's steering on another's body.
+ * PER CAR, now that each car keeps its own skinned vertices.
  *
- * Hence the cache key is WHICH CAR POSED LAST, not a per-car map. With one car on track it
- * is always the same car, so the cap applies and the saving is real. With ghosts the caller
- * alternates, the key never matches, and every car poses every frame exactly as before —
- * correct by construction, and the optimisation simply switches itself off rather than
- * needing a special case. Giving each car its own skin buffers would lift that restriction;
- * that is a bigger change than this one.
+ * This was keyed on which car posed LAST, because one shared skin buffer meant skipping a
+ * car left whichever car posed most recently in it — a ghost wearing another driver's arms.
+ * The consequence was that the cap did nothing whenever ghosts were on track, which is
+ * exactly the heaviest case: four cars, four full IK solves per frame, the cap disabled.
  *
- * `spin` is remembered too: if the steering has moved meaningfully the pose is redone
- * regardless of the clock, so a fast correction is never smeared across the interval.
+ * With per-car skinned output a skipped car re-uploads its OWN last result, so the cap now
+ * applies to every car independently. The upload still happens every frame because the GL
+ * buffer is shared; what is skipped is the solve and the skinning, which is the expensive
+ * half.
+ *
+ * `spin` is remembered per car too: if that car's steering has moved meaningfully its pose
+ * is redone regardless of the clock, so a fast correction is never smeared across the
+ * interval.
  */
 /* Target, not a guarantee — the ACHIEVED rate is quantised to the frame clock, because a
  * pose can only happen on a frame. The gate fires once the interval has elapsed, so the
@@ -847,12 +888,14 @@ function driverSeatedPose(spin) {
  * effort spent on the wrong thing. Was 144 (achieving 120); if this reads worse in the
  * hands, that is the number to go back to. */
 let DRIVER_POSE_HZ = 60;
-let _dposeLast = null;             // { key, t, spin } — the car that most recently posed
+const _dpose = new Map();          // car key -> { t, spin }, one entry per car on track
+/** forget one car's pose timing (called when a run leaves the comparison set) */
+function driverPoseForget(key) { _dpose.delete(key); }
 function driverSeatedSkin(spin, key) {
   const k = key === undefined ? 0 : key;
   const nowMs = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
-  const p = _dposeLast;
-  if (p && p.key === k && DRIVER_POSE_HZ > 0) {
+  const p = _dpose.get(k);
+  if (p && DRIVER_POSE_HZ > 0) {
     /* A 2% tolerance on the interval, and it is load-bearing rather than cosmetic.
      *
      * Frame times and the interval are both derived from the same rates, so at a target
@@ -868,14 +911,16 @@ function driverSeatedSkin(spin, key) {
     // 0.4 degrees of wheel movement — narrower than the hand's own grip on the rim, so a
     // skip can never hide a change in where the hands visibly are
     const moved = Math.abs(spin - p.spin) > 0.007;
-    if (!due && !moved) return;
+    // a skipped car must still put ITS vertices back, since the GL buffer is shared; if it
+    // has no cached skin yet (first frame this ghost appears) fall through to a full pose
+    if (!due && !moved && driverSkinReupload(k)) return;
   }
   const world = driverSeatedPose(spin);
-  if (world) driverSkinUpload(world);
-  _dposeLast = { key: k, t: nowMs, spin };
+  if (world) driverSkinUpload(world, k);
+  _dpose.set(k, { t: nowMs, spin });
 }
-/** forget the cached pose — call when the car or the run set changes */
-function driverPoseReset() { _dposeLast = null; }
+/** forget every cached pose — call when the car model or the run set changes */
+function driverPoseReset() { _dpose.clear(); }
 
 if (typeof module !== "undefined") module.exports = { gripSat, armSolve, gripLockCalib, driverSeatedPose, snapToMesh, palmGrip,
   ksanimLocal, driverAnimWorlds, driverAnimInit, animT, steerOfFrame, steerRefCalib };
