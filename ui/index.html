@@ -511,6 +511,14 @@
         <button class="seg" data-u="imperial">Imperial · mi, mph</button>
       </div>
     </div>
+    <div class="setrow">
+      <div class="setlabel">Anti-aliasing (MSAA)</div>
+      <div class="segbtns" id="msaaToggle">
+        <button class="seg" data-m="on">On · smooth edges</button>
+        <button class="seg" data-m="off">Off · faster in heavy foliage</button>
+      </div>
+      <div class="dim" style="font-size:11px;margin-top:4px">takes effect after closing and reopening BLACKBOX — 4× MSAA multiplies fill cost per foliage layer and cannot smooth leaf-cutout edges anyway</div>
+    </div>
   </div>
 </div>
 
@@ -2096,6 +2104,19 @@ let TRACK_LIGHTS_ON = 1;
  * aliases into noise, so the shadows it buys are bad shadows — which is why the track looks
  * wrong as well as running badly. Trunks keep casting, so the trees stay grounded. */
 let SHADOW_NIGHT_SOFT = 5;   // extra PCF spread at full night — see pcfSoft in glcore.js
+/* FOLIAGE DISTANCE DISSOLVE — the "too many trees" lever, sized by measurement.
+ *
+ * Sakura's trees are authored as a few enormous alpha-tested cards per tree (80–117 m² per
+ * triangle, measured), so a corridor pixel sits under median 36 / p95 78 canopy layers and
+ * over half of a sightline's crossings are beyond 200 m — distant layers that cost full
+ * fill and read as undifferentiated pink haze. Between START and END the alpha threshold
+ * rises toward 0.95, discarding progressively more of each card (the tree visibly thins
+ * rather than popping); past END the chunk is skipped outright, which also relieves vertex
+ * and raster load. Near trees are untouched. Applies to foliage groups only, so tracks
+ * without foliage (t180, centrifuge) are unaffected by construction — the goldens hold.
+ * END = 0 disables the whole mechanism. */
+let FOLIAGE_FADE_START = 400;
+let FOLIAGE_FADE_END = 800;
 let TREE_MODE = 0;
 /* Flat-colour every material, to identify geometry on screen instead of inferring it from
  * an offline profile. Four attempts at centrifuge's dome panels were spent guessing which
@@ -3545,39 +3566,85 @@ function render() {
        * keeper's Assetto workaround; the leaves keep their texture and the sun's diffuse
        * term, which is all that ever read as foliage anyway. */
       if (g.radius && !sphereInFrustum(camPlanes, g.centre, g.radius)) continue;
+      // foliage beyond the dissolve horizon is skipped outright — no draw, no state
+      if (g.foliage && FOLIAGE_FADE_END > 0 && g._d2 !== undefined &&
+          g._d2 > FOLIAGE_FADE_END * FOLIAGE_FADE_END) continue;
       if (MAT_DEBUG) {
         let mi = matOrder.indexOf(g.matName); if (mi < 0) { matOrder.push(g.matName); mi = matOrder.length - 1; }
         const c = MAT_PALETTE[mi % MAT_PALETTE.length];
         gl.uniform1f(tLoc.matDebug, 1); gl.uniform3f(tLoc.matDebugCol, c[0], c[1], c[2]);
-      } else gl.uniform1f(tLoc.matDebug, 0);
+      } else if (_lm.md !== 0) { _lm.md = 0; gl.uniform1f(tLoc.matDebug, 0); }
       cullStat.track++;
+      /* REDUNDANT-STATE ELISION. 787 chunks share 32 materials on sakura, so most
+       * chunk-to-chunk transitions change NOTHING about material state — but this loop
+       * re-uploaded every uniform and rebound the texture for each one: ~10 driver calls
+       * per chunk that the band-sorted order (see sortedSceneGroups) makes mostly
+       * no-ops. Each call is a WebView2→ANGLE→D3D11 round trip; on a 43-chunk track the
+       * waste is invisible, on a 787-chunk track it is a real CPU tax on every frame.
+       * `_lm` (last material state) is reset each frame — other passes leave GL state
+       * this loop cannot see. Correctness is untouched: the same values end up bound,
+       * the calls that would have re-bound them are simply skipped. */
       const unlit = g.foliage && TREE_MODE >= 2;
-      gl.uniform1i(tLoc.tLightN, unlit ? 0 : _tlN);
-      gl.uniform1f(tLoc.shadowOn, unlit ? 0 : _shadowBase);
-      gl.activeTexture(gl.TEXTURE0);
-      gl.bindTexture(gl.TEXTURE_2D, g.tex);
-      gl.uniform1f(tLoc.alphaTest, g.alphaTested ? 1 : 0);
-      gl.uniform1f(tLoc.alphaRef, g.alphaRef);
-      gl.uniform2f(tLoc.spec, g.spec * TRACK_SPEC_GAIN, g.specExp);
-      if (g.emissive) {
-        gl.uniform3f(tLoc.emissive, g.emissive[0] * TRACK_EMISSIVE_GAIN,
-                                    g.emissive[1] * TRACK_EMISSIVE_GAIN,
-                                    g.emissive[2] * TRACK_EMISSIVE_GAIN);
-        gl.uniform1f(tLoc.emisMap, g.emisTex ? 1 : 0);
-        if (g.emisTex) { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, g.emisTex); }
-      } else {
-        gl.uniform3f(tLoc.emissive, 0, 0, 0);
-        gl.uniform1f(tLoc.emisMap, 0);
+      if (unlit !== _lm.unlit) {
+        _lm.unlit = unlit;
+        gl.uniform1i(tLoc.tLightN, unlit ? 0 : _tlN);
+        gl.uniform1f(tLoc.shadowOn, unlit ? 0 : _shadowBase);
       }
-      if (g.translucent) {
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
-        gl.depthMask(false);
-        gl.uniform1f(tLoc.alpha, 0.16);
-      } else {
-        gl.disable(gl.BLEND);
-        gl.depthMask(true);
-        gl.uniform1f(tLoc.alpha, 1.0);
+      if (g.tex !== _lm.tex) {
+        _lm.tex = g.tex;
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, g.tex);
+      }
+      /* The dissolve rides the alpha threshold: raising it discards more of each card's
+       * texels, so a distant tree thins instead of popping. g._d2 is this frame's camera
+       * distance, computed by the sorter moments ago. Skip-at-END lives in the guard above
+       * the state block so a skipped chunk costs nothing at all. */
+      let aref = g.alphaRef;
+      if (g.foliage && FOLIAGE_FADE_END > 0 && g._d2 !== undefined) {
+        const d = Math.sqrt(g._d2);
+        if (d > FOLIAGE_FADE_START) {
+          const t = Math.min(1, (d - FOLIAGE_FADE_START) / Math.max(1, FOLIAGE_FADE_END - FOLIAGE_FADE_START));
+          aref = Math.min(0.95, aref + t * (0.95 - aref));
+        }
+      }
+      const at = g.alphaTested ? 1 : 0;
+      if (at !== _lm.at || aref !== _lm.aref) {
+        _lm.at = at; _lm.aref = aref;
+        gl.uniform1f(tLoc.alphaTest, at);
+        gl.uniform1f(tLoc.alphaRef, aref);
+      }
+      if (g.spec !== _lm.spec || g.specExp !== _lm.specExp) {
+        _lm.spec = g.spec; _lm.specExp = g.specExp;
+        gl.uniform2f(tLoc.spec, g.spec * TRACK_SPEC_GAIN, g.specExp);
+      }
+      if (g.emissive !== _lm.emissive || g.emisTex !== _lm.emisTex) {
+        _lm.emissive = g.emissive; _lm.emisTex = g.emisTex;
+        if (g.emissive) {
+          gl.uniform3f(tLoc.emissive, g.emissive[0] * TRACK_EMISSIVE_GAIN,
+                                      g.emissive[1] * TRACK_EMISSIVE_GAIN,
+                                      g.emissive[2] * TRACK_EMISSIVE_GAIN);
+          gl.uniform1f(tLoc.emisMap, g.emisTex ? 1 : 0);
+          if (g.emisTex) {
+            gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, g.emisTex);
+            gl.activeTexture(gl.TEXTURE0);   // leave unit 0 current for the next tex bind
+          }
+        } else {
+          gl.uniform3f(tLoc.emissive, 0, 0, 0);
+          gl.uniform1f(tLoc.emisMap, 0);
+        }
+      }
+      if (g.translucent !== _lm.blendOn) {
+        _lm.blendOn = g.translucent;
+        if (g.translucent) {
+          gl.enable(gl.BLEND);
+          gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+          gl.depthMask(false);
+          gl.uniform1f(tLoc.alpha, 0.16);
+        } else {
+          gl.disable(gl.BLEND);
+          gl.depthMask(true);
+          gl.uniform1f(tLoc.alpha, 1.0);
+        }
       }
       gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
       gl.enableVertexAttribArray(tLoc.pos);
@@ -5568,6 +5635,17 @@ if (inTauri) {
   const markActive = () => segs().forEach(b => b.classList.toggle("on", b.dataset.u === units));
   const openBtn = document.getElementById("btnSettings");
   if (openBtn) openBtn.addEventListener("click", () => { markActive(); modal.classList.remove("hidden"); });
+  // MSAA toggle — persists to localStorage; glcore.js reads it at context creation, so it
+  // only takes effect on the next launch. The active side is highlighted from the SAME
+  // source glcore read, so the UI shows what this session is actually running.
+  const msegs = () => document.querySelectorAll("#msaaToggle .seg");
+  const markMsaa = () => { let cur = "on"; try { cur = localStorage.getItem("bb_msaa") === "off" ? "off" : "on"; } catch (_) {}
+    msegs().forEach(b => b.classList.toggle("on", b.dataset.m === cur)); };
+  msegs().forEach(b => b.addEventListener("click", () => {
+    try { localStorage.setItem("bb_msaa", b.dataset.m === "off" ? "off" : "on"); } catch (_) {}
+    markMsaa();
+  }));
+  markMsaa();
   const closeBtn = document.getElementById("settingsClose");
   if (closeBtn) closeBtn.addEventListener("click", () => modal.classList.add("hidden"));
   if (modal) modal.addEventListener("click", e => { if (e.target === modal) modal.classList.add("hidden"); });
@@ -5726,10 +5804,13 @@ const matOrder = [];   // material name -> palette index, stable across frames
  * call site. Split once per track (the translucent tail never changes), sort only the
  * opaque head, reuse one ordered array so a 240 Hz loop allocates nothing per frame. */
 let _sgRef = null, _sgOpaque = [], _sgOrdered = [];
+let _lm = {};   // last-bound material state, reset each lit pass — see the elision note in the loop
 function sortedSceneGroups(eye) {
   if (_sgRef !== sceneGroups) {
     _sgRef = sceneGroups;
     _sgOpaque = sceneGroups.filter(g => !g.translucent);
+    const matI = new Map();
+    for (const g of _sgOpaque) { if (!matI.has(g.matName)) matI.set(g.matName, matI.size); g._matI = matI.get(g.matName); }
     _sgOrdered = _sgOpaque.concat(sceneGroups.filter(g => g.translucent));
   }
   for (const g of _sgOpaque) {
@@ -5737,7 +5818,13 @@ function sortedSceneGroups(eye) {
     if (c) { const dx = c[0]-eye[0], dy = c[1]-eye[1], dz = c[2]-eye[2]; g._d2 = dx*dx+dy*dy+dz*dz; }
     else g._d2 = 0;   // boundless groups draw first; they were never cullable anyway
   }
-  _sgOpaque.sort((a, b) => a._d2 - b._d2);
+  /* BAND then MATERIAL, not raw distance. Raw distance interleaves materials, which costs
+   * a texture bind + uniform refresh per chunk — the elision cache in the lit loop only
+   * pays off when consecutive chunks share state. 150 m bands keep the early-z benefit
+   * (a canopy 400 m behind another still draws after it) while chunks within a band group
+   * by material and mostly skip their state changes. */
+  for (const g of _sgOpaque) g._band = Math.floor(Math.sqrt(g._d2) / 150);
+  _sgOpaque.sort((a, b) => a._band - b._band || a._matI - b._matI || a._d2 - b._d2);
   for (let i = 0; i < _sgOpaque.length; i++) _sgOrdered[i] = _sgOpaque[i];
   return _sgOrdered;
 }

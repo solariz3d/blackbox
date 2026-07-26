@@ -88,6 +88,47 @@ Confirmed bugs found en route:
 12. `antialias:false` startup option (relaunch-level; ~10–25% raster bandwidth; forecloses #9 —
     expose as a setting and as a diagnostic, not as the fix).
 
+### OPEN BUG — distant trees load in as the camera approaches (pre-existing)
+Confirmed present on a build with NO distance mechanism of any kind, so it predates the
+campaign. Eliminated: the dissolve (off), the monolith split (off), the camera far plane
+(20–60 km), and — partially — mip-alpha dilution: the leaf textures are PNGs mipped by
+generateMipmap with LINEAR_MIPMAP_LINEAR, a distance-compensated alpha threshold was
+shipped (FST, 80→600 m ramp) and did NOT visibly cure it, so the simple dilution model is
+wrong or incomplete. Next diagnostic, fresh: fixed camera stepped toward a popping
+treeline with the K material view on, to name the material and distance band; then read
+that texture's actual mip chain. The remaster below kills this class by construction and
+is the chosen endgame; the diagnosis still matters for every other track.
+
+### Phase 2.5 — THE ENVIRONMENT REMASTER (keeper's directive, 2026-07-26 ~6:22 AM)
+Verbatim: "remove all trees and put good ones that would maximize space… rip the guy who
+made the track since the track is genius, but the environment not so much." Feasible and
+BLACKBOX-legal — it is our renderer over AC's data; we already replace lighting, shadows
+and sound. Design: (1) harvest the author's tree PLACEMENTS from trees.kn5 (2,268 mesh
+positions/sizes — the forest layout is part of the track's identity and is kept);
+(2) author 3–4 good tree assets — many small cards, mip-safe alpha, palette sampled from
+the original textures; (3) GPU-instance them (thousands of trees, a handful of draws);
+(4) the impostor idea becomes the far LOD of the same system, crossfaded. Standing law:
+every tree, every distance, nothing spawns. Per-track, optional, original files untouched.
+Supersedes the bare impostor plan below as the primary path.
+
+### Phase 2.5-prior — impostors alone (kept for reference)
+The keeper, verbatim: "make the tree geometry less complex and sort of conglomerated
+together" — which is impostors, independently reinvented. Past a distance, draw each
+foliage chunk as ONE pre-rendered quad instead of dozens of stacked alpha cards. The
+replay-viewer asymmetry applies again: the world is known at load, so impostors can be
+baked once per track load (~475 chunks x 128px atlas ≈ 30 MB). Trees stay visible at ALL
+distances — his standing constraint — only parallax degrades at range. Hard problem:
+lighting consistency across the time slider (bake albedo, light the quad with a simple
+normal). Crossfade the transition. This is the crown of the fill work; build after A2C
+and the monolith split, measured against them.
+
+### Measured live so far (worst corridors, follow cam)
+- baseline: 80–90 fps · sort: "a little better" · +state elision/band sort: similar ·
+  +13-tap night PCF +dissolve(400/800): lowest seen 109. Dissolve then DISABLED by the
+  keeper's call — trees at all distances beat the ~20%. The 13-tap PCF stays.
+- Elimination ledger: casting NO, lamps NO, draw order small, CPU calls small, night taps
+  halved; remaining: raster/bandwidth fill (MSAA A/B untested), monolith floor, A2C.
+
 ### Watch items
 - **The lamp bake will facet on `Land`** — median triangle edges 29–41 m vs 60–70 m lamp pools:
   single triangles spanning whole pools (the centrifuge-dome failure, relocated to grass). Track

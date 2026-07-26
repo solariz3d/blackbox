@@ -37,7 +37,16 @@
 })();
 
 const cv = document.getElementById("gl");
-const gl = cv.getContext("webgl2", { antialias: true }) || cv.getContext("webgl", { antialias: true });
+/* MSAA is a CONTEXT-CREATION flag — it cannot be toggled at runtime, only chosen here and
+ * changed by relaunching. Why it is a setting at all: 4x MSAA charges 4x depth/colour
+ * bandwidth on every rasterized layer, and on a foliage-heavy track (sakura: median 36
+ * overlapping canopy layers in the corridors) that multiplies the single largest fill cost —
+ * while delivering NO anti-aliasing on the leaf cutouts themselves, because alpha-test
+ * discard kills all four samples together. Geometry silhouettes lose smoothing with it off;
+ * corridor frame rate gains. The keeper decides per machine, informed by the A/B. */
+let BB_MSAA = true;
+try { BB_MSAA = localStorage.getItem("bb_msaa") !== "off"; } catch (_) {}
+const gl = cv.getContext("webgl2", { antialias: BB_MSAA }) || cv.getContext("webgl", { antialias: BB_MSAA });
 const isGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
 
 /* A shader that fails to compile throws, which kills glcore.js — and because every later
@@ -230,16 +239,29 @@ float pcf(sampler2D map, vec2 uv, float z, float bias, float texel){
  * the draw goes the same way and the GPU does not pay for the divergence. */
 float pcfSoft(sampler2D map, vec2 uv, float z, float bias, float texel, float soft){
   if (soft <= 1.01) return pcf(map, uv, z, bias, texel);
-  // NOT named step (no backticks here — see below) — that is a GLSL built-in, and shadowing it fails to compile on ANGLE.
-  // shader() throws on that, glcore.js dies, and every script after it never runs: the whole
-  // UI goes with it, which showed up as "the start menu broke, can't pick a track".
-  float sp = texel * soft * 0.5;
+  // 13 Poisson taps, unrolled because GLSL ES 1.00 has no array initializers. This was a
+  // 5x5 grid (25 taps); on sakura, corridor pixels sit under dozens of overlapping canopy
+  // layers and every surviving fragment paid all 25 against an 8192 depth map — measured as
+  // the dominant night fill term. Same footprint (the grid spanned texel*soft each way, the
+  // disk radius matches), so the softness is preserved; the tap bill halves. The variable is
+  // named sp, not the s-word that is a GLSL built-in — shadowing one fails to compile on
+  // ANGLE, kills this file, and takes the whole UI with it.
+  float sp = texel * soft;
   float sh = 0.0;
-  for (int x = -2; x <= 2; x++) for (int y = -2; y <= 2; y++) {
-    float d = texture2D(map, uv + vec2(float(x), float(y)) * sp).r;
-    sh += (z - bias > d) ? 0.0 : 1.0;
-  }
-  return sh / 25.0;
+  sh += (z - bias > texture2D(map, uv).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.326, -0.406) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.840, -0.074) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.696,  0.457) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.203,  0.621) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.962, -0.195) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.473, -0.480) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.519,  0.767) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.185, -0.893) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.507,  0.064) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.896,  0.412) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.322, -0.933) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.792, -0.598) * sp).r) ? 0.0 : 1.0;
+  return sh / 13.0;
 }
 uniform float uShadowSoft;   // 1 by day; rises after dark so light through a hole diffuses
 // cascaded directional shadow: the tight NEAR cascade carries the sharp shadow under and
@@ -276,7 +298,20 @@ uniform float uMatDebug;      // 1 = flat-colour by material, for identifying ge
 uniform vec3 uMatDebugCol;
 void main(){
   vec4 tex = texture2D(uTex, vUV);
-  if (uAlphaTest > 0.5 && tex.a < uAlphaRef) discard;
+  /* DISTANCE-COMPENSATED ALPHA TEST. Mipmap averaging dilutes the alpha channel, so a
+   * leaf texture that is half-transparent up close reads mostly-transparent in its small
+   * mips — distant foliage falls below the threshold, whole trees thin to nothing at
+   * range and "load in" as the camera approaches (the keeper's magic-trees report, and a
+   * classic cutout-renderer artifact that predates every optimization made tonight; real
+   * engines compensate exactly like this). The threshold slides toward near-zero across
+   * 80..600 m so diluted mips keep passing: near geometry is untouched, the far forest
+   * stays present. Costs some distant fill — presence at all distances is the keeper's
+   * standing law and outranks it. */
+  if (uAlphaTest > 0.5) {
+    float dEye = length(uEye - vWorld);
+    float aRef = uAlphaRef * (1.0 - 0.92 * smoothstep(80.0, 600.0, dEye));
+    if (tex.a < aRef) discard;
+  }
   /* MATERIAL DEBUG. Four attempts at centrifuge's dome panels were spent inferring which
    * material a shape belonged to from an offline profile. This asks the renderer instead:
    * every material gets its own flat colour, so one screenshot names the geometry. */

@@ -36,6 +36,11 @@ if (!tdir) { console.log("SKIP: no Assetto Corsa install"); process.exit(0); }
  * it); chunk count pins the chunker's behaviour at the default 200 m cell; the material
  * list pins the drop policies. */
 const GOLDEN = {
+  /* 2026-07-26: chunk counts briefly moved to 59/195 for the monolith split, then moved
+   * BACK when the split was disabled pending investigation (live fidelity regression on
+   * sakura). If they move again it must be on purpose:
+   * tris changing means geometry was dropped or duplicated; chunks changing means only
+   * the partitioning did. */
   ohyeah2389_t180testtrack: {
     chunks: 43, tris: 937148,
     materials: ["PlaceholderCanopy", "PlaceholderDark", "PlaceholderLight",

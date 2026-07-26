@@ -552,8 +552,27 @@ function extractScene(arrayBuffer, opts) {
       bg.aabb = [x0, y0, z0, x1, y1, z1];
       bg.centre = [(x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5];
       bg.radius = 0.5 * Math.hypot(x1 - x0, y1 - y0, z1 - z0);
-      triTotal += bg.triCount;
-      groups.push(bg);
+      /* MONOLITH SPLIT. chunkOf buckets by mesh CENTRE, so a single kilometre-scale mesh
+       * lands whole in one cell and becomes an unsplittable chunk — sakura's sktrack.kn5
+       * carries Track + Underside as 15 such meshes (855–2,435 m extents, 67k–113k tris
+       * each, 1.18M tris = 37.6% of the track), and measured over 24 racing-line cameras
+       * the frustum rejected 76% of chunks but only ~60% of triangles because these
+       * intersect nearly every view. Splitting at the TRIANGLE level, post-bake (the arrays
+       * are already world-space — centroid-bucket the triangles, compact the vertices per
+       * cell), turns the floor into ordinary cullable chunks. Guarded by BOTH thresholds so
+       * ordinary geometry never pays the copy: a big-but-local grandstand stays whole, and
+       * car models (model-space, metres of extent) can never qualify. */
+      const wide = Math.max(x1 - x0, z1 - z0);
+      /* DISABLED 2026-07-26 06:10 pending investigation — live on sakura the split bought
+       * a few fps and cost visible fidelity: the keeper reported tree pop-in and a replay
+       * stutter that was not there before. Bounds are exact and triangle totals are
+       * byte-identical, so the mechanism is not obviously wrong; suspects are per-frame
+       * call count at 935 chunks, an interaction with the far-bake cull, or a confound
+       * with the MSAA setting. Machinery and thresholds stay for a session that can
+       * measure properly. Infinity is the off switch. */
+      const MONOLITH_SPLIT_TRIS = Infinity;
+      const parts2 = (bg.triCount > MONOLITH_SPLIT_TRIS && wide > 350) ? splitBakedGroup(bg, 250) : [bg];
+      for (const p2 of parts2) { triTotal += p2.triCount; groups.push(p2); }
     }
   }
 
@@ -721,6 +740,64 @@ function parseDriverPose(arrayBuffer) {
   }
   walk(IDENT);
   return { world, local };
+}
+
+/* Split one baked group's triangles into XZ cells, compacting vertices per cell.
+ *
+ * Operates on bakeGroup OUTPUT (world-space typed arrays), not on the kn5 byte stream —
+ * that keeps it ~60 lines of plain array work instead of surgery on the mesh walk, and
+ * makes it exactly testable: triangle count is preserved, every output vertex is a copy of
+ * an input vertex, and each cell's bounds are computed from its actual vertices (tighter
+ * than the parent's, which is the point). Returns [bg] untouched when everything lands in
+ * one cell, so callers can apply it unconditionally behind their thresholds. */
+function splitBakedGroup(bg, cellM) {
+  const { pos, nrm, uv, idx } = bg;
+  const buckets = new Map();
+  for (let t = 0; t < idx.length; t += 3) {
+    const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+    const cx = (pos[a] + pos[b] + pos[c]) / 3;
+    const cz = (pos[a + 2] + pos[b + 2] + pos[c + 2]) / 3;
+    const key = Math.floor(cx / cellM) + "," + Math.floor(cz / cellM);
+    let arr = buckets.get(key);
+    if (!arr) { arr = []; buckets.set(key, arr); }
+    arr.push(t);
+  }
+  if (buckets.size < 2) return [bg];
+  const out = [];
+  for (const tris of buckets.values()) {
+    const remap = new Map();
+    const nidx = new Uint32Array(tris.length * 3);
+    let vCount = 0;
+    for (let i = 0; i < tris.length; i++) {
+      for (let k = 0; k < 3; k++) {
+        const ov = idx[tris[i] + k];
+        let nv = remap.get(ov);
+        if (nv === undefined) { nv = vCount++; remap.set(ov, nv); }
+        nidx[i * 3 + k] = nv;
+      }
+    }
+    const npos = new Float32Array(vCount * 3);
+    const nnrm = new Float32Array(vCount * 3);
+    const nuv = new Float32Array(vCount * 2);
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (const [ov, nv] of remap) {
+      const o3 = ov * 3, n3 = nv * 3;
+      const px = pos[o3], py = pos[o3 + 1], pz = pos[o3 + 2];
+      npos[n3] = px; npos[n3 + 1] = py; npos[n3 + 2] = pz;
+      nnrm[n3] = nrm[o3]; nnrm[n3 + 1] = nrm[o3 + 1]; nnrm[n3 + 2] = nrm[o3 + 2];
+      nuv[nv * 2] = uv[ov * 2]; nuv[nv * 2 + 1] = uv[ov * 2 + 1];
+      if (px < x0) x0 = px; if (py < y0) y0 = py; if (pz < z0) z0 = pz;
+      if (px > x1) x1 = px; if (py > y1) y1 = py; if (pz > z1) z1 = pz;
+    }
+    out.push({
+      materialId: bg.materialId, pos: npos, nrm: nnrm, uv: nuv, idx: nidx,
+      triCount: tris.length, meshCount: bg.meshCount,
+      aabb: [x0, y0, z0, x1, y1, z1],
+      centre: [(x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5],
+      radius: 0.5 * Math.hypot(x1 - x0, y1 - y0, z1 - z0),
+    });
+  }
+  return out;
 }
 
 /* Is this material foliage — canopy, not timber?
