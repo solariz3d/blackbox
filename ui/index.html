@@ -6049,16 +6049,39 @@ let lastTs = 0;
  * When it is missing this degrades to nothing at all rather than to a wrong number. */
 const GT = (function () {
   const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
-  if (!ext) return { ok: false, begin() {}, end() {}, poll() {}, text: () => "" };
+  if (!ext) return { ok: false, begin() {}, end() {}, poll() {}, text: () => "",
+                     tick() {}, frame: () => 0, gpuForFrame: () => null };
   const inflight = [], ms = new Map();
   let active = null;
+  /* RAW totals, per frame, unsmoothed — for spike attribution.
+   *
+   * The `ms` map above is an EMA, which is right for a steady HUD reading and useless for
+   * finding a stall: a single 12 ms frame in a 2 ms stream moves a 0.1-weighted average by
+   * one millisecond and vanishes. A spike has to be read raw.
+   *
+   * Keyed by FRAME NUMBER because these results arrive late. A timer query is asynchronous
+   * — the answer for frame N typically resolves several frames afterwards — so reading
+   * "the GPU time" at the moment a spike is noticed reports some earlier frame's work and
+   * attributes it to the wrong one. Each query carries the frame it was begun on, and the
+   * spike log fills its GPU column in when the answer actually arrives. */
+  const rawByFrame = new Map();
+  let frameNo = 0;
   return {
     ok: true,
+    tick() {
+      frameNo++;
+      // keep a short tail; a spike is inspected within a second or two of happening
+      if (rawByFrame.size > 600) {
+        for (const k of rawByFrame.keys()) { if (k < frameNo - 600) rawByFrame.delete(k); }
+      }
+    },
+    frame() { return frameNo; },
+    gpuForFrame(f) { const v = rawByFrame.get(f); return v === undefined ? null : v; },
     begin(name) {
       if (active) return;                       // one at a time, per the extension
       const q = gl.createQuery();
       gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
-      active = { name, q };
+      active = { name, q, f: frameNo };
     },
     end() {
       if (!active) return;
@@ -6074,6 +6097,7 @@ const GT = (function () {
           const v = gl.getQueryParameter(f.q, gl.QUERY_RESULT) / 1e6;   // ns → ms
           const p = ms.get(f.name);
           ms.set(f.name, p ? p + (v - p) * 0.1 : v);
+          rawByFrame.set(f.f, (rawByFrame.get(f.f) || 0) + v);
         }
         gl.deleteQuery(f.q); inflight.shift();
       }
@@ -6148,7 +6172,93 @@ async function refreshDisplayInfo() {
 }
 if (TAURI) { refreshDisplayInfo(); setInterval(refreshDisplayInfo, 2000); }
 let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on shift-frame crossings
+
+/* SPIKE ATTRIBUTION.
+ *
+ * A worst-frame number tells you a stall happened and nothing about what caused it, which
+ * is the position every guess starts from. On a 360 Hz panel the budget is 2.78 ms, so a
+ * 14 ms frame is not slow rendering — it is five frames' worth of something, and the useful
+ * question is WHICH something.
+ *
+ * The decisive split is CPU versus GPU, because they have opposite causes and the fix for
+ * one does nothing for the other:
+ *
+ *   GPU time also spiked  -> the graphics card genuinely did more work that frame. A
+ *                            shadow re-bake, a sudden pile of geometry, an upload.
+ *   GPU time stayed flat  -> nothing was rendered that wasn't rendered every other frame,
+ *                            and the CPU was blocked. Garbage collection, a synchronous
+ *                            readback, a texture decode, the driver, the compositor.
+ *
+ * Without that split, "it stutters" sends you optimising draw calls when the answer is an
+ * allocation, and there is no way to tell from the outside. So every spike records both,
+ * plus the per-frame counters that name the usual periodic suspects.
+ *
+ * Kept to the last 12, printed on demand rather than streamed: a spike log that itself
+ * allocates every frame would be the very thing it is hunting. */
+const SPIKE_FACTOR = 1.8;                 // over this multiple of budget = worth recording
+const spikeLog = [];
+let cpuMsPrev = 0;                        // wall time inside our own frame body, last frame
+let bakesPrev = 0;                        // so a spike can report whether a bake ran THAT frame
+function recordSpike(ts, dtMs) {
+  spikeLog.push({
+    at: +(ts / 1000).toFixed(1),
+    frameMs: +dtMs.toFixed(2),
+    // our own JS body. If this is ~0 and the frame was 14 ms, the stall was NOT our code
+    // running long — it was our code being suspended, or the GPU, or the compositor.
+    cpuMs: +cpuMsPrev.toFixed(2),
+    gpuMs: null,                          // filled in when the timer query resolves
+    _frame: GT.ok ? GT.frame() - 1 : -1,   // the frame this spike measured
+    bakedThisFrame: cullStat.bakes !== bakesPrev,
+    chunks: cullStat.track + "+" + cullStat.shadow,
+    trees: cullStat.trees,
+    smoke: smoke.pool.length,
+    air: AIR.cells.size,
+    cars: 1 + (typeof ghostDraws !== "undefined" ? ghostDraws.length : 0),
+    // Chrome-only. When present, a jump here across a flat-GPU spike is the signature of a
+    // collection rather than a guess at one; when absent it is null, not zero.
+    heapMB: (performance.memory ? +(performance.memory.usedJSHeapSize / 1048576).toFixed(1) : null),
+  });
+  bakesPrev = cullStat.bakes;
+  if (spikeLog.length > 12) spikeLog.shift();
+}
+/**
+ * Print the spike log. Call `spikes()` in the devtools console (Ctrl+Shift+I).
+ *
+ * The verdict column is the point of the whole instrument. GPU time and wall time spiking
+ * TOGETHER means the card genuinely did more work — a re-bake, an upload, a pile of
+ * geometry. Wall time spiking while GPU time stays flat means nothing extra was rendered
+ * and the CPU was blocked: garbage collection, a synchronous readback, a shader compile, a
+ * texture decode, the driver, the compositor. The two have no fixes in common, and without
+ * this split there is no way to tell them apart from the outside.
+ */
+window.spikes = function () {
+  GT.poll();                              // drain anything that resolved since the last frame
+  for (const s of spikeLog) {
+    if (s.gpuMs === null && s._frame >= 0) {
+      const g = GT.gpuForFrame(s._frame);
+      if (g !== null) s.gpuMs = +g.toFixed(2);
+    }
+  }
+  if (!spikeLog.length) { console.log("no spikes recorded yet — nothing exceeded the budget"); return; }
+  const bud = frameBudgetMs();
+  console.log(`panel ${displayHz || "?"} Hz · budget ${bud ? bud.toFixed(2) : "?"} ms · ` +
+              `recording frames over ${bud ? (SPIKE_FACTOR * bud).toFixed(2) : "?"} ms`);
+  const gpuTypical = spikeLog.map(s => s.gpuMs).filter(v => v !== null).sort((a, b) => a - b);
+  const med = gpuTypical.length ? gpuTypical[Math.floor(gpuTypical.length / 2)] : null;
+  console.table(spikeLog.map(s => ({
+    at: s.at, frameMs: s.frameMs, cpuMs: s.cpuMs, gpuMs: s.gpuMs,
+    baked: s.bakedThisFrame, chunks: s.chunks, trees: s.trees,
+    smoke: s.smoke, air: s.air, cars: s.cars, heapMB: s.heapMB,
+    verdict: s.gpuMs === null ? "gpu timing unavailable"
+           : (s.gpuMs > s.frameMs * 0.5 ? "GPU did the work"
+           : (s.cpuMs > s.frameMs * 0.5 ? "our JS ran long" : "CPU STALLED (not our code)")),
+  })));
+  if (med !== null) console.log(`median GPU across these spikes: ${med.toFixed(2)} ms — ` +
+    `compare against frameMs to see whether the card or the CPU is responsible`);
+};
+
 function loop(ts) {
+  const _cpu0 = performance.now();
   _treeTime = ts * 0.001;   // one sway clock per frame — lit and depth must agree
   if (fpsPrev) {
     const dtMs = ts - fpsPrev;
@@ -6157,9 +6267,15 @@ function loop(ts) {
     if (dtMs > 0.05) {
       frameMsEMA = frameMsEMA ? frameMsEMA + (dtMs - frameMsEMA) * 0.08 : dtMs;
       if (dtMs > frameMsWorst || ts - frameWorstAt > 1000) { frameMsWorst = dtMs; frameWorstAt = ts; }
+      /* Against the BUDGET when the panel is known, and against our own recent average
+       * otherwise — a fixed millisecond threshold would be meaningless across a 360 Hz and
+       * a 60 Hz display, which is exactly the pair of monitors this is being watched on. */
+      const bud = frameBudgetMs() || (frameMsEMA * 1.0);
+      if (bud > 0 && dtMs > bud * SPIKE_FACTOR) recordSpike(ts, dtMs);
     }
   }
   fpsPrev = ts;
+  GT.tick();   // advance the frame counter BEFORE any query is begun, so each is tagged right
   GT.poll();   // drain whatever the GPU finished timing a few frames ago
   if (ex) {
     const [ra, rb] = frameRange();
@@ -6255,10 +6371,19 @@ function loop(ts) {
     const _hud = displayHz
       ? ` · panel ${displayHz}Hz ${_bud.toFixed(2)}ms budget ${frameMsEMA ? (100 * frameMsEMA / _bud).toFixed(0) : "0"}%`
       : (TAURI ? " · panel —" : "");
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)})${_hud} · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
+    // spike count is on the HUD so a stutter is visible as a NUMBER while it happens,
+    // without needing the console open — `spikes()` there gives the attribution
+    const _spk = spikeLog.length ? ` · spikes ${spikeLog.length}` : "";
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)})${_hud}${_spk} · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
     drawScrub();
   }
   render();
+  /* Wall time spent INSIDE this function. Note what it does and does not include: our own
+   * JS, plus every GL call we issue — but a GL call only queues work, so this is not the
+   * GPU's time. If a 14 ms frame reports 1 ms here, our code did not run long; it was
+   * suspended, or the card was busy, or the compositor held the frame. That distinction is
+   * the first fork in diagnosing any stutter and it cannot be guessed at. */
+  cpuMsPrev = performance.now() - _cpu0;
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
