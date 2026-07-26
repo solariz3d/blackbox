@@ -459,12 +459,80 @@ function extractScene(arrayBuffer, opts) {
       io += ni;
       vertBase += nv;
     }
-    return { materialId, pos, nrm, uv, idx, triCount: g.ni / 3 };
+    // meshCount is what decides whether this group can be spatially chunked: a material
+    // built from a thousand small meshes splits cleanly, one built from a single circuit-
+    // spanning mesh cannot be split at all without cutting triangles.
+    return { materialId, pos, nrm, uv, idx, triCount: g.ni / 3, meshCount: g.meshes.length };
   }
 
   const groups = [];
   let triTotal = 0;
-  for (const [materialId, g] of byMat) { const bg = bakeGroup(materialId, g); triTotal += bg.triCount; groups.push(bg); }
+  /* SPATIAL CHUNKING — the thing that makes culling possible at all.
+   *
+   * Grouping by material alone (which this did) buys batching and destroys locality: one
+   * group spans the whole circuit, so it can be neither frustum-culled nor LOD'd, and the
+   * renderer had no choice but to draw 100% of the track every frame, three times over.
+   * Splitting each material's meshes into world-space cells gives every group its own box.
+   *
+   * The MESH is the finest split available without cutting triangles, so a material built
+   * from one circuit-spanning mesh stays indivisible — measured at 0.1% of the T-180 test
+   * track, so the limit is real but not binding.
+   *
+   * Bounds are computed in a positions-only pre-pass rather than during the bake, because
+   * the split has to be decided BEFORE the meshes are merged into one buffer. That is one
+   * extra linear read of vertex positions at load and nothing at all per frame. */
+  const CHUNK_CELL = (opts && opts.chunkCell) || 200;   // metres
+
+  function meshAABB(mesh) {
+    const m = mesh.m;
+    let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+    for (let v = 0; v < mesh.nv; v++) {
+      const b = mesh.vStart + v * 44;
+      const x = dv.getFloat32(b, true), y = dv.getFloat32(b + 4, true), z = dv.getFloat32(b + 8, true);
+      const wx = x * m[0] + y * m[4] + z * m[8] + m[12];
+      const wy = x * m[1] + y * m[5] + z * m[9] + m[13];
+      const wz = x * m[2] + y * m[6] + z * m[10] + m[14];
+      if (wx < x0) x0 = wx; if (wy < y0) y0 = wy; if (wz < z0) z0 = wz;
+      if (wx > x1) x1 = wx; if (wy > y1) y1 = wy; if (wz > z1) z1 = wz;
+    }
+    return [x0, y0, z0, x1, y1, z1];
+  }
+
+  // Cells are XZ only: a circuit is wide and flat relative to its height, so splitting
+  // vertically would make many chunks that all pass the same frustum test.
+  function chunkOf(meshes) {
+    const buckets = new Map();
+    for (const mesh of meshes) {
+      const b = mesh.aabb || (mesh.aabb = meshAABB(mesh));
+      const cx = (b[0] + b[3]) * 0.5, cz = (b[2] + b[5]) * 0.5;
+      const key = Math.floor(cx / CHUNK_CELL) + "," + Math.floor(cz / CHUNK_CELL);
+      let arr = buckets.get(key);
+      if (!arr) { arr = []; buckets.set(key, arr); }
+      arr.push(mesh);
+    }
+    return [...buckets.values()];
+  }
+
+  for (const [materialId, g] of byMat) {
+    for (const part of chunkOf(g.meshes)) {
+      let nv = 0, ni = 0;
+      let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+      for (const mesh of part) {
+        nv += mesh.nv; ni += mesh.ni;
+        const b = mesh.aabb;
+        if (b[0] < x0) x0 = b[0]; if (b[1] < y0) y0 = b[1]; if (b[2] < z0) z0 = b[2];
+        if (b[3] > x1) x1 = b[3]; if (b[4] > y1) y1 = b[4]; if (b[5] > z1) z1 = b[5];
+      }
+      const bg = bakeGroup(materialId, { nv, ni, meshes: part });
+      // centre + radius: a sphere test is one dot product per plane and never needs the
+      // eight-corner expansion a box does
+      bg.aabb = [x0, y0, z0, x1, y1, z1];
+      bg.centre = [(x0 + x1) * 0.5, (y0 + y1) * 0.5, (z0 + z1) * 0.5];
+      bg.radius = 0.5 * Math.hypot(x1 - x0, y1 - y0, z1 - z0);
+      triTotal += bg.triCount;
+      groups.push(bg);
+    }
+  }
 
   // steerable wheels: per corner, split into the rolling tyre (rollGroups) and the
   // static exo cage/hub (staticGroups) — both steer, only rollGroups spins on the axle.
@@ -632,5 +700,26 @@ function parseDriverPose(arrayBuffer) {
   return { world, local };
 }
 
-if (typeof module !== "undefined") module.exports = { extractRoadMesh, extractScene, parseDriver, parseKsanim, parseDriverPose };
+/* Is this material foliage — canopy, not timber?
+ *
+ * The distinction that matters is LEAVES vs TRUNKS, not "anything tree-shaped". A trunk is
+ * solid, low-poly and casts an honest shadow that costs nothing; a canopy is hundreds of
+ * thousands of alpha-tested triangles whose shadow, in a cascade sized for a whole circuit,
+ * arrives as noise. sakura_speedway: 831k foliage triangles of 3.13M, against 76k of trunk
+ * — so dropping canopies keeps the tree grounded in its own shadow and loses the mess.
+ * `trunk` therefore matches nothing here, deliberately.
+ *
+ * SHADER FIRST, NAME SECOND, and both are needed. `ksTree` is the author's own declaration
+ * and is unambiguous — 463k triangles of sakura's. But its single heaviest foliage material
+ * is "Pink leaves" at 322k triangles on a plain `ksPerPixel`, so a shader-only rule would
+ * miss the biggest thing on the track. A name-only rule would be guessing at spelling.
+ */
+const FOLIAGE_SHADER = /^(ksTree|ksGrass|ksFoliage)/i;
+const FOLIAGE_NAME = /tree|leaf|leaves|foliage|bush|shrub|branch|sakura|cherry|palm|hedge|plant/i;
+function isFoliageMaterial(mat) {
+  if (!mat) return false;
+  return FOLIAGE_SHADER.test(mat.shader || "") || FOLIAGE_NAME.test(mat.name || "");
+}
+
+if (typeof module !== "undefined") module.exports = { extractRoadMesh, extractScene, parseDriver, parseKsanim, parseDriverPose, isFoliageMaterial };
 if (typeof window !== "undefined") window.KN5 = { extractRoadMesh, extractScene, parseDriver, parseKsanim, parseDriverPose };

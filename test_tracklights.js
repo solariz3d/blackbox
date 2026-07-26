@@ -145,6 +145,35 @@ console.log("\nculling: a slot budget, not a distance cull");
   ok(T.cullLights([], [0,0,0], 4).length === 0, "no lights is not a crash");
 }
 
+console.log("\nfrustum cull: exact, unlike the budget");
+{
+  const M = require("./ui/mathutil.js");
+  const mk = (x, z, range) => ({ pos: [x, 0, z], color: [1,1,1], intensity: 1, range,
+                                 dir: [0,-1,0], spot: 360, sharpness: 0.3, night: true });
+  // camera at the origin looking down -Z, the GL convention
+  const vp = M.mMul(M.mPerspective(Math.PI / 3, 1.6, 0.1, 5000),
+                    M.mLookAt([0, 0, 0], [0, 0, -1], [0, 1, 0]));
+  const planes = M.frustumPlanes(vp);
+
+  ok(planes.length === 6, "six planes");
+  ok(M.sphereInFrustum(planes, [0, 0, -100], 1), "a point ahead of the camera is inside");
+  ok(!M.sphereInFrustum(planes, [0, 0, 100], 1), "a point behind the camera is outside");
+
+  ok(T.cullToFrustum([mk(0, -100, 50)], planes).length === 1, "a lamp in view is kept");
+  ok(T.cullToFrustum([mk(0, 900, 50)], planes).length === 0, "a lamp behind the camera is dropped");
+
+  /* THE CASE THE WHOLE THING TURNS ON. This lamp's own position is behind the camera plane,
+   * but its 200 m range reaches forward into the view, so ground the camera can see IS lit
+   * by it. Testing the point instead of the sphere would drop it and put a dark bite in the
+   * road — the same class of visible error as the budget popping, arrived at from the other
+   * side. */
+  ok(T.cullToFrustum([mk(0, 60, 200)], planes).length === 1,
+     "a lamp behind the camera whose RANGE reaches into view is kept");
+
+  ok(T.cullToFrustum([mk(0, 900, 50)], null).length === 1, "no planes means no opinion");
+  ok(T.cullToFrustum([], planes).length === 0, "no lights is not a crash");
+}
+
 console.log("\nagainst the real install");
 {
   let tdir = null;

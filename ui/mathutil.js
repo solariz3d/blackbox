@@ -113,6 +113,40 @@ function ik2bone(S, Tg, L1, L2, pole) {
   return { E: v3add(v3add(S, v3sc(dir, a)), v3sc(pp, h)), W: Tg };
 }
 
+/* ---- frustum ---- */
+
+/* The six clip planes of a view-projection, as [a,b,c,d] with a*x+b*y+c*z+d >= 0 INSIDE.
+ * Gribb-Hartmann: each plane is a sum or difference of the matrix's w row with one of its
+ * x/y/z rows. Our matrices are column-major with column vectors (`mMul` composes for
+ * clip = M * world), so row r is m[r], m[4+r], m[8+r], m[12+r] — the strided read, not a
+ * contiguous four. Getting that backwards yields planes that look plausible and cull the
+ * wrong half of the world.
+ *
+ * Normalised, so the dot product is a signed distance in metres and a sphere test is just
+ * `dist < -radius`. */
+function frustumPlanes(m) {
+  const row = (r) => [m[r], m[4 + r], m[8 + r], m[12 + r]];
+  const [x, y, z, w] = [row(0), row(1), row(2), row(3)];
+  const combine = (s, a, b) => {
+    const p = [a[0] + s * b[0], a[1] + s * b[1], a[2] + s * b[2], a[3] + s * b[3]];
+    const len = Math.hypot(p[0], p[1], p[2]) || 1;
+    return [p[0] / len, p[1] / len, p[2] / len, p[3] / len];
+  };
+  return [
+    combine(1, w, x), combine(-1, w, x),   // left, right
+    combine(1, w, y), combine(-1, w, y),   // bottom, top
+    combine(1, w, z), combine(-1, w, z),   // near, far
+  ];
+}
+
+/** Does a world-space sphere touch the frustum? Conservative: false only when fully outside. */
+function sphereInFrustum(planes, c, r) {
+  for (const p of planes) {
+    if (p[0] * c[0] + p[1] * c[1] + p[2] * c[2] + p[3] < -r) return false;
+  }
+  return true;
+}
+
 /* ---- misc ---- */
 function easeK(rate, dt) { return 1 - Math.exp(-rate * Math.max(0, Math.min(0.1, dt))); }
 
@@ -120,4 +154,5 @@ if (typeof module !== "undefined") module.exports = {
   IDENT4, mPerspective, mLookAt, mMul, rotP, scaleMat, mOrtho,
   v3sub, v3add, v3sc, v3dot, v3len, v3nrm, v3cross, mXfPt, mRot, mT,
   rvMul, rvRotAbout, rvFromTo, rvInv, rvTRS, ik2bone, easeK,
+  frustumPlanes, sphereInFrustum,
 };

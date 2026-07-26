@@ -346,6 +346,8 @@
   <button id="btnLine" class="on">line</button>
   <span id="timeCtl" title="Time of day" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;opacity:.85"><span id="timeIcon">🌙</span><input id="timeSlider" type="range" min="0" max="1439" value="60" style="width:92px;vertical-align:middle"><span id="timeLabel" style="min-width:38px">01:00</span></span>
   <button id="btnShadow" class="on">shadows</button>
+  <button id="btnLamps" class="on" title="the track's own lamps (L) — off gives an unlit night run, and is also how you see what the lamp pass costs">lamps</button>
+  <button id="btnTrees" title="foliage cost — click to cycle: full · no shadows · unlit. Canopies are a quarter of sakura's geometry and their shadows alias into noise; trunks keep casting either way.">trees · full</button>
   <button id="btnTyres" class="on" title="skid marks + smoke — click to cycle: lap · keep · off">tyres · lap</button>
   <span id="volCtl" title="Volume" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85"><span id="volIcon" title="mute / unmute" style="cursor:pointer">🔊</span><input id="volSlider" type="range" min="0" max="100" value="100" style="width:78px;vertical-align:middle"></span>
   <button id="btnLap" class="on">lap only</button>
@@ -1073,20 +1075,36 @@ function drawTrackLampGlare(mvp, nightF, th) {
      * thirty times the declared intensity — and the measurement was sitting in the kn5. */
     const world = Math.max(0.5, Math.min(8, L.radius || 1));
     const px = Math.max(5, Math.min(70, world * Hpx / (d * th)));
-    /* Pull the sprite toward the eye. Its position is the lamp mesh's bounding-sphere
-     * CENTRE, so at equal depth the fixture's own front face wins the depth test and the
-     * lamp hides inside its own housing.
+    /* WHERE THE BULB ACTUALLY IS. The lamp's position is its mesh's bounding-sphere CENTRE,
+     * which is inside the housing, so a sprite drawn there loses the depth test to the
+     * fixture's own front face and the lamp swallows its own glare.
      *
-     * This was a flat half metre, which works near the camera and cannot work far from it:
-     * depth precision falls off with the square of distance, so half a metre is several
-     * depth units at 100 m and less than one at 3 km — the sprite ties with its own housing
-     * and loses. Scaled with distance it stays resolvable everywhere, and stays a fraction
-     * of a percent of the distance, so it cannot pull a lamp through a wall standing in
-     * front of it. Also never less than the fixture's own radius, or a wide lamp still
-     * swallows its own glare. */
-    const k = Math.max(0.5, d * 0.004, (L.radius || 0) * 1.1) / d;
-    v.push(L.pos[0] - dx * k, L.pos[1] - dy * k, L.pos[2] - dz * k,
-           L.color[0], L.color[1], L.color[2], px, b);
+     * This used to be fixed by pulling the sprite toward the EYE. That works from below and
+     * is precisely wrong from above: it drags the bulb out through the top of the housing,
+     * so a downward-aimed lamp showed a bright dot sitting on its own lid.
+     *
+     * A real bulb sits under its shade, so the offset follows the lamp's OWN AIM. Slightly
+     * more than the fixture radius puts it just clear of the housing's lower face, where the
+     * light physically leaves. Seen from below it is in front of the shade and visible; seen
+     * from above the shade is between it and the eye and the depth buffer hides it, which is
+     * what a shade is for. No camera-dependent term at all, so the sprite no longer moves
+     * when you move.
+     *
+     * A lamp with no usable aim (a point light, or DIRECTION = NORMAL whose true aim we
+     * cannot know) has no "under" to sit beneath, so it keeps the eye-ward nudge — correct
+     * for an unshielded bulb, which is what those are. */
+    let sx, sy, sz;
+    if (L.spotUsable) {
+      const dl = Math.hypot(L.dir[0], L.dir[1], L.dir[2]) || 1;
+      const out = Math.max(0.35, (L.radius || 0) * 1.15);
+      sx = L.pos[0] + L.dir[0] / dl * out;
+      sy = L.pos[1] + L.dir[1] / dl * out;
+      sz = L.pos[2] + L.dir[2] / dl * out;
+    } else {
+      const k = Math.max(0.5, d * 0.004, (L.radius || 0) * 1.1) / d;
+      sx = L.pos[0] - dx * k; sy = L.pos[1] - dy * k; sz = L.pos[2] - dz * k;
+    }
+    v.push(sx, sy, sz, L.color[0], L.color[1], L.color[2], px, b);
   }
   if (!v.length) return;
   gl.useProgram(progLamp);
@@ -2002,10 +2020,29 @@ let CAR_LIGHTS_ON = 1;
 let CAR_SHADOWS = 1;
 /* Track lights — the lamps the track author placed, from CSP's LIGHT_SERIES config.
  * A track can declare hundreds (nordic 207, thunderhead 156) and the shader carries
- * MAX_TLIGHTS slots, so the nearest few are chosen each frame. 12 is enough that the
- * handful actually lighting the car and the road around it are always present, and the
- * ones beyond are contributing less than the eye can separate anyway. */
+ * MAX_TLIGHTS slots, so the nearest are chosen each frame.
+ *
+ * The old note here read "12 is enough that the handful lighting the car are always
+ * present" — true only for a camera sitting on the car. From any wider view the budget is
+ * the number of a circuit's pools that can be lit AT ONCE, and below the lamp count the
+ * chosen set changes with the camera: lamps come on as you approach and go off behind you.
+ * That is the whole of the "not all lights render, and going to the dark ones turns others
+ * off" symptom. See the sizing note in glcore.js. */
 let TRACK_LIGHTS_ON = 1;
+/* Tree policy — the CSP change the keeper already makes by hand in Assetto, where sakura is
+ * unplayable on a modest PC and stripping tree lighting and shadows is the fix.
+ *
+ *   0 full · 1 no shadows · 2 unlit
+ *
+ * Measured on sakura_speedway (test_trackcost.js): 831,096 foliage triangles of 3,132,796
+ * — 26.5% of the track — against 76k of trunk. At mode 1 those leave the near depth cascade
+ * (drawn EVERY frame), the far cascade (re-baked on every movement of the time slider) and
+ * the headlight-beam pass. At mode 2 they also stop receiving shadows and lamps.
+ *
+ * This is not only a speed knob. A leaf-sized caster in a cascade sized for a whole circuit
+ * aliases into noise, so the shadows it buys are bad shadows — which is why the track looks
+ * wrong as well as running badly. Trunks keep casting, so the trees stay grounded. */
+let TREE_MODE = 0;
 /* CSP's COLOR intensities are photometric-ish and span a huge range — Miandros declares
  * 28.76 on its stadium floodlights, sakura 10 to 20, the T-180 test track 3. Fed straight
  * into a forward renderer with a range-normalised falloff, 28 is a white blob rather than a
@@ -2032,8 +2069,13 @@ let TRACK_LIGHT_GAIN = 0.5;
  * be set by eye, and both are the first thing to reach for if a track looks overcooked. */
 let TRACK_EMISSIVE_GAIN = 0.6;
 let TRACK_SPEC_GAIN = 0.5;
-const MAX_TLIGHTS = 24;   // must match MAXTLIGHTS in glcore.js — see the note there
+const MAX_TLIGHTS = 64;   // must match MAXTLIGHTS in glcore.js — see the sizing note there
 let trackLights = [];          // every resolved lamp, world space
+let lampsBaked = false;        // night lamps live in the vertex buffers, not the light loop
+/* What the last setTrackLights / setShadow actually put on the GPU. The lit loop overrides
+ * both per group for unlit foliage and must restore the real values for the next group,
+ * which means something has to remember them. */
+let _tlN = 0, _shadowBase = 0;
 const _tlPos = new Float32Array(MAX_TLIGHTS * 3);
 const _tlCol = new Float32Array(MAX_TLIGHTS * 3);
 const _tlDir = new Float32Array(MAX_TLIGHTS * 3);
@@ -2321,11 +2363,18 @@ function lightingFor(t) {
  * costs nothing: they scale to zero, get skipped by the intensity test, and the slots go
  * to lamps that are actually on. `eye` is the camera, not the car — you light what is on
  * screen, and a chase cam can be a long way from the car it follows. */
-function setTrackLights(eye, nightF) {
+function setTrackLights(eye, nightF, vp, skipNight) {
   let n = 0;
   if (TRACK_LIGHTS_ON && trackLights.length && window.TrackLights) {
-    const near = TrackLights.cullLights(trackLights, eye, MAX_TLIGHTS);
+    /* Frustum first, budget second, and the order is the point. The frustum pass is EXACT —
+     * a lamp whose range-sphere misses the view cannot light a visible fragment — so every
+     * lamp it removes frees a slot for one that can actually be seen. Doing it the other way
+     * round would spend slots on lamps behind the camera. `vp` is optional: without it the
+     * behaviour is exactly what it was before. */
+    const visible = vp ? TrackLights.cullToFrustum(trackLights, frustumPlanes(vp)) : trackLights;
+    const near = TrackLights.cullLights(visible, eye, MAX_TLIGHTS);
     for (const L of near) {
+      if (skipNight && L.night) continue;   // already in the vertex bake
       const gate = L.night ? nightF : 1;
       // CLAMP, then gain. A single gain cannot serve a library whose declared intensities
       // span 3 to 28.76: tuned so Miandros's floodlights do not blow out, 0.16 left every
@@ -2359,6 +2408,9 @@ function setTrackLights(eye, nightF) {
   gl.uniform3fv(tLoc.tLightDir, _tlDir);
   gl.uniform2fv(tLoc.tLightArg, _tlArg);
   gl.uniform1i(tLoc.tLightN, n);
+  // remembered so a per-group override (unlit foliage) can switch lamps off for one draw
+  // and put the real count back for the next, without recomputing the upload
+  _tlN = n;
 }
 
 function setSceneLighting(L) {   // push the lit-scene program's light + atmosphere uniforms
@@ -2443,6 +2495,12 @@ const SMOKE_MERGE_LO = 0.10, SMOKE_MERGE_HI = 0.65;    // summed-density ramp: f
 let SMOKE_ERODE = 0.6;                                  // composite noise erosion: frays the merged field into wisps
 let SMOKE_COLLIDE = true;                              // per-frame smoke↔track collision (uses the fine smokeColl grid)
 let smokePrevT = null;                                 // last playback time (for emission gating + scrub detect)
+/* The particle/air simulation runs at a FIXED rate, not the render rate — see the note in
+ * smokeStepAndDraw. 60 Hz because that is where this sim was tuned by eye; the step size is
+ * what the physics was balanced against, so changing it changes the look, not just the cost. */
+const SIM_STEP = 1 / 60;
+const SIM_MAX_CATCHUP = 4;
+let simAccum = 0;
 const CURL_G = 24, CURL_FREQ = 0.35, CURL_STR = 1.7;   // curl velocity grid (now a turbulence overlay only)
 const SMOKE_WIND = [0.25, 0, 0.10];                    // gentle ambient drift (world x,z)
 // sparse "air" velocity field — the shared medium cars stir and smoke rides. Cells exist
@@ -2519,14 +2577,24 @@ const SHADOW_CASTER_REACH = 600;
 // no front-cull (would drop the track top); slope-scaled bias in the shader handles acne.
 function renderCarDepth(cm, dir, timeChanged) {
   gl.useProgram(progDepth);
-  const drawG = (groups, model) => {
+  /* `planes` are the LIGHT's frustum, not the camera's — a shadow caster matters because it
+   * is inside the light box, not because you can see it. Passing them in (rather than
+   * deriving them here) is what lets the same drawG serve the near cascade, the far bake
+   * and the car draws, each against its own volume. Ortho projections extract planes the
+   * same way perspective ones do. */
+  const drawG = (groups, model, planes) => {
     gl.uniformMatrix4fv(depthLoc.model, false, model);
+    let drawn = 0;
     for (const g of groups) {
+      if (g.foliage && TREE_MODE >= 1) continue;   // canopies stop casting; trunks still do
+      if (planes && g.radius && !sphereInFrustum(planes, g.centre, g.radius)) continue;
+      drawn++;
       gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
       gl.enableVertexAttribArray(depthLoc.pos); gl.vertexAttribPointer(depthLoc.pos, 3, gl.FLOAT, false, 12, 0);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
       gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
     }
+    return drawn;
   };
   // NEAR — dynamic, every frame (track + car)
   const near = SHADOW_CASCADES[0];
@@ -2551,7 +2619,7 @@ function renderCarDepth(cm, dir, timeChanged) {
   near.vp = nlv.vp; near.depth = nlv.depth;
   gl.bindFramebuffer(gl.FRAMEBUFFER, near.fbo); gl.viewport(0, 0, near.size, near.size); gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.uniformMatrix4fv(depthLoc.lightVP, false, near.vp);
-  if (sceneGroups) drawG(sceneGroups, IDENT4);
+  if (sceneGroups) cullStat.shadow = drawG(sceneGroups, IDENT4, frustumPlanes(near.vp));
   drawG(carGroups, cm);
   // ghosts cast too - a car with no shadow reads as floating, and with the car pass now
   // RECEIVING shadows this is also what makes one car darken another. Poses are solved
@@ -2566,7 +2634,7 @@ function renderCarDepth(cm, dir, timeChanged) {
     far.vp = flv.vp; far.depth = flv.depth;
     gl.bindFramebuffer(gl.FRAMEBUFFER, far.fbo); gl.viewport(0, 0, far.size, far.size); gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.uniformMatrix4fv(depthLoc.lightVP, false, far.vp);
-    if (sceneGroups) drawG(sceneGroups, IDENT4);   // track only — the car is in the near cascade
+    if (sceneGroups) drawG(sceneGroups, IDENT4, frustumPlanes(far.vp));   // track only — the car is in the near cascade
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); shadowsRendered = true;
 }
@@ -2610,16 +2678,18 @@ function renderHeadlightDepth(cm, headVP) {
   gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.useProgram(progDepth);
   gl.uniformMatrix4fv(depthLoc.lightVP, false, headVP);
-  const drawG = (groups, model) => {
+  const drawG = (groups, model, planes) => {
     gl.uniformMatrix4fv(depthLoc.model, false, model);
     for (const g of groups) {
+      if (g.foliage && TREE_MODE >= 1) continue;   // a canopy should not shadow your headlights either
+      if (planes && g.radius && !sphereInFrustum(planes, g.centre, g.radius)) continue;
       gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
       gl.enableVertexAttribArray(depthLoc.pos); gl.vertexAttribPointer(depthLoc.pos, 3, gl.FLOAT, false, 12, 0);
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
       gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
     }
   };
-  if (sceneGroups) drawG(sceneGroups, IDENT4);   // ONLY the track occludes the beam — the car
+  if (sceneGroups) drawG(sceneGroups, IDENT4, frustumPlanes(headVP));   // ONLY the track occludes the beam — the car
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);       // must not occlude its own headlights (nose spar → black blob)
 }
 
@@ -3042,10 +3112,33 @@ function smokeStepAndDraw(mvp, view, L, fogD, i, nightF, softOn, zNear, zFar) {
   let dt = smokePrevT === null ? 0 : tCur - smokePrevT;
   const scrub = smokePrevT === null || dt < 0 || dt > 0.2;
   smokePrevT = tCur;
-  if (scrub) { smoke.pool.length = 0; AIR.cells.clear(); }         // field is live sim → clear on scrub
+  if (scrub) { smoke.pool.length = 0; AIR.cells.clear(); simAccum = 0; }   // live sim → clear on scrub
   else if (dt > 0) {
-    if (playing && !scrubbing) airStep(dt, i, tCur / ex.dt);       // cars stir the shared air first
-    smokeStep(dt, playing && !scrubbing, i, nightF);               // then smoke rides it
+    /* FIXED-RATE SIM, decoupled from the render rate.
+     *
+     * This used to step once per rendered frame with that frame's dt. On a 60 Hz screen
+     * that is 60 steps a second; on the keeper's 240 Hz laptop it is 240, and on the 360 Hz
+     * desktop 360 — six times the particle integration and six times the AIR field update,
+     * for a result that is not six times better. Every term here is already dt-scaled (the
+     * emission rate, the slide accumulators, the drag and buoyancy integration), so smaller
+     * steps buy accuracy nobody can see while the cost scales linearly with refresh rate.
+     * The frame rate was paying for the monitor being good.
+     *
+     * A fixed 60 Hz step with an accumulator makes the simulation cost identical at 60 and
+     * at 360, which is the only way a high-refresh target is affordable at all.
+     *
+     * The guard caps catch-up at four steps: after a stall, draining a large accumulated dt
+     * in one frame would cost more than the stall did and turn one late frame into several
+     * (the spiral of death). Dropping simulated time is the right trade — the smoke is
+     * decoration, and nothing downstream measures it. */
+    simAccum += dt;
+    let steps = 0;
+    while (simAccum >= SIM_STEP && steps < SIM_MAX_CATCHUP) {
+      if (playing && !scrubbing) airStep(SIM_STEP, i, tCur / ex.dt);   // cars stir the shared air first
+      smokeStep(SIM_STEP, playing && !scrubbing, i, nightF);           // then smoke rides it
+      simAccum -= SIM_STEP; steps++;
+    }
+    if (steps >= SIM_MAX_CATCHUP) simAccum = 0;   // gave up catching up; do not hold the debt
   }
   const P = smoke.pool; if (!P.length) return;
   const FL = 9;                                                  // floats/vertex: center3, corner2, size, alpha, seed, life
@@ -3251,7 +3344,7 @@ function render() {
   solveGhostPoses();
   if (SHADOW_ON && shadowReady && cm) {
     const timeChanged = timeOfDay !== staticBakeTime;
-    renderCarDepth(cm, L.dir, timeChanged);
+    GT.begin("shadow"); renderCarDepth(cm, L.dir, timeChanged); GT.end();
     if (trackAABB) staticBakeTime = timeOfDay;   // mark the static bake as current for this sun angle
     gl.viewport(0, 0, cv.width, cv.height);
   }
@@ -3269,9 +3362,9 @@ function render() {
       gl.uniformMatrix4fv(tLoc.lightVP0, false, c0.vp); gl.uniformMatrix4fv(tLoc.lightVP1, false, c1.vp);
       gl.uniform1f(tLoc.shadowTexel0, 1 / c0.size); gl.uniform1f(tLoc.shadowTexel1, 1 / c1.size);
       gl.uniform1f(tLoc.shadowDepth0, c0.depth || 1);   // so the shader's metre-based bias converts correctly
-      gl.uniform1f(tLoc.shadowOn, 1);
+      gl.uniform1f(tLoc.shadowOn, 1); _shadowBase = 1;
       gl.activeTexture(gl.TEXTURE0);
-    } else gl.uniform1f(tLoc.shadowOn, 0);
+    } else { gl.uniform1f(tLoc.shadowOn, 0); _shadowBase = 0; }
   };
 
   // main render target: the HDR float buffer (then tonemapped to screen) or straight to
@@ -3285,12 +3378,21 @@ function render() {
 
   // textured scene pass (track verts are already world-space → model = identity)
   if (sceneGroups) {
+    GT.begin("track");
+    // The camera's own frustum. Chunks outside it cannot contribute a pixel, so this is an
+    // exact rejection, not an approximation — the same argument as the lamp cull.
+    const camPlanes = frustumPlanes(mvp);
+    cullStat.track = 0; cullStat.total = sceneGroups.length;
     gl.useProgram(progT);
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniformMatrix4fv(tLoc.model, false, IDENT4);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
-    setTrackLights(camEye(), nightF);   // the track's own lamps, nearest first
+    /* skipNight = lampsBaked: the night lamps are already in the vertex buffer, so sending
+     * them again would double them AND put the 60-slot loop straight back. What is left for
+     * the live path is always-on lamps, which is usually none at all. */
+    setTrackLights(camEye(), nightF, mvp, lampsBaked);
+    gl.uniform1f(tLoc.lampBake, (TRACK_LIGHTS_ON && lampsBaked) ? nightF : 0);
     // EVERY car's lamps light the track — a ghost's headlights fall on the road ahead of
     // it exactly like the reference car's. skip = -1: the track is lit by all of them.
     setCarLamps(allCarLamps(nightF, brakeInt, cm), headVP, -1);
@@ -3300,6 +3402,17 @@ function render() {
     gl.uniform3fv(tLoc.eye, camEye());          // for the specular half-vector
     gl.activeTexture(gl.TEXTURE0);
     for (const g of sceneGroups) {
+      /* TREE_MODE 2 — unlit foliage. A canopy is alpha-tested, so every one of its
+       * fragments that survives the test still samples two shadow cascades and walks the
+       * lamp loop, over hundreds of thousands of triangles of mostly-transparent quads.
+       * Switching both off for these groups is what "remove tree lighting" means in the
+       * keeper's Assetto workaround; the leaves keep their texture and the sun's diffuse
+       * term, which is all that ever read as foliage anyway. */
+      if (g.radius && !sphereInFrustum(camPlanes, g.centre, g.radius)) continue;
+      cullStat.track++;
+      const unlit = g.foliage && TREE_MODE >= 2;
+      gl.uniform1i(tLoc.tLightN, unlit ? 0 : _tlN);
+      gl.uniform1f(tLoc.shadowOn, unlit ? 0 : _shadowBase);
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, g.tex);
       gl.uniform1f(tLoc.alphaTest, g.alphaTested ? 1 : 0);
@@ -3334,22 +3447,37 @@ function render() {
       gl.bindBuffer(gl.ARRAY_BUFFER, g.uvBuf);
       gl.enableVertexAttribArray(tLoc.uv);
       gl.vertexAttribPointer(tLoc.uv, 2, gl.FLOAT, false, 8, 0);
+      if (tLoc.lamp >= 0) {
+        if (g.lampBuf) {
+          gl.bindBuffer(gl.ARRAY_BUFFER, g.lampBuf);
+          gl.enableVertexAttribArray(tLoc.lamp);
+          gl.vertexAttribPointer(tLoc.lamp, 3, gl.FLOAT, false, 12, 0);
+        } else {
+          // a group with no bake (fallback geometry) falls back to a constant of zero,
+          // which is the same as having no baked lamps rather than a wrong colour
+          gl.disableVertexAttribArray(tLoc.lamp);
+          gl.vertexAttrib3f(tLoc.lamp, 0, 0, 0);
+        }
+      }
       gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, g.idxBuf);
       gl.drawElements(gl.TRIANGLES, g.count, gl.UNSIGNED_INT, 0);
     }
     gl.disableVertexAttribArray(tLoc.nrm);
     gl.disableVertexAttribArray(tLoc.uv);
+    if (tLoc.lamp >= 0) { gl.disableVertexAttribArray(tLoc.lamp); gl.vertexAttrib3f(tLoc.lamp, 0, 0, 0); }
     gl.disable(gl.BLEND);
     gl.depthMask(true);
     // an emissive-masked group leaves unit 1 selected, and every pass after this one binds
     // its textures assuming unit 0 is current — put it back
     gl.activeTexture(gl.TEXTURE0);
+    GT.end();   // "track"
   }
 
   // tyre skid marks: dark ribbon on the track, revealed up to the current frame.
   // Drawn after the track (over it) and before the car, independent of carShown so
   // the rubber history stays visible even while the car is in a gap.
   {
+    GT.begin("marks");
     let curLap = 0; if (ex.laps) for (const l of ex.laps) if (l.frame <= i) curLap++;
     drawTireMarks(mvp, L, fogD, tCur / ex.dt, curLap, markVBO, markCount);
     // every ghost's rubber, each revealed up to ITS own frame — so a car that locked up
@@ -3359,6 +3487,7 @@ function render() {
       let gl2 = 0; if (g.run.ex.laps) for (const l of g.run.ex.laps) if (l.frame <= g.f) gl2++;
       drawTireMarks(mvp, L, fogD, g.f, gl2, g.run.markVBO, g.run.markCount);
     }
+    GT.end();   // "marks"
   }
 
   gl.useProgram(prog);
@@ -3391,7 +3520,11 @@ function render() {
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniform1f(tLoc.fogD, fogD);
     setSceneLighting(L);
-    setTrackLights(camEye(), nightF);   // the cars are lit by the track's lamps too
+    // cars are lit by the track's lamps too — and they MOVE, so theirs cannot be baked.
+    // They keep the live loop, which is what the 64 slots and the frustum cull are for now.
+    setTrackLights(camEye(), nightF, mvp);
+    gl.uniform1f(tLoc.lampBake, 0);
+    if (tLoc.lamp >= 0) { gl.disableVertexAttribArray(tLoc.lamp); gl.vertexAttrib3f(tLoc.lamp, 0, 0, 0); }
     // A car is never lit by its OWN lamps (the cones would pool on its own livery), but it
     // IS lit by every other car on track — which is the point of headlights appearing in
     // your mirrors. skip = 0 here: this pass draws the reference car.
@@ -3557,7 +3690,7 @@ function render() {
    * depth buffer is complete and a lamp behind a grandstand or a car is correctly hidden. */
   {
     const lfov = fa ? (follow.rig.fov || 0.9) : 0.9;
-    drawTrackLampGlare(mvp, nightF, Math.tan(lfov / 2));
+    GT.begin("glare"); drawTrackLampGlare(mvp, nightF, Math.tan(lfov / 2)); GT.end();
   }
 
   // tyre smoke: live billboards off the same slip signal, into the HDR buffer so
@@ -3569,7 +3702,11 @@ function render() {
     gl.blitFramebuffer(0, 0, cv.width, cv.height, 0, 0, cv.width, cv.height, gl.DEPTH_BUFFER_BIT, gl.NEAREST);
     gl.bindFramebuffer(gl.FRAMEBUFFER, hdrFX.hdr.fbo);   // rebind the HDR target for the smoke draw
   }
-  smokeStepAndDraw(mvp, view, L, fogD, i, nightF, usePost, zNear, zFar);
+  /* Timed because it is the prime suspect for a spike that appears with the follow cam
+   * CLOSE to the car: a puff two metres from the lens covers a large part of the screen,
+   * and transparent overdraw costs per covered pixel with no depth rejection to save it.
+   * Nothing else in the frame scales with how near the camera is to the car. */
+  GT.begin("smoke"); smokeStepAndDraw(mvp, view, L, fogD, i, nightF, usePost, zNear, zFar); GT.end();
 
   if (usePost) runHDR();   // HDR scene → bloom + ACES tonemap → screen (blacks black, light LIGHT)
 }
@@ -3632,6 +3769,7 @@ addEventListener("keydown", e => {
     });
     e.preventDefault(); return;
   }
+  if (k === "l") { setTrackLampsOn(!TRACK_LIGHTS_ON); e.preventDefault(); return; }
   if (FLY.has(k)) { flyKeys.add(k); e.preventDefault(); }
 });
 addEventListener("keyup", e => flyKeys.delete(e.key.toLowerCase()));
@@ -3974,6 +4112,41 @@ document.getElementById("btnLine").addEventListener("click", function () {
   sl.addEventListener("input", upd);
   upd();
 })();
+/* Track lamps on/off — a look, not a debug flag.
+ *
+ * An unlit night run is its own thing: headlights against a black circuit, the way a track
+ * with no floodlighting actually drives. The glare sprites follow the same switch, because
+ * lamps that are off still hanging their glare in the air is a stranger state than either.
+ *
+ * It doubles as the only honest measurement of what the lamp pass costs, and that needs a
+ * FIXED camera — driving to the same corner twice compares two different frames, toggling
+ * in place compares the same one. Hence the key as well as the button. */
+function setTrackLampsOn(on) {
+  TRACK_LIGHTS_ON = on ? 1 : 0;
+  const btn = document.getElementById("btnLamps");
+  if (btn) btn.classList.toggle("on", !!TRACK_LIGHTS_ON);
+}
+(function () {   // track lamps
+  const btn = document.getElementById("btnLamps");
+  if (btn) btn.addEventListener("click", () => setTrackLampsOn(!TRACK_LIGHTS_ON));
+})();
+(function () {   // foliage policy: full → no shadows → unlit
+  const btn = document.getElementById("btnTrees");
+  if (!btn) return;
+  const LBL = ["trees · full", "trees · no shadows", "trees · unlit"];
+  btn.addEventListener("click", () => {
+    TREE_MODE = (TREE_MODE + 1) % 3;
+    btn.textContent = LBL[TREE_MODE];
+    btn.classList.toggle("on", TREE_MODE !== 0);
+    // The far cascade is baked and only redrawn when the sun moves, so without this the
+    // leaf shadows already in it would survive being switched off — visibly, and looking
+    // like the toggle did nothing.
+    staticBakeTime = null;
+    const n = sceneGroups ? sceneGroups.filter(g => g.foliage).length : 0;
+    const t = sceneGroups ? sceneGroups.filter(g => g.foliage).reduce((s, g) => s + (g.tris || 0), 0) : 0;
+    btn.title = `${LBL[TREE_MODE]} — ${n} foliage group(s), ${t.toLocaleString()} triangles on this track`;
+  });
+})();
 (function () {   // cast-shadow toggle (disabled if the GPU lacks depth-texture support)
   const btn = document.getElementById("btnShadow");
   if (!shadowReady) { btn.classList.remove("on"); btn.disabled = true; btn.title = "needs WebGL2 depth textures"; return; }
@@ -4291,7 +4464,19 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
                            // 0 on disk means "unset" — 280 of 294 materials say 0, and
                            // taking that literally would make every alpha-tested fence
                            // opaque, since every texel passes `a < 0`.
-                           alphaRef: mat.alphaRef > 0 ? mat.alphaRef : 0.5 });
+                           alphaRef: mat.alphaRef > 0 ? mat.alphaRef : 0.5,
+                           /* THE TRACK IS BUILT HERE, not by uploadGroups — that one serves
+                            * cars. Three separate features were added to the other
+                            * descriptor and silently did nothing on the only geometry they
+                            * were written for: the foliage policy had no flag to test (which
+                            * is why stripping sakura's 831k canopy triangles changed nothing),
+                            * frustum culling had no bounds so it rejected 0 of 43 chunks, and
+                            * the lamp bake had no vertex data so it produced no buffer. Two
+                            * near-identical group descriptors, one live and one not. */
+                           foliage: isFoliageMaterial(mat),
+                           tris: (g.idx.length / 3) | 0,
+                           centre: g.centre, radius: g.radius,
+                           pos: g.pos, nrm: g.nrm });   // released by bakeTrackLamps
           if (!translucent) collGroups.push({ pos: g.pos, idx: g.idx }); // solid → collider
           triCount += g.triCount;
         }
@@ -4329,6 +4514,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
 
     if (allGroups.length) {
       allGroups.sort((a, b) => (a.translucent ? 1 : 0) - (b.translucent ? 1 : 0));
+      bakeTrackLamps(allGroups);
       sceneGroups = allGroups;
     } else if (roadChunks.length) {
       // bare fallback from the first road chunk set
@@ -4402,11 +4588,13 @@ function resetTrackScene() {
     for (const g of sceneGroups) {
       gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
       gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
+      if (g.lampBuf) gl.deleteBuffer(g.lampBuf);   // the baked lamp light, one per chunk
       if (g.tex) gl.deleteTexture(g.tex);
     }
     sceneGroups = null;
   }
   trackLights = [];   // lamps belong to the track that was unloaded, not the next one
+  lampsBaked = false;
   if (carGroups) {
     for (const g of carGroups) {
       gl.deleteBuffer(g.posBuf); gl.deleteBuffer(g.nrmBuf);
@@ -4451,6 +4639,100 @@ function resetTrackScene() {
   if (ct) ct.classList.remove("hidden");
 }
 
+/* BAKE THE TRACK'S LAMP LIGHTING INTO ITS VERTICES.
+ *
+ * Measured, and this is the whole reason it exists: with the lamps on, the T-180 test track
+ * loses about 100 fps — roughly 3 ms of a 4.17 ms budget at 240 Hz, and more than the whole
+ * budget at 360. The cause is not the lamps' maths but their COUNT: the fragment shader
+ * walks 60 slots for every one of ~3.9 million pixels, which is ~230 million iterations a
+ * frame. Nothing that makes each iteration cheaper fixes an arithmetic problem that size,
+ * and neither does culling geometry — a culled chunk was never going to be shaded anyway.
+ *
+ * What makes it removable is that NOTHING HERE MOVES. The lamps are fixed to the track, the
+ * track is fixed to the world, and a replay never changes either. So a track vertex's lamp
+ * illumination is a constant, and a constant belongs in a buffer, not in a per-pixel loop.
+ * A live game cannot do this — its world and its lights are not knowable in advance. A
+ * replay viewer can, and that is the difference the whole optimisation rests on.
+ *
+ * Cost: one pass at load. The chunk bounds built for frustum culling pay off a second time
+ * here — a chunk only tests lamps whose range reaches its bounding sphere, so the bake is a
+ * few million operations rather than vertices x 60.
+ *
+ * NIGHT-GATED LAMPS ONLY. Their gate is a single scalar (nightF) applied at draw time, so
+ * baking at full strength and scaling later is exact, and the time slider keeps working.
+ * Always-on lamps are deliberately left to the live loop: there is no scalar that makes
+ * them correct, they are rare, and leaving them live costs a loop that is now nearly empty.
+ */
+function bakeTrackLamps(groups) {
+  for (const g of groups) { g.lampBuf = null; }
+  const lamps = trackLights.filter(L => L.night);
+  lampsBaked = false;
+  if (!lamps.length) { for (const g of groups) { g.pos = g.nrm = null; } return; }
+
+  let litVerts = 0, pairs = 0;
+  lampsBaked = true;
+  for (const g of groups) {
+    const pos = g.pos, nrm = g.nrm;
+    if (!pos || !nrm) continue;
+    const nV = pos.length / 3;
+    const out = new Float32Array(nV * 3);
+
+    // only the lamps that can reach this chunk at all
+    const near = [];
+    if (g.centre && g.radius !== undefined) {
+      for (const L of lamps) {
+        const dx = L.pos[0] - g.centre[0], dy = L.pos[1] - g.centre[1], dz = L.pos[2] - g.centre[2];
+        const reach = L.range + g.radius;
+        if (dx * dx + dy * dy + dz * dz <= reach * reach) near.push(L);
+      }
+    } else near.push(...lamps);
+    pairs += near.length;
+
+    for (const L of near) {
+      // same clamp-then-gain as the live path, so baked and live lamps match in brightness
+      const amp = Math.min(L.intensity, TRACK_LIGHT_MAX_INTENSITY) * TRACK_LIGHT_GAIN;
+      if (amp <= 0.002) continue;
+      const cr = L.color[0] * amp, cg = L.color[1] * amp, cb = L.color[2] * amp;
+      const range = L.range, r2 = range * range;
+      const dl = Math.hypot(L.dir[0], L.dir[1], L.dir[2]) || 1;
+      const dxn = L.dir[0] / dl, dyn = L.dir[1] / dl, dzn = L.dir[2] / dl;
+      const cosHalf = L.spotUsable ? Math.cos(Math.min(359, L.spot) * 0.5 * Math.PI / 180) : -1;
+      const inner = cosHalf + (1 - cosHalf) * 0.35;
+
+      for (let v = 0; v < nV; v++) {
+        const o = v * 3;
+        const tx = L.pos[0] - pos[o], ty = L.pos[1] - pos[o + 1], tz = L.pos[2] - pos[o + 2];
+        const d2 = tx * tx + ty * ty + tz * tz;
+        if (d2 > r2) continue;
+        const d = Math.sqrt(d2) || 1e-3;
+        const lx = tx / d, ly = ty / d, lz = tz / d;
+        const ndl = nrm[o] * lx + nrm[o + 1] * ly + nrm[o + 2] * lz;
+        if (ndl <= 0) continue;                       // a face turned away is not lit
+        let att = 1 - d / range; att *= att;          // zero AT the range, as the shader does
+        let cone = 1;
+        if (cosHalf > -0.5) {
+          const c = -(lx * dxn + ly * dyn + lz * dzn);
+          let t = (c - cosHalf) / Math.max(1e-4, inner - cosHalf);
+          t = t < 0 ? 0 : t > 1 ? 1 : t;
+          cone = t * t * (3 - 2 * t);                 // smoothstep, matching the shader
+          if (cone <= 0) continue;
+        }
+        const k = ndl * att * cone;
+        out[o] += cr * k; out[o + 1] += cg * k; out[o + 2] += cb * k;
+      }
+    }
+
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, out, gl.STATIC_DRAW);
+    g.lampBuf = b;
+    litVerts += nV;
+    g.pos = g.nrm = null;   // released: ~22 MB on a big track, and nothing reads them again
+  }
+  console.log(`[lamps] baked ${lamps.length} night lamp(s) into ${litVerts} vertices ` +
+              `(${pairs} chunk-lamp pairs after bounds rejection)`);
+}
+
 // upload a list of baked kn5 mesh groups to the GPU
 async function uploadGroups(groupList, scene, fallbackRGB) {
   const texByName = {};
@@ -4470,6 +4752,14 @@ async function uploadGroups(groupList, scene, fallbackRGB) {
       count: g.idx.length, tex, alphaTested: !!mat.alphaTested,
       blend: mat.blendMode === 1,   // transparent (alpha-blend)
       glass: /glass/i.test(mat.name || "") && !/headlight/i.test(mat.name || ""),   // windscreen → reflective pass
+      foliage: isFoliageMaterial(mat),   // canopy, not trunk — see kn5.js for why that line
+      tris: (g.idx.length / 3) | 0,
+      // world-space bounds of this spatial chunk, for frustum culling. Car geometry has
+      // none (it moves, and its groups are baked in model space) — absent radius simply
+      // means "always draw", which is correct for anything not chunked in world space.
+      centre: g.centre, radius: g.radius,
+      // kept only until bakeTrackLamps has read them, then released — see there
+      pos: g.pos, nrm: g.nrm,
     });
   }
   return out;
@@ -5159,6 +5449,61 @@ let lastTs = 0;
  * Smoothing the FRAME TIME and inverting once at the end has no such bias. The worst frame
  * over the last second is tracked too, because that is what the eye actually notices — a
  * mean of 360 with a 20 ms hitch in it looks like a stutter, and a mean alone hides it. */
+/* PER-PASS GPU TIME. The frame meter above says a frame cost 6.7 ms; it cannot say which
+ * pass spent it, and three separate optimizations on this project have now been aimed by
+ * inference rather than measurement (two helped, one — foliage on sakura — did nothing).
+ * A CPU timer cannot answer it either: GL calls return long before the GPU has drawn them.
+ *
+ * EXT_disjoint_timer_query_webgl2 is the only honest instrument. Its rules shape this code:
+ * exactly ONE TIME_ELAPSED query may be open at a time (so passes are timed in sequence,
+ * which they already run in), results arrive several frames late (so completed queries are
+ * drained separately from where they were started), and a GPU_DISJOINT between begin and
+ * end invalidates the timing entirely (so those samples are thrown away rather than shown).
+ *
+ * The extension is frequently unavailable — browsers restrict it for timing-attack reasons.
+ * When it is missing this degrades to nothing at all rather than to a wrong number. */
+const GT = (function () {
+  const ext = gl.getExtension("EXT_disjoint_timer_query_webgl2");
+  if (!ext) return { ok: false, begin() {}, end() {}, poll() {}, text: () => "" };
+  const inflight = [], ms = new Map();
+  let active = null;
+  return {
+    ok: true,
+    begin(name) {
+      if (active) return;                       // one at a time, per the extension
+      const q = gl.createQuery();
+      gl.beginQuery(ext.TIME_ELAPSED_EXT, q);
+      active = { name, q };
+    },
+    end() {
+      if (!active) return;
+      gl.endQuery(ext.TIME_ELAPSED_EXT);
+      inflight.push(active); active = null;
+    },
+    poll() {
+      // in order: a query completes no earlier than one begun before it
+      while (inflight.length) {
+        const f = inflight[0];
+        if (!gl.getQueryParameter(f.q, gl.QUERY_RESULT_AVAILABLE)) break;
+        if (!gl.getParameter(ext.GPU_DISJOINT_EXT)) {
+          const v = gl.getQueryParameter(f.q, gl.QUERY_RESULT) / 1e6;   // ns → ms
+          const p = ms.get(f.name);
+          ms.set(f.name, p ? p + (v - p) * 0.1 : v);
+        }
+        gl.deleteQuery(f.q); inflight.shift();
+      }
+    },
+    text() {
+      if (!ms.size) return "";
+      return " · " + [...ms.entries()].sort((a, b) => b[1] - a[1])
+        .map(([k, v]) => `${k} ${v.toFixed(2)}`).join(" ");
+    },
+  };
+})();
+/* How many chunks survived culling, for the HUD. Reported rather than assumed: a culling
+ * system that silently rejects nothing looks exactly like one that works, and the first
+ * question about any of this is "is it actually skipping anything". */
+const cullStat = { track: 0, shadow: 0, total: 0 };
 let frameMsEMA = 0, fpsPrev = 0, frameMsWorst = 0, frameWorstAt = 0;
 let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on shift-frame crossings
 function loop(ts) {
@@ -5172,6 +5517,7 @@ function loop(ts) {
     }
   }
   fpsPrev = ts;
+  GT.poll();   // drain whatever the GPU finished timing a few frames ago
   if (ex) {
     const [ra, rb] = frameRange();
     if (playing && !scrubbing) {
@@ -5258,7 +5604,7 @@ function loop(ts) {
       bfPrevFrame = i;
     }
     let _smk = 0; if (ex.smokeSlip) for (let k = 0; k < 4; k++) _smk = Math.max(_smk, ex.smokeSlip[i * 4 + k]);
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)}) · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)}`;
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)}) · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total}${GT.text()}`;
     drawScrub();
   }
   render();

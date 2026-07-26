@@ -1,5 +1,95 @@
 # Changelog
 
+## 2026-07-26 — Night runs at full refresh: the lamp bake, spatial culling, and the descriptor that made three features do nothing
+
+The T-180 test track held 240 fps by day and fell to **150 with the lamps on**, dropping to
+~170 transiently with the follow cam close. On a 240 Hz laptop the budget is 4.17 ms and on
+the 360 Hz desktop 2.78 ms, so "a bit slower at night" was the whole budget. It now holds
+**240 fps at 4.2 ms** with lamps on, and the follow cam no longer dips.
+
+### Fixed
+- **The track's group descriptor is built inline in `loadTrackKn5`, NOT by `uploadGroups`**
+  — and three features were added to the wrong one, so they were live in code and dead in
+  effect. This is the root cause of the evening, and it produced three separate and very
+  convincing "that didn't help" results:
+  - the **foliage policy** had no `foliage` flag to test, so stripping sakura's 831k canopy
+    triangles changed literally nothing — the toggle was a no-op, not a bad idea;
+  - **frustum culling** had no bounds, so it rejected 0 of 43 chunks (`chunks 43+43/43`);
+  - the **lamp bake** had no vertex data, so it produced no buffer and the ground went black.
+  Two near-identical group constructors forty lines apart, one serving cars and one serving
+  the track. Found from a screenshot: `43+43/43` and an unlit ground are one cause, not two.
+- **The lamp glare sprite punched through the top of its own housing.** It was offset toward
+  the EYE so a fixture could not hide its own glare — correct from below, exactly wrong from
+  above, where it drags the bulb out through the lid. It now sits just under the housing
+  along the lamp's **own aim**, where light physically leaves, and the depth buffer hides it
+  from above, which is what a shade is for. No camera-dependent term, so it no longer moves
+  when you do. Point lights and `DIRECTION = NORMAL` lamps keep the eye nudge — correct for
+  an unshielded bulb.
+
+### Added
+- **Track lamp lighting is baked into vertices at load.** The measured cause of the 100 fps
+  loss was not the lamps' maths but their count: 60 slots walked for each of ~3.9M pixels is
+  ~230M iterations per frame, and no cheaper iteration fixes an arithmetic problem that
+  size. Nothing moves — the lamps are fixed to the track, the track to the world, and a
+  replay changes neither — so a track vertex's lamp light is a constant and belongs in a
+  buffer. `uTLightN` is set to 0 on the track pass and the loop exits immediately.
+  **A live game cannot do this**; its world and lights are not knowable in advance. Baked
+  60 lamps into 1,252,706 vertices, 89.2% of them receiving light.
+  - Night-gated lamps only: their gate is one scalar applied at draw time, so baking at full
+    strength and scaling by `nightF` is exact and the time slider keeps working. Always-on
+    lamps stay live — no scalar makes those correct, and they are rare.
+  - Cars keep the live loop. They move; four cars are a small share of the screen.
+- **Spatial chunking + frustum culling.** The renderer had **no visibility culling at all** —
+  the only cull anywhere was for lamps. Every frame drew 100% of the track three times
+  (near cascade, headlight beam, lit pass) regardless of where the camera pointed. Grouping
+  by material bought batching by destroying locality: one group spanned the circuit and was
+  neither cullable nor LOD-able. Meshes are now bucketed into 200 m world cells at load, each
+  chunk carrying a bounding sphere. Test track: 6 material groups → **43 chunks**, median
+  radius **184 m** against a track radius of 3540 m; only 2.5% is single-mesh and indivisible.
+  Live result: `chunks 27+14/43` — the lit pass skips 16, the shadow cascade 29.
+  - Each pass culls against **its own** volume: the lit pass against the camera, the shadow
+    cascade against the *light's* box (a caster matters because it is in the light, not
+    because you can see it), the beam pass against the beam.
+- **The particle/air simulation runs at a fixed 60 Hz**, decoupled from the render rate. It
+  stepped once per rendered frame, so the same sim cost 4× more on a 240 Hz screen and 6× on
+  a 360 Hz one — the frame rate was being charged for the monitor being good. Every term was
+  already `dt`-scaled, so smaller steps bought accuracy nobody can see. Catch-up is capped at
+  four steps; after a stall, dropping simulated time beats turning one late frame into five.
+- **Per-pass GPU timing in the HUD** (`EXT_disjoint_timer_query_webgl2`): `track`, `shadow`,
+  `glare`, `smoke`, `marks`, in real milliseconds. Three optimizations tonight were aimed by
+  inference and one of them was aimed at nothing; a CPU timer cannot answer this because GL
+  calls return long before the GPU draws. Degrades to silence when the extension is absent,
+  never to a wrong number. Also reports `chunks <lit>+<shadow>/<total>`, because a culling
+  system that rejects nothing looks exactly like one that works.
+- **`lamps` toggle** (button + `L`) — an unlit night run is its own look, and it is also the
+  only honest way to measure what the lamp pass costs, which needs a fixed camera.
+- **`trees` toggle** (full · no shadows · unlit) — the CSP change made by hand in Assetto,
+  where sakura is unplayable on a modest PC. Foliage is classified **shader-first**
+  (`ksTree`, the author's own declaration) with a name fallback, because sakura's heaviest
+  foliage material is "Pink leaves" at 322k triangles on a plain `ksPerPixel`. `trunk`
+  matches nothing deliberately: a trunk's shadow is cheap and honest, a canopy's aliases into
+  noise. **Never actually ran until the descriptor fix above — sakura is worth retrying.**
+- **`MAX_TLIGHTS` 24 → 64.** The test track declares 60 lamps; below the lamp count the gate
+  is not "dimmer extras" but *which* lamps are lit changing with the camera, so lamps switched
+  on as you approached and off behind you. Third time this wall has been hit (12 → 24 → 64),
+  now sized to a measurement rather than a round number.
+- **Squared-distance rejection** in the light loop — 83% of iterations are rejections
+  (measured: a fragment is in range of 9.9 lamps of 60), and each was paying a `sqrt` before
+  being thrown away.
+- **Exact frustum cull for lamps** (`cullToFrustum`, `frustumPlanes`, `sphereInFrustum`). A
+  lamp lights ground around *itself*, so the test is its range **sphere** against the view —
+  a lamp behind the camera whose range reaches forward is kept. Testing the point instead
+  would put a dark bite in the road.
+
+### Tests
+- `test_lampdensity.js` — lamp overlap: 9.9 of 60 in range on average, 83% rejections.
+- `test_trackcost.js` — triangles by material/shader, foliage share, and chunkability.
+- `test_lampbake.js` — runs the bake headlessly. When the ground was black this separated
+  "the maths returns zero" from "the buffer never arrives" in one run; it was the latter.
+- 8 new cases in `test_tracklights.js` for the frustum cull, including the sphere-not-point
+  case. `test_carscene.js` still fails on this machine — it hardcodes `G:\SteamLibrary`,
+  the same bug `test_steeranim.js` had fixed on 07-25. Pre-existing, not touched.
+
 ## 2026-07-25 — Wrist attempt 3: twist-bone distribution (docs/DRIVER_WRIST.md)
 
 ### Fixed

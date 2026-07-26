@@ -211,6 +211,38 @@ function resolveTrackLights(iniText, nodes, opts) {
  * above a big circuit, pools beyond the nearest n stay unlit — and nearest-to-camera is
  * simply the best proxy available for "which pools fill the most of the screen".
  */
+/**
+ * Drop lamps that cannot light anything on screen.
+ *
+ * This is EXACT, and that is the whole reason it is allowed to exist next to a budget that
+ * is not. A lamp illuminates ground within `range` of ITSELF, so if the sphere (pos, range)
+ * does not touch the view frustum, there is no visible fragment inside that sphere and the
+ * lamp contributes nothing to this frame. Removing it cannot change a pixel, which means it
+ * cannot reintroduce the popping the budget causes — the failure this codebase has now hit
+ * three times.
+ *
+ * It does nothing for a view that already sees the whole circuit (the top-down shot where
+ * all 60 pools are genuinely visible). It pays while DRIVING, where most of a 943 m track
+ * is behind the camera.
+ *
+ * `planes` are [a,b,c,d] with a*x+b*y+c*z+d >= 0 inside — mathutil's frustumPlanes(). Taken
+ * as an argument rather than derived here so this file needs no matrix library and keeps
+ * loading bare under node.
+ */
+function cullToFrustum(lights, planes) {
+  if (!planes || planes.length !== 6) return lights;   // no frustum, no opinion
+  const out = [];
+  outer:
+  for (const L of lights) {
+    const r = L.range || 0;
+    for (const p of planes) {
+      if (p[0] * L.pos[0] + p[1] * L.pos[1] + p[2] * L.pos[2] + p[3] < -r) continue outer;
+    }
+    out.push(L);
+  }
+  return out;
+}
+
 function cullLights(lights, eye, n) {
   const scored = [];
   for (const L of lights) {
@@ -221,6 +253,6 @@ function cullLights(lights, eye, n) {
   return scored.slice(0, n).map(s => s.L);
 }
 
-const TrackLights = { parseIni, meshPatternToRegExp, conditionIsNight, resolveTrackLights, cullLights };
+const TrackLights = { parseIni, meshPatternToRegExp, conditionIsNight, resolveTrackLights, cullLights, cullToFrustum };
 if (typeof module !== "undefined") module.exports = TrackLights;
 if (typeof window !== "undefined") window.TrackLights = TrackLights;

@@ -50,18 +50,25 @@ const extS3TC = gl.getExtension("WEBGL_compressed_texture_s3tc");
 /* program 2: textured + lit scene */
 const VST = `
 attribute vec3 aPos; attribute vec3 aNrm; attribute vec2 aUV;
+// BAKED LAMP LIGHT, per vertex. Track lamps never move and the track never moves, so their
+// contribution to a static surface is a constant — computed once at load instead of by a
+// 60-iteration loop in every fragment of every frame. Car geometry leaves this attribute
+// unbound and gets the constant (0,0,0), which is what routes it down the live path.
+attribute vec3 aLamp;
 uniform mat4 uMVP; uniform mat4 uModel;
-varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld;
+varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld; varying vec3 vLamp;
 void main(){
   vec4 wp = uModel * vec4(aPos,1.0);
   gl_Position = uMVP * wp;
   vNrm = mat3(uModel) * aNrm;
   vUV = aUV;
   vWorld = wp.xyz;
+  vLamp = aLamp;
 }`;
 const FST = `
 precision mediump float;
-varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld;
+varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld; varying vec3 vLamp;
+uniform float uLampBake;   // night gate x master switch for the baked term; 0 disables it
 uniform sampler2D uTex;
 uniform float uAlphaTest;
 uniform float uAlpha;
@@ -94,12 +101,19 @@ uniform int uCarN;                    // how many of those slots are live
 // LIGHT_SERIES config. Static in the world, unlike the car lamps above, so they are a
 // separate set: a track can declare hundreds (nordic 207, thunderhead 156) and the CPU
 // sends only the nearest handful each frame.
-// 24, raised from 12 once the distance rejection came out of the cull. With rejection, a
-// slot was only ever spent on a lamp already lighting the camera's surroundings; without
-// it, the slots are a budget for how many of a circuit's pools can be lit AT ONCE, and 12
-// of sakura's 143 leaves the track visibly patchy from any distance. Must match
-// MAX_TLIGHTS in index.html.
-const int MAXTLIGHTS = 24;
+// 64, and this is the third value: 12 → 24 (sakura's 143 read as patchy from any distance)
+// → 64. The same wall each time, because a slot budget below a track's lamp count does not
+// merely dim the extras — it makes WHICH lamps are lit depend on where the camera is, so
+// lamps switch on as you approach and others switch off behind you. The T-180 test track
+// declares 60 (measured, test_tracklights.js) against 24 slots, which is why 36 of its
+// pools were dark at any moment and the set changed as you drove.
+//
+// 64 is chosen to clear 60, not as a round number. It does NOT cover nordic (207) or
+// thunderhead (156); those still swap, and the honest fix for them is clustered lighting
+// rather than a bigger array — every fragment loops over every sent light, so this number
+// is bounded by fill cost long before it is bounded by uniform space.
+// Must match MAX_TLIGHTS in index.html.
+const int MAXTLIGHTS = 64;
 uniform vec3 uTLightPos[MAXTLIGHTS];   // world position
 uniform vec3 uTLightCol[MAXTLIGHTS];   // colour * intensity, already night-scaled
 uniform vec3 uTLightDir[MAXTLIGHTS];   // aim, for spots
@@ -221,12 +235,22 @@ void main(){
    * with a declared RANGE is an artistic statement about how far it should reach, so the
    * falloff is normalised to that range and hits exactly zero at its edge. Without that a
    * light culled at its range boundary pops as it enters the sent set. */
+  /* The baked term. On track geometry this replaces the loop below entirely — uTLightN is
+   * set to 0 for those draws, so the loop exits on its first iteration. Interpolated across
+   * the triangle by the rasteriser, which is free. */
+  col += tex.rgb * vLamp * uLampBake;
   for (int i = 0; i < MAXTLIGHTS; i++) {
     if (i >= uTLightN) break;
     vec3 t = uTLightPos[i] - vWorld;
-    float d = length(t);
     float range = uTLightArg[i].x;
-    if (d > range) continue;
+    /* REJECT BEFORE THE SQRT. Measured on the T-180 test track (test_lampdensity.js): a
+     * fragment is in range of 9.9 lamps on average out of 60 sent, so 83% of the iterations
+     * of this loop end here. Taking length() first paid a square root on every one of those
+     * rejections; comparing squared distances is the identical test for non-negative values
+     * and defers the sqrt to the ~17% that survive. */
+    float d2 = dot(t, t);
+    if (d2 > range * range) continue;
+    float d = sqrt(d2);
     vec3 Ld = t / max(d, 1e-3);
     float ndl = max(dot(n, Ld), 0.0);          // a surface facing away is not lit
     if (ndl <= 0.0) continue;
@@ -283,6 +307,8 @@ const tLoc = {
   pos: gl.getAttribLocation(progT, "aPos"),
   nrm: gl.getAttribLocation(progT, "aNrm"),
   uv: gl.getAttribLocation(progT, "aUV"),
+  lamp: gl.getAttribLocation(progT, "aLamp"),
+  lampBake: gl.getUniformLocation(progT, "uLampBake"),
   mvp: gl.getUniformLocation(progT, "uMVP"),
   model: gl.getUniformLocation(progT, "uModel"),
   tex: gl.getUniformLocation(progT, "uTex"),
