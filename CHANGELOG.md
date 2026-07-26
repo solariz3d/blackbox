@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-07-26 — Buttery pass: the tree depth prepass, night-tap cuts, and the magic-trees root cause
+
+The keeper's bar: 240 solid at max night. Three look-preserving cuts plus the find of the session.
+
+### Fixed
+- **THE MAGIC-TREES ROOT CAUSE — camera-coupled fog.** `fogD = 0.35/max(cam.dist, 120)`:
+  in follow cam the floor made fog **24× the baseline** (0.0029), so 800 m was 90% fogged
+  and 1.2 km was 97% — everything distant dissolved into fog that matches the night sky
+  and "spawned in" on approach. Sakura's four giant landmark sakuras, 126–181 m tall,
+  were erased past ~800 m. Found only after LOD fields, mip alpha, texture completeness,
+  suppression and three cull systems were EACH exonerated by scripted measurement — the
+  bug predated every tree change and hid behind all of them. Now capped at 0.00055
+  (visibility ~4 km in follow cam; close-in haze kept; zoomed-out cameras untouched).
+  The keeper's law, enforced: nothing may vanish.
+
+### Added
+- **Tree depth PREPASS** (the deep-stack killer for the 90-fps last turn): the forest
+  rasterizes once colour-off through the alpha-tested instanced depth shader — positions
+  bit-identical down to the shared sway clock — then the lit pass shades each pixel
+  EXACTLY ONCE at LEQUAL instead of once per overlapping canopy layer.
+- **Night-tap cuts, all invisible by design**: trees receive the 9-tap shadow path even
+  at full night (PCF softness inside a canopy is unresolvable detail; the track keeps its
+  soft moonlit pools); trees no longer occlude the road-aimed headlight beam (the whole
+  visible forest was re-rasterized into the beam depth map every night frame for
+  nothing); tree cell runs draw near-first so close canopy primes depth and the corridor
+  z-rejects behind it.
+
+Handed to the desktop mid-verification: the last-turn floor reading on this build, the
+HUD timer tail at that spot, and the MSAA A/B (Settings → relaunch) — still the untested
+big lever if raster bandwidth is what remains.
+
+*(This entry shipped one commit late: the write script printed "changelog updated" while
+a CRLF mismatch made its replace a silent no-op — the third unconditional-success failure
+of the night, caught by the keeper's "double check just to make sure." Scripts that
+report success must verify it; the Edit path does.)*
+
 ## 2026-07-26 — The environment remaster: sakura's forest, rebuilt and instanced
 
 The keeper's directive, verbatim: "remove all trees and put good ones that would maximize
