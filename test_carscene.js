@@ -15,8 +15,13 @@ const fs = require("fs");
 const path = require("path");
 const KN5 = require("./ui/kn5.js");
 
-const CAR_DIR = "G:/SteamLibrary/steamapps/common/assettocorsa/content/cars/ohyeah2389_t180_mach6";
-const CENTRIFUGE = "G:/SteamLibrary/steamapps/common/assettocorsa/content/tracks/centrifuge/centrifuge.kn5";
+/* Resolved from the Steam library list rather than hardcoded to G:. The hardcoding is why
+ * the centrifuge re-pin below reached main red: this file cannot run on the laptop, so the
+ * change that invalidated its baseline could not be caught where it was made. */
+const E = require("./testenv.js");
+const CAR_DIR = E.carDir("t180_mach6");
+const CENTRIFUGE = E.trackKn5("centrifuge");
+if (!CAR_DIR || !CENTRIFUGE) E.skip("needs a local Assetto Corsa install with the Mach 6 and centrifuge");
 
 // Baseline captured on the UNCHANGED extractScene (node, before the lod0Only edit).
 //

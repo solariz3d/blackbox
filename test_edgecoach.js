@@ -3,16 +3,22 @@
  */
 "use strict";
 const fs = require("fs");
-const { extractRoadMesh } = require("./kn5.js");
-const { parseReplay, extractCar } = require("./acreplay.js");
-const { buildEdgeIndex, distanceProfile } = require("./roadedge.js");
+const { extractRoadMesh } = require("./ui/kn5.js");
+const { parseReplay, extractCar } = require("./ui/acreplay.js");
+const { buildEdgeIndex, distanceProfile } = require("./ui/roadedge.js");
 
 function loadAB(p) {
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
 }
 
-const [kn5Path, repPath] = process.argv.slice(2);
+// arguments override; bare, it runs the T-180 test track against the in-repo sample replay
+const E = require("./testenv.js");
+const [argKn5, argRep] = process.argv.slice(2);
+const kn5Path = argKn5 || E.trackKn5("t180testtrack");
+const repPath = argRep || E.sampleReplay();
+if (!kn5Path) E.skip("no track .kn5 (usage: node test_edgecoach.js <track.kn5> <replay.acreplay>)");
+if (!repPath) E.skip("no replay (usage: node test_edgecoach.js <track.kn5> <replay.acreplay>)");
 let t0 = Date.now();
 const mesh = extractRoadMesh(loadAB(kn5Path));
 console.log(`kn5: ${(mesh.tris.length / 3).toLocaleString()} road tris (${Date.now() - t0} ms)`);

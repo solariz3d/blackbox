@@ -4,18 +4,28 @@
  */
 "use strict";
 const fs = require("fs");
-const { extractRoadMesh } = require("./kn5.js");
-const { parseReplay, extractCar } = require("./acreplay.js");
-const { buildEdgeIndex } = require("./roadedge.js");
+const { extractRoadMesh } = require("./ui/kn5.js");
+const { parseReplay, extractCar } = require("./ui/acreplay.js");
+const { buildEdgeIndex } = require("./ui/roadedge.js");
 
 function loadAB(p) {
   const b = fs.readFileSync(p);
   return b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength);
 }
 
-const mesh = extractRoadMesh(loadAB(process.argv[2]));
+/* Arguments still override; without them this reads the T-180 test track and the sample
+ * replay committed to samples/. It used to crash on fs.readFileSync(undefined), which is a
+ * worse failure than a usage line: a stack trace looks like a broken test rather than a
+ * tool that was never given its input. */
+const E = require("./testenv.js");
+const kn5Path = process.argv[2] || E.trackKn5("t180testtrack");
+const repPath = process.argv[3] || E.sampleReplay();
+if (!kn5Path) E.skip("no track .kn5 (usage: node test_lateral.js <track.kn5> <replay.acreplay>)");
+if (!repPath) E.skip("no replay (usage: node test_lateral.js <track.kn5> <replay.acreplay>)");
+
+const mesh = extractRoadMesh(loadAB(kn5Path));
 const index = buildEdgeIndex(mesh.verts, mesh.tris);
-const ex = extractCar(parseReplay(loadAB(process.argv[3])), 0);
+const ex = extractCar(parseReplay(loadAB(repPath)), 0);
 
 const segs = index.segs; // flat pairs of endpoints
 const nseg = index.count;
@@ -87,6 +97,15 @@ console.log(`lateral ratio (0 = on right edge, 1 = on left edge, 0.5 = dead cent
 console.log(`  n=${ratios.length}  p5 ${q(0.05).toFixed(2)}  p25 ${q(0.25).toFixed(2)}  median ${q(0.5).toFixed(2)}  p75 ${q(0.75).toFixed(2)}  p95 ${q(0.95).toFixed(2)}`);
 console.log(`  mean ${mean.toFixed(3)}  sd ${sd.toFixed(3)}`);
 console.log(`  VERDICT: sd < 0.05 would mean spline-centered; sd > 0.15 is a human line sweeping the road`);
+
+/* Nothing checked that verdict, so the answer this test exists to give — is the replay a
+ * real driven line or a centred spline? — was printed and never enforced. The 0.15 is the
+ * file's own stated threshold, not a new one. */
+if (!(sd > 0.15)) {
+  console.log(`\nFAIL: lateral sd ${sd.toFixed(3)} — the car is holding a near-constant ` +
+              `position across the road, which is what a centred spline looks like, not a driven line`);
+  process.exit(1);
+}
 
 // show a corner sequence: 20 consecutive samples around the slowest corner (26.8 km)
 console.log(`\nline through the 26.8 km corner (dL/dR = meters to left/right edge):`);

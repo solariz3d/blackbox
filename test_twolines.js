@@ -4,7 +4,7 @@
  */
 "use strict";
 const fs = require("fs");
-const { parseReplay, extractCar } = require("./acreplay.js");
+const { parseReplay, extractCar } = require("./ui/acreplay.js");
 
 function loadEx(p) {
   const b = fs.readFileSync(p);
@@ -30,8 +30,20 @@ function lapPoints(ex, step) {
   return pts;
 }
 
-const exA = loadEx(process.argv[2]);
-const exB = loadEx(process.argv[3]);
+/* Two runs on the SAME track. The pairing matters more than having a default: the two
+ * replays committed to samples/ are on different circuits, and comparing them yields 44 m
+ * of "line separation" between a tube track and a centrifuge — a number that satisfies the
+ * "different runs" verdict below while measuring nothing. A default that makes the
+ * assertion vacuous is worse than no default, so this takes a real pair from the local AC
+ * replay folder and skips when there is not one. */
+const E = require("./testenv.js");
+const pair = (process.argv[2] && process.argv[3]) ? [process.argv[2], process.argv[3]]
+                                                  : E.sameTrackReplayPair();
+if (!pair) E.skip("no two replays of the same car+track found (usage: node test_twolines.js <a.acreplay> <b.acreplay>)");
+const [pathA, pathB] = pair;
+
+const exA = loadEx(pathA);
+const exB = loadEx(pathB);
 const A = lapPoints(exA, 10);
 const B = lapPoints(exB, 5);
 console.log(`A: ${A.length} pts (lap ${exA.laps.map(l => (l.timeMs / 1000).toFixed(1))})`);
@@ -64,3 +76,16 @@ seps.sort((x, y) => x - y);
 const q = p => seps[Math.floor(p * (seps.length - 1))];
 console.log(`\nline separation A→B (m): p10 ${q(0.10).toFixed(2)}  median ${q(0.5).toFixed(2)}  p90 ${q(0.9).toFixed(2)}  max ${q(1).toFixed(2)}`);
 console.log(`VERDICT: median < 0.3 m = same line (spline — BUG); median > 1 m = different human runs (real driving)`);
+
+/* The verdict above was printed for a human to read and the process exited 0 either way,
+ * so this file could not fail — it would have reported the spline bug in plain text and
+ * still gone green in a suite sweep. The threshold is not invented here; it is the one the
+ * line above already states. */
+const median = q(0.5);
+if (!(median > 1)) {
+  console.log(`\nFAIL: median separation ${median.toFixed(2)} m — two runs on the same track ` +
+              `should not share a line. Below 0.3 m means positions are coming from a ` +
+              `centred spline rather than from the recorded drive.`);
+  process.exit(1);
+}
+console.log(`\nall good — ${seps.length} sampled points, median separation ${median.toFixed(2)} m`);

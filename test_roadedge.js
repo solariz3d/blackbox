@@ -3,7 +3,7 @@
  */
 "use strict";
 
-const { buildEdgeIndex, distanceToEdge, distanceProfile } = require("./roadedge.js");
+const { buildEdgeIndex, distanceToEdge, distanceProfile } = require("./ui/roadedge.js");
 
 let failed = 0;
 function check(name, ok, detail) {

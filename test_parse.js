@@ -5,8 +5,10 @@
 const fs = require("fs");
 const { parseReplay, extractCar, runStats } = require("./ui/acreplay.js");
 
-const path = process.argv[2];
-if (!path) { console.error("usage: node test_parse.js <file.acreplay>"); process.exit(1); }
+// defaults to the sample committed to samples/, so a bare run works
+const E = require("./testenv.js");
+const path = process.argv[2] || E.sampleReplay();
+if (!path) E.skip("no replay given and none in samples/ (usage: node test_parse.js <file.acreplay>)");
 
 const buf = fs.readFileSync(path);
 const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);

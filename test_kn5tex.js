@@ -11,7 +11,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const tex = require("./kn5tex.js");
+const tex = require("./ui/kn5tex.js");
 
 let failures = 0;
 function check(cond, msg) {

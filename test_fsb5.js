@@ -11,8 +11,14 @@ const fs = require("fs");
 const path = require("path");
 const FSB5 = require("./ui/fsb5.js");
 
-const DEFAULT = "C:/Program Files (x86)/Steam/steamapps/common/assettocorsa/content/cars/ohyeah2389_t180_mach6/sfx/ohyeah2389_t180_mach6.bank";
+/* Resolved, not assumed. This hardcoded the default Steam directory and so skipped forever
+ * on any machine whose library is on another drive — reporting "no local install" while
+ * Assetto Corsa sat on G:. A permanent skip is a dead test wearing a reasonable excuse. */
+const E = require("./testenv.js");
+const carDir = E.carDir("t180_mach6");
+const DEFAULT = carDir ? require("path").join(carDir, "sfx", "ohyeah2389_t180_mach6.bank") : null;
 const bankPath = process.argv[2] || DEFAULT;
+if (!bankPath) E.skip("no car bank given and no Assetto Corsa install found");
 if (!fs.existsSync(bankPath)) {
   console.log("SKIP: no car bank at " + bankPath + " (needs a local Assetto Corsa install)");
   process.exit(0);

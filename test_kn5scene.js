@@ -1,8 +1,8 @@
 /* test_kn5scene.js — Node validation for kn5.js extractScene().
  *
  * Runs the full visual scene pass on centrifuge + all Miandros kn5s and checks:
- *  - group count == number of materials actually used
- *  - centrifuge total tris >= 3.2M
+ *  - every used material has at least one group, and no group is empty
+ *  - centrifuge total tris >= 2.3M
  *  - normals unit-length within 2% on a 1000-vertex sample per file
  *  - all UVs finite
  *  - all indices < their group's vertex count
@@ -16,7 +16,7 @@
 "use strict";
 
 const fs = require("fs");
-const { extractRoadMesh, extractScene } = require("./kn5.js");
+const { extractRoadMesh, extractScene } = require("./ui/kn5.js");
 
 const TRACKS = "G:/SteamLibrary/steamapps/common/assettocorsa/content/tracks";
 const FILES = [
@@ -94,16 +94,34 @@ for (const file of FILES) {
   console.log("textures: " + scene.textures.length + ", materials: " + scene.materials.length +
               ", groups: " + scene.groups.length);
 
-  // group count == materials actually used
+  /* Groups are no longer one-per-material, and this assertion has been RELAXED rather than
+   * deleted, because what it was really guarding still matters.
+   *
+   * It pinned the old merge-by-material scheme. That scheme is what the culling work had to
+   * break: a single group spanning the whole circuit can be neither frustum-culled nor
+   * LOD'd, so a material's meshes are now split into world cells. More groups than
+   * materials is now the intended state and the reason the app runs at refresh.
+   *
+   * What must still hold is that the split is a partition, not a duplication or a loss:
+   * every group still belongs to exactly one real material, and no material gains groups
+   * without geometry to fill them. `test_groupshape.js` owns the descriptor contract now;
+   * this keeps the coarse sanity check that a re-merge or an off-by-one would trip. */
   const usedMats = new Set(scene.groups.map(g => g.materialId));
-  check(scene.groups.length === usedMats.size, "group count (" + scene.groups.length +
-        ") == distinct materials used (" + usedMats.size + ")");
+  check(scene.groups.length >= usedMats.size, "at least one group per used material (" +
+        scene.groups.length + " groups, " + usedMats.size + " materials)");
+  check(scene.groups.every(g => g.triCount > 0), "no group is empty — a split that produced " +
+        "a zero-triangle group would be a partitioning bug");
   check(scene.groups.every(g => g.materialId >= 0 && g.materialId < scene.materials.length),
         "all group materialIds in materials range");
 
   // centrifuge triangle floor
   if (shortName === "centrifuge/centrifuge.kn5") {
-    check(scene.stats.triCount >= 3200000, "centrifuge triCount " + scene.stats.triCount + " >= 3.2M");
+    /* Lowered from 3.2M on 2026-07-26. c1cb41f stopped drawing the dome-opening geometry —
+     * a material named "Transparent", NULL diffuse, emissive [1,1,1] — which was rendering
+     * as a pale panel across every skylight. That is 852,176 triangles, and the floor was
+     * counting them. 2.3M keeps the guard's actual job: catching a parse that silently
+     * loses most of a 171 MB model, which is what this line exists for. */
+    check(scene.stats.triCount >= 2300000, "centrifuge triCount " + scene.stats.triCount + " >= 2.3M");
   }
 
   // stats.triCount consistent with groups
