@@ -8,6 +8,119 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+/* ---------------------------------------------------------------------------
+ * DISPLAY REFRESH RATE
+ *
+ * The renderer needs to know what the panel wants, and the only honest source is
+ * the OS. The web side cannot ask: there is no refresh-rate API, so a browser has
+ * to INFER it by timing requestAnimationFrame — which only reads the display when
+ * the GPU is keeping up, and reads the render loop's own speed when it is not.
+ * Inferring a number the OS will simply state is the wrong instrument.
+ *
+ * Tauri does not expose it either: as of v2 its Monitor carries name, size,
+ * position, work_area and scale_factor, and nothing about frequency. So this
+ * calls Win32 directly, with no new dependency — four functions and two structs,
+ * declared here.
+ *
+ * PER WINDOW, NOT PER MACHINE. This resolves the monitor the window is CURRENTLY
+ * on, which is the whole point rather than a nicety: this desktop runs a 360 Hz
+ * panel beside a 60 Hz one, so any single machine-wide answer is wrong half the
+ * time and wrong in a way that looks like a performance problem. Drag the window
+ * across and the answer must change with it.
+ *
+ * THE RISK HERE IS STRUCT LAYOUT. These are hand-written declarations, and a
+ * field out of place does not crash — it silently reads a neighbouring field and
+ * returns a plausible-looking number. DEVMODEW must be exactly 220 bytes on
+ * 64-bit Windows with dmDisplayFrequency at offset 184; both are asserted at the
+ * bottom of this file, and the command is checked against a known-good reading.
+ * ------------------------------------------------------------------------- */
+#[cfg(target_os = "windows")]
+mod display {
+    /// DEVMODEW, laid out per the Win32 headers. Only the display half of the
+    /// union (dmPosition/dmDisplayOrientation/dmDisplayFixedOutput) is modelled,
+    /// which is the correct half when the mode came from a display device.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    pub struct Devmodew {
+        pub dm_device_name: [u16; 32],
+        pub dm_spec_version: u16,
+        pub dm_driver_version: u16,
+        pub dm_size: u16,
+        pub dm_driver_extra: u16,
+        pub dm_fields: u32,
+        pub dm_position_x: i32,
+        pub dm_position_y: i32,
+        pub dm_display_orientation: u32,
+        pub dm_display_fixed_output: u32,
+        pub dm_color: i16,
+        pub dm_duplex: i16,
+        pub dm_y_resolution: i16,
+        pub dm_tt_option: i16,
+        pub dm_collate: i16,
+        pub dm_form_name: [u16; 32],
+        pub dm_log_pixels: u16,
+        pub dm_bits_per_pel: u32,
+        pub dm_pels_width: u32,
+        pub dm_pels_height: u32,
+        pub dm_display_flags: u32,
+        pub dm_display_frequency: u32,
+        pub dm_icm_method: u32,
+        pub dm_icm_intent: u32,
+        pub dm_media_type: u32,
+        pub dm_dither_type: u32,
+        pub dm_reserved1: u32,
+        pub dm_reserved2: u32,
+        pub dm_panning_width: u32,
+        pub dm_panning_height: u32,
+    }
+
+    /// MONITORINFOEXW — MONITORINFO followed by a device name, which is what
+    /// EnumDisplaySettingsW needs. cbSize distinguishes it from plain MONITORINFO.
+    #[repr(C)]
+    pub struct Monitorinfoexw {
+        pub cb_size: u32,
+        pub rc_monitor: [i32; 4],
+        pub rc_work: [i32; 4],
+        pub dw_flags: u32,
+        pub sz_device: [u16; 32],
+    }
+
+    pub const ENUM_CURRENT_SETTINGS: u32 = 0xFFFF_FFFF; // (DWORD)-1
+    pub const MONITOR_DEFAULTTONEAREST: u32 = 2;
+
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn MonitorFromWindow(hwnd: isize, flags: u32) -> isize;
+        pub fn GetMonitorInfoW(hmonitor: isize, info: *mut Monitorinfoexw) -> i32;
+        pub fn EnumDisplaySettingsW(device: *const u16, mode: u32, dm: *mut Devmodew) -> i32;
+    }
+
+    /// Refresh rate of the monitor showing `hwnd`, in Hz. None if any call fails.
+    pub fn hz_for_hwnd(hwnd: isize) -> Option<u32> {
+        unsafe {
+            let mon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+            if mon == 0 {
+                return None;
+            }
+            let mut info: Monitorinfoexw = std::mem::zeroed();
+            info.cb_size = std::mem::size_of::<Monitorinfoexw>() as u32;
+            if GetMonitorInfoW(mon, &mut info) == 0 {
+                return None;
+            }
+            let mut dm: Devmodew = std::mem::zeroed();
+            dm.dm_size = std::mem::size_of::<Devmodew>() as u16;
+            if EnumDisplaySettingsW(info.sz_device.as_ptr(), ENUM_CURRENT_SETTINGS, &mut dm) == 0 {
+                return None;
+            }
+            // 0 and 1 both mean "the hardware default" rather than a real rate.
+            match dm.dm_display_frequency {
+                0 | 1 => None,
+                hz => Some(hz),
+            }
+        }
+    }
+}
+
 #[derive(serde::Serialize)]
 struct ReplayInfo {
     name: String,
@@ -463,6 +576,43 @@ fn bridge_status() -> Result<BridgeStatus, String> {
     Ok(BridgeStatus { installed, path: dir.to_string_lossy().to_string(), current })
 }
 
+/// Refresh rate of the display this window is on, in Hz, plus the monitor's name.
+///
+/// Called again whenever the window may have moved: the answer is a property of the
+/// MONITOR, not the machine, and dragging BLACKBOX from a 360 Hz panel to a 60 Hz one
+/// changes what a smooth frame costs by a factor of six.
+///
+/// `hz: None` means "could not be determined", and the UI must treat that as *unknown*
+/// rather than substituting a default. A wrong refresh rate is worse than no refresh rate:
+/// it produces a frame budget that is confidently incorrect, and everything downstream
+/// inherits the error while looking measured.
+#[derive(serde::Serialize)]
+struct DisplayInfo {
+    hz: Option<u32>,
+    monitor: Option<String>,
+}
+
+#[tauri::command]
+fn display_info(window: tauri::Window) -> DisplayInfo {
+    #[cfg(target_os = "windows")]
+    {
+        let hz = window.hwnd().ok().and_then(|h| display::hz_for_hwnd(h.0 as isize));
+        let monitor = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .and_then(|m| m.name().cloned());
+        return DisplayInfo { hz, monitor };
+    }
+    // Every other platform: honestly unknown. The UI already has to handle that case on
+    // Windows too (a failed call), so there is one path, not a special case.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = &window;
+        DisplayInfo { hz: None, monitor: None }
+    }
+}
+
 /// Copy the embedded CSP app into the AC install. Idempotent — safe to run again to update.
 #[tauri::command]
 fn install_bridge() -> Result<String, String> {
@@ -536,6 +686,79 @@ fn find_car_bank(car_id: String) -> Result<String, String> {
 // Steam AC content. Not portable by design: they prove the native data layer
 // (folder scan, Steam vdf parse, byte read) works here, so the gallery can be
 // built on a verified foundation instead of by eye. `cargo test`.
+/* The hand-written Win32 declarations, checked against the ABI they claim to match.
+ *
+ * This is the whole risk of not taking a bindings crate, and it is not a crash risk — a
+ * misplaced field reads a NEIGHBOURING field and returns a number that looks like a
+ * refresh rate. dm_pels_height sits directly before dm_display_frequency, so the natural
+ * mistake returns 1440 Hz: obviously wrong. A subtler one returns dm_bits_per_pel, which is
+ * 32, and 32 Hz is merely unusual rather than impossible. So the layout is asserted rather
+ * than trusted, and the assertions are compile-time. */
+#[cfg(all(test, target_os = "windows"))]
+mod win32_abi {
+    use super::display::*;
+
+    #[test]
+    fn devmodew_matches_the_windows_headers() {
+        // DEVMODEW is 220 bytes on 64-bit Windows. If this fails, a field is wrong or
+        // missing and every value read past that point is garbage.
+        assert_eq!(std::mem::size_of::<Devmodew>(), 220, "DEVMODEW size");
+        let dm: Devmodew = unsafe { std::mem::zeroed() };
+        let base = &dm as *const _ as usize;
+        let off = |p: *const u32| p as usize - base;
+        // The field this module exists to read, at its documented offset.
+        assert_eq!(off(&dm.dm_display_frequency), 184, "dmDisplayFrequency offset");
+        // Two neighbours, so a shift in either direction is caught rather than aliased.
+        assert_eq!(off(&dm.dm_pels_width), 172, "dmPelsWidth offset");
+        assert_eq!(off(&dm.dm_display_flags), 180, "dmDisplayFlags offset");
+    }
+
+    #[test]
+    fn monitorinfoexw_matches_the_windows_headers() {
+        // 40 bytes of MONITORINFO + 32 UTF-16 chars of device name.
+        assert_eq!(std::mem::size_of::<Monitorinfoexw>(), 104, "MONITORINFOEXW size");
+    }
+
+    #[test]
+    fn enum_current_settings_is_negative_one() {
+        // ENUM_CURRENT_SETTINGS is (DWORD)-1. Passing 0 instead silently asks for
+        // "graphics mode 0" — a valid call returning a DIFFERENT mode's refresh rate.
+        assert_eq!(ENUM_CURRENT_SETTINGS, u32::MAX);
+    }
+
+    /* The end-to-end check the abstract ones cannot give: does it return a real rate for a
+     * real display? Enumerates every attached monitor rather than the window's, since there
+     * is no window in a unit test. Deliberately does NOT pin 360 — that is this desktop's
+     * panel today, and pinning it makes the test a machine detector. What it pins is that
+     * the value is a plausible refresh rate, which is exactly what a layout error breaks:
+     * a shifted read lands on 1440, 2560 or 32. */
+    #[test]
+    fn reports_a_plausible_rate_for_a_real_display() {
+        let mut found = 0;
+        for i in 0..8u32 {
+            let mut name = [0u16; 32];
+            // "\\.\DISPLAY<n>" — the device names EnumDisplaySettingsW accepts
+            for (k, c) in format!("\\\\.\\DISPLAY{}", i + 1).encode_utf16().enumerate() {
+                if k < 31 { name[k] = c; }
+            }
+            let mut dm: Devmodew = unsafe { std::mem::zeroed() };
+            dm.dm_size = std::mem::size_of::<Devmodew>() as u16;
+            let ok = unsafe { EnumDisplaySettingsW(name.as_ptr(), ENUM_CURRENT_SETTINGS, &mut dm) };
+            if ok == 0 { continue; }
+            found += 1;
+            let hz = dm.dm_display_frequency;
+            println!("  DISPLAY{}: {}x{} @ {} Hz", i + 1, dm.dm_pels_width, dm.dm_pels_height, hz);
+            assert!(
+                (24..=1000).contains(&hz),
+                "DISPLAY{} reported {} Hz — outside any real panel's range, which is what a \
+                 struct-layout error looks like (1440 = dmPelsHeight, 32 = dmBitsPerPel)",
+                i + 1, hz
+            );
+        }
+        assert!(found > 0, "no display enumerated at all — the call itself is wrong");
+    }
+}
+
 #[cfg(test)]
 mod smoke {
     use super::*;
@@ -1883,6 +2106,7 @@ pub fn run() {
             read_file,
             list_screenshots,
             find_track,
+            display_info,
             track_light_configs,
             find_car,
             find_car_bank,

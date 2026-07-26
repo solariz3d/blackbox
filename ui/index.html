@@ -6119,6 +6119,34 @@ function sortedSceneGroups(eye) {
   return _sgOrdered;
 }
 let frameMsEMA = 0, fpsPrev = 0, frameMsWorst = 0, frameWorstAt = 0;
+
+/* THE PANEL, ASKED RATHER THAN GUESSED.
+ *
+ * A frame is "fast enough" only relative to what the display is asking for, and the web
+ * platform has no way to find that out — no refresh-rate API, so the usual trick is timing
+ * requestAnimationFrame and calling the result the refresh rate. That inference is only
+ * valid while the GPU keeps up; the moment it does not, it measures the render loop and
+ * reports it as the panel. The native side just asks Windows, and gets an exact answer.
+ *
+ * It is polled, not read once, for two reasons that are both real on this machine: the
+ * window can be dragged between a 360 Hz panel and a 60 Hz one — six times the frame budget
+ * for the identical scene — and the refresh rate itself can be changed in Windows while the
+ * app is open. Three Win32 calls every two seconds is not a cost worth optimising.
+ *
+ * 0 means UNKNOWN and must stay distinguishable from a real value. Substituting 60 would
+ * manufacture a budget that is confidently wrong, and every reading derived from it would
+ * inherit the error while looking measured. */
+let displayHz = 0, displayName = "";
+function frameBudgetMs() { return displayHz ? 1000 / displayHz : 0; }
+async function refreshDisplayInfo() {
+  if (!TAURI) return;
+  try {
+    const d = await tinvoke("display_info");
+    displayHz = (d && d.hz) || 0;
+    displayName = (d && d.monitor) || "";
+  } catch (_) { displayHz = 0; displayName = ""; }
+}
+if (TAURI) { refreshDisplayInfo(); setInterval(refreshDisplayInfo, 2000); }
 let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on shift-frame crossings
 function loop(ts) {
   _treeTime = ts * 0.001;   // one sway clock per frame — lit and depth must agree
@@ -6219,7 +6247,15 @@ function loop(ts) {
       bfPrevFrame = i;
     }
     let _smk = 0; if (ex.smokeSlip) for (let k = 0; k < 4; k++) _smk = Math.max(_smk, ex.smokeSlip[i * 4 + k]);
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)}) · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
+    /* The panel's ask, alongside what we are actually delivering — the number the fps
+     * reading was always missing. "240 fps" means nothing on its own; "240 of 360" says
+     * the frame is 1.5x its budget, and on a 60 Hz panel the same 240 would mean the
+     * scene has headroom to spare. Shown as "—" when unknown rather than defaulted. */
+    const _bud = frameBudgetMs();
+    const _hud = displayHz
+      ? ` · panel ${displayHz}Hz ${_bud.toFixed(2)}ms budget ${frameMsEMA ? (100 * frameMsEMA / _bud).toFixed(0) : "0"}%`
+      : (TAURI ? " · panel —" : "");
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)})${_hud} · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
     drawScrub();
   }
   render();
