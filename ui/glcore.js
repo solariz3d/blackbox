@@ -4,14 +4,64 @@
  * rest of the app uses. The lit-scene fragment shader (FST) lives here — the day/night
  * lighting work edits it. Requires the <canvas id="gl"> to already be in the DOM. */
 
+/* SHOW ERRORS. Every script here shares one global scope, so an exception anywhere kills
+ * everything after it — and the window stays open, so the app looks fine and merely does
+ * nothing. Tonight that surfaced as "the start menu broke, can't pick a track": the real
+ * cause was a GLSL identifier clashing with a built-in, four files away, and the only
+ * visible symptom was a UI branch silently never running.
+ *
+ * An uncaught error now paints itself over the app with its stack. Loud beats subtle: a
+ * broken build that announces why costs one glance, and one that fails silently costs a
+ * debugging round every time. */
+(function () {
+  const show = (title, detail) => {
+    try {
+      if (document.getElementById("__bberr")) return;   // first error only; the rest cascade
+      const d = document.createElement("pre");
+      d.id = "__bberr";
+      d.style.cssText = "position:fixed;inset:0;z-index:99999;margin:0;padding:16px;overflow:auto;" +
+        "background:#140406;color:#ff9c9c;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap";
+      d.textContent = title + "\n\n" + detail;
+      (document.body || document.documentElement).appendChild(d);
+    } catch (_) {}
+  };
+  addEventListener("error", (e) => {
+    show("BLACKBOX stopped — an uncaught error killed the rest of the startup.",
+         (e.message || "") + "\n" + ((e.filename || "") + ":" + (e.lineno || "?")) +
+         "\n\n" + ((e.error && e.error.stack) || ""));
+  });
+  addEventListener("unhandledrejection", (e) => {
+    show("BLACKBOX — unhandled promise rejection.",
+         String((e.reason && e.reason.stack) || e.reason || ""));
+  });
+})();
+
 const cv = document.getElementById("gl");
 const gl = cv.getContext("webgl2", { antialias: true }) || cv.getContext("webgl", { antialias: true });
 const isGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
 
+/* A shader that fails to compile throws, which kills glcore.js — and because every later
+ * script shares this global scope, they never run either. The app still OPENS: the window
+ * is there, the HTML is there, and the only symptom is that nothing works, e.g. the track
+ * list never populates. That is a rotten signal, and it cost a debugging round tonight
+ * ("it launched, so the GLSL compiled" — it does not follow).
+ *
+ * So put the compiler's own message on the screen. It names the line and the identifier,
+ * which is the entire diagnosis for a typo or a shadowed built-in. */
 function shader(type, src) {
   const s = gl.createShader(type);
   gl.shaderSource(s, src); gl.compileShader(s);
-  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s) || "(no log)";
+    try {
+      const d = document.createElement("pre");
+      d.style.cssText = "position:fixed;inset:0;z-index:99999;margin:0;padding:16px;overflow:auto;" +
+        "background:#140406;color:#ff9c9c;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap";
+      d.textContent = "SHADER COMPILE FAILED — the rest of the app did not start.\n\n" + log;
+      (document.body || document.documentElement).appendChild(d);
+    } catch (_) { /* pre-DOM: the throw below still reports it */ }
+    throw new Error(log);
+  }
   return s;
 }
 
@@ -167,6 +217,31 @@ float pcf(sampler2D map, vec2 uv, float z, float bias, float texel){
   }
   return sh / 9.0;
 }
+/* SOFT PCF — 5x5, for night.
+ *
+ * A hard-edged pool of light on the floor reads as a solid object rather than light, and at
+ * night that is also wrong physically: the sun is a point source and throws a crisp edge,
+ * but after dark what comes through centrifuge's roof openings is skylight and moonlight —
+ * a source spread across the whole sky, whose shadow edge is correspondingly wide.
+ *
+ * Widening the 3x3 kernel alone would band: nine taps spread far apart are nine visible
+ * steps. 25 taps over the same spread stay smooth. It costs nothing by day because soft
+ * is 1 then and the cheap path is taken — the branch is on a uniform, so every fragment in
+ * the draw goes the same way and the GPU does not pay for the divergence. */
+float pcfSoft(sampler2D map, vec2 uv, float z, float bias, float texel, float soft){
+  if (soft <= 1.01) return pcf(map, uv, z, bias, texel);
+  // NOT named step (no backticks here — see below) — that is a GLSL built-in, and shadowing it fails to compile on ANGLE.
+  // shader() throws on that, glcore.js dies, and every script after it never runs: the whole
+  // UI goes with it, which showed up as "the start menu broke, can't pick a track".
+  float sp = texel * soft * 0.5;
+  float sh = 0.0;
+  for (int x = -2; x <= 2; x++) for (int y = -2; y <= 2; y++) {
+    float d = texture2D(map, uv + vec2(float(x), float(y)) * sp).r;
+    sh += (z - bias > d) ? 0.0 : 1.0;
+  }
+  return sh / 25.0;
+}
+uniform float uShadowSoft;   // 1 by day; rises after dark so light through a hole diffuses
 // cascaded directional shadow: the tight NEAR cascade carries the sharp shadow under and
 // around the car; the wide FAR cascade carries the rest of the track. The two are BLENDED
 // across the near box's border instead of switched with an if. The hard switch was the
@@ -182,7 +257,7 @@ float shadowFactor(vec3 wp, float bias){
     vec2 e0 = min(c0.xy, 1.0 - c0.xy);
     wNear = smoothstep(0.02, 0.12, min(e0.x, e0.y));   // outer ~10% of the box is the fade
   }
-  float sNear = wNear > 0.0 ? pcf(uShadowMap0, c0.xy, c0.z, bias, uShadowTexel0) : 1.0;
+  float sNear = wNear > 0.0 ? pcfSoft(uShadowMap0, c0.xy, c0.z, bias, uShadowTexel0, uShadowSoft) : 1.0;
   if (wNear >= 1.0) return sNear;        // fully inside the near box — skip the far sample
   // far cascade, with its own soft fade at the very edge of the bake
   vec4 lp1 = uLightVP1 * vec4(wp, 1.0);
@@ -193,13 +268,19 @@ float shadowFactor(vec3 wp, float bias){
     float edge = smoothstep(0.0, 0.05, min(e1.x, e1.y));
     // far cascade spans the WHOLE track, so its NDC depth is very compressed — a small
     // fixed bias here is several metres of world offset (a big bias would peter-pan badly).
-    if (edge > 0.0) sFar = mix(1.0, pcf(uShadowMap1, c1.xy, c1.z, 0.0009, uShadowTexel1), edge);
+    if (edge > 0.0) sFar = mix(1.0, pcfSoft(uShadowMap1, c1.xy, c1.z, 0.0009, uShadowTexel1, uShadowSoft), edge);
   }
   return mix(sFar, sNear, wNear);
 }
+uniform float uMatDebug;      // 1 = flat-colour by material, for identifying geometry
+uniform vec3 uMatDebugCol;
 void main(){
   vec4 tex = texture2D(uTex, vUV);
   if (uAlphaTest > 0.5 && tex.a < uAlphaRef) discard;
+  /* MATERIAL DEBUG. Four attempts at centrifuge's dome panels were spent inferring which
+   * material a shape belonged to from an offline profile. This asks the renderer instead:
+   * every material gets its own flat colour, so one screenshot names the geometry. */
+  if (uMatDebug > 0.5) { gl_FragColor = vec4(uMatDebugCol, 1.0); return; }
   vec3 n = normalize(vNrm);
   // directional key light + hemisphere ambient, all driven by the time of day
   float ndl = max(dot(n, normalize(uSunDir)), 0.0);
@@ -309,6 +390,9 @@ const tLoc = {
   uv: gl.getAttribLocation(progT, "aUV"),
   lamp: gl.getAttribLocation(progT, "aLamp"),
   lampBake: gl.getUniformLocation(progT, "uLampBake"),
+  shadowSoft: gl.getUniformLocation(progT, "uShadowSoft"),
+  matDebug: gl.getUniformLocation(progT, "uMatDebug"),
+  matDebugCol: gl.getUniformLocation(progT, "uMatDebugCol"),
   mvp: gl.getUniformLocation(progT, "uMVP"),
   model: gl.getUniformLocation(progT, "uModel"),
   tex: gl.getUniformLocation(progT, "uTex"),

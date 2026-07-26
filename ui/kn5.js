@@ -513,7 +513,30 @@ function extractScene(arrayBuffer, opts) {
     return [...buckets.values()];
   }
 
+  /* SKYLIGHT PANES — drop them; the opening is meant to be open.
+   *
+   * Centrifuge's dome openings are filled by geometry on a material named "Transparent"
+   * (852,176 tris, NULL diffuse, emissive [1,1,1]) which renders as a pale panel across
+   * every hole. The dome SHELL is a different material — `Track`, 2,248,704 tris on
+   * centmain.png — so removing this cannot open the dome itself.
+   *
+   * This was removed, then wrongly reinstated. The faint polygons that appeared alongside
+   * it were NOT this geometry: they were the per-vertex lamp bake faceting on the coarse
+   * dome (see bakeTrackLamps' BAKE_MIN_LAMPS note). Two separate causes with one look, and
+   * blaming this one cost a revert that filled the holes back in.
+   *
+   * Real alpha-blended meshes never reach here: the track load leaves skipTransparent at
+   * its default, so blendMode 1 is dropped at parse. This name has only ever matched opaque
+   * geometry named like glass, which on a track is a window. */
+  const PANE_NAME = /transparent|glass/i;
+  let paneTris = 0;
+
   for (const [materialId, g] of byMat) {
+    const mat = materials[materialId];
+    if (mat && PANE_NAME.test(mat.name || "")) {
+      for (const mesh of g.meshes) paneTris += mesh.ni / 3;
+      continue;
+    }
     for (const part of chunkOf(g.meshes)) {
       let nv = 0, ni = 0;
       let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;

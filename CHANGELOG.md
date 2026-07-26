@@ -1,5 +1,88 @@
 # Changelog
 
+## 2026-07-26 — Centrifuge: open skylights, light that tracks the sun — and making this app admit when it breaks
+
+Centrifuge's dome sat behind three separate faults that all looked like one, and the hour
+this took was mostly spent inferring instead of measuring. Every failure mode in this app is
+SILENT — a shader that will not compile leaves the window open, a script that throws takes
+every later script with it while the HTML sits there looking fine, and a culling system that
+rejects nothing is indistinguishable from one that works. The instruments added at the end
+each answered in one screenshot what reasoning had failed at for half an hour.
+
+### Fixed
+- **The near shadow cascade's caster reach was a hardcoded 600 m; centrifuge is 1191 m tall.**
+  Its dome fell outside the near box, so that cascade found no occluder overhead and reported
+  the ground lit — a pool of light travelling with the car, in exactly the shape of the box.
+  The far cascade had the dome all along, which is why everything outside the box was already
+  correctly dark. Reach is now derived from the scene's own bounds (the largest distance along
+  the light direction to any corner of the whole-scene box), so every caster is inside by
+  construction whatever its height. Costs depth precision only; being short deletes shadows.
+- **The far cascade was sized from the ROAD mesh** (`trackAABB`, tarmac plus a flat 120 m),
+  which assumes casters sit near the track. Centrifuge's caster ENCLOSES it: road radius
+  1206 m gives a 1326 m box against a 1352 m scene, so outer dome sections were never in the
+  depth map. Light leaked where the shell should block it, and since which part of the dome
+  covers a given point depends on the sun angle, **the leak moved as the time of day changed**.
+  Now sized and centred on the scene bounds, capped at 2.5x the road radius so one distant
+  backdrop cannot wreck resolution everywhere (keeps centrifuge's dome at 1.1x; rejects the
+  T-180 test track's 3540 m environment shell at 6x).
+- **Dome skylights are dropped, so the openings are open.** Geometry on a material named
+  `Transparent` (852,176 tris, NULL diffuse, emissive [1,1,1]) filled every hole with a pale
+  panel. Dropping it also removes it from the shadow cascades, so daylight actually passes
+  through — an invisible pane still occludes, which would stop light at a hole you can see
+  straight through. The dome SHELL is a different material (`Track`, 2,248,704 tris) and is
+  untouched.
+- **The vertex lamp bake no longer runs below 24 lamps.** The bake stores one colour per
+  VERTEX; on centrifuge's faceted dome a value across a facet metres wide renders as a flat
+  polygon of slightly different brightness — faint hexagons fixed in place, visible from
+  inside, receiving shadows like real surface, and impossible to delete because they are not
+  a mesh. It exists to kill a 60-lamp per-fragment loop on the test track (~230M iterations a
+  frame); centrifuge declares FIVE, where the live loop costs nothing, so there was no gain
+  to trade an artifact for. Reported by the keeper as "you put them there" — correct, and
+  ahead of the diagnosis.
+- **A stray backtick inside a shader template killed the whole app.** The shader sources are
+  JS template literals; a comment written in the GLSL used markdown-style backticks around an
+  identifier, which CLOSED the string, so the rest was parsed as JavaScript. `glcore.js` died
+  with "Unexpected identifier", every later script never ran, and — because they share one
+  global scope — the `if (inTauri)` branch that opens the track gallery was never reached.
+  Symptom: the start menu showed the browser drop-a-replay screen instead of the track list.
+  One character, four files from where it showed. Introduced while writing the comment that
+  explained the previous breakage of the same file.
+- **A GLSL built-in was shadowed** (`float step = …`) in the same function, which fails to
+  compile on ANGLE. Same silent death, same symptom.
+
+### Added
+- **Soft shadows after dark.** A hard-edged pool of light reads as a solid object lying on
+  the floor; at night what comes through a roof opening is skylight from a source the size of
+  the sky, whose shadow edge is correspondingly wide. `pcfSoft` uses 25 taps rather than
+  widening the 3x3 (nine taps spread far apart are nine visible steps), gated by `nightF` so
+  dusk crosses over gradually. Free by day — `soft` is 1, the cheap path is taken, and the
+  branch is on a uniform so no fragment diverges. Dial: `SHADOW_NIGHT_SOFT`.
+- **An error panel and a startup watchdog.** An uncaught error or a failed shader compile now
+  paints itself full-screen with its stack; and if the track gallery has not opened shortly
+  after load, a panel reports WHY — whether Tauri's bridge is present, how far the main script
+  reached, what the DOM sees. The reporter is the FIRST script in the document, because one
+  living in the second file is blind to the first. This is what finally located the backtick.
+- **`K` — flat-colour every material**, with a legend in the HUD. Five attempts at the dome
+  panels were spent inferring which material a shape belonged to from an offline profile;
+  this asks the renderer instead.
+- **`smoke` and `marks` GPU timers**, and a **far-cascade counter** (`far N(B)`: chunks drawn,
+  bakes run) — because "the bake never ran" and "it ran and drew nothing" look identical.
+- **`docs/REPLAY_TRACK_VERSION.md`** — thunderhead's line does not sit on the track, most
+  likely because the replay predates the current geometry. Not reproducible on the laptop (no
+  replay for it here). Records the check that would settle it and the thing not to do:
+  silently projecting an old line onto new geometry would make a wrong lap look right.
+
+### Tests
+- `test_shadersyntax.js` — no stray backticks inside shader templates, every UI script parses,
+  the 5,271-line inline block parses. Two seconds, and it catches the class of bug above.
+- `test_orthofrustum.js` — frustum planes against ORTHO light matrices; the cascade culling
+  was added while the only tests covered perspective. One assertion in it was wrong first
+  time and is kept, corrected, with the reason: `reach` lengthens the light box along the
+  light axis and does NOT widen it, so a caster 300 m vertically above the car is 111 m
+  off-axis and correctly rejected.
+- `test_matshape.js` — where a named material actually sits in the world, so "is this a pane
+  or the dome" is a measurement.
+
 ## 2026-07-26 — Night runs at full refresh: the lamp bake, spatial culling, and the descriptor that made three features do nothing
 
 The T-180 test track held 240 fps by day and fell to **150 with the lamps on**, dropping to

@@ -1,6 +1,58 @@
 ﻿<!DOCTYPE html>
 <html lang="en">
 <head>
+<script>
+/* FIRST script in the document, deliberately — the error reporter has to outrank every
+ * other script or it cannot report on them. It lived in glcore.js (the second file) and so
+ * was blind to anything earlier, and blind to a startup that fails WITHOUT throwing.
+ *
+ * Every script here shares one global scope: an exception anywhere stops the rest, the
+ * window stays open, and the app just quietly does the wrong thing. Tonight that read as
+ * "the start menu broke" when the actual cause was four files away.
+ *
+ * The watchdog covers the silent case. If the track gallery has not appeared shortly after
+ * load it prints WHY — whether Tauri's bridge is present, how far the main script got, and
+ * what the DOM thinks — instead of falling back to the browser drop-a-replay screen and
+ * looking like a design choice. */
+(function () {
+  window.__bbStage = "head";
+  var shown = false;
+  function panel(title, detail) {
+    if (shown) return; shown = true;
+    try {
+      var d = document.createElement("pre");
+      d.style.cssText = "position:fixed;inset:0;z-index:2147483647;margin:0;padding:16px;overflow:auto;" +
+        "background:#140406;color:#ff9c9c;font:12px/1.45 ui-monospace,Consolas,monospace;white-space:pre-wrap";
+      d.textContent = title + "\n\n" + detail;
+      (document.body || document.documentElement).appendChild(d);
+    } catch (e) {}
+  }
+  window.__bbPanel = panel;
+  addEventListener("error", function (e) {
+    panel("BLACKBOX stopped — uncaught error; scripts after this point never ran.",
+      (e.message || "") + "\n" + (e.filename || "") + ":" + (e.lineno || "?") +
+      "\nreached stage: " + window.__bbStage + "\n\n" + ((e.error && e.error.stack) || ""));
+  });
+  addEventListener("unhandledrejection", function (e) {
+    panel("BLACKBOX — unhandled promise rejection.",
+      String((e.reason && e.reason.stack) || e.reason || "") + "\nreached stage: " + window.__bbStage);
+  });
+  addEventListener("load", function () {
+    setTimeout(function () {
+      var g = document.getElementById("gallery");
+      if (g && !g.classList.contains("hidden")) return;        // gallery is up: nothing to say
+      panel("BLACKBOX — the track gallery never opened.",
+        "This is why you are being asked to drop a replay instead of picking a track.\n\n" +
+        "reached stage : " + window.__bbStage + "\n" +
+        "window.__TAURI__ : " + (typeof window.__TAURI__) + "\n" +
+        "  .core          : " + (window.__TAURI__ ? typeof window.__TAURI__.core : "n/a") + "\n" +
+        "  .invoke        : " + (window.__TAURI__ && window.__TAURI__.core ? typeof window.__TAURI__.core.invoke : "n/a") + "\n" +
+        "#gallery present : " + !!g + "\n" +
+        "readyState       : " + document.readyState);
+    }, 2500);
+  });
+})();
+</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>BLACKBOX — AC replay telemetry, in 3D</title>
@@ -2042,7 +2094,14 @@ let TRACK_LIGHTS_ON = 1;
  * This is not only a speed knob. A leaf-sized caster in a cascade sized for a whole circuit
  * aliases into noise, so the shadows it buys are bad shadows — which is why the track looks
  * wrong as well as running badly. Trunks keep casting, so the trees stay grounded. */
+let SHADOW_NIGHT_SOFT = 5;   // extra PCF spread at full night — see pcfSoft in glcore.js
 let TREE_MODE = 0;
+/* Flat-colour every material, to identify geometry on screen instead of inferring it from
+ * an offline profile. Four attempts at centrifuge's dome panels were spent guessing which
+ * material a shape belonged to. Key: K. */
+let MAT_DEBUG = 0;
+const MAT_PALETTE = [[1,0.25,0.25],[0.3,1,0.35],[0.35,0.55,1],[1,0.9,0.25],[1,0.4,1],[0.3,1,1],[1,0.6,0.2],[0.7,0.4,1],[0.6,1,0.6],[1,1,1]];
+let matLegend = "";
 /* CSP's COLOR intensities are photometric-ish and span a huge range — Miandros declares
  * 28.76 on its stadium floodlights, sakura 10 to 20, the T-180 test track 3. Fed straight
  * into a forward renderer with a range-normalised falloff, 28 is a white blob rather than a
@@ -2070,6 +2129,10 @@ let TRACK_LIGHT_GAIN = 0.5;
 let TRACK_EMISSIVE_GAIN = 0.6;
 let TRACK_SPEC_GAIN = 0.5;
 const MAX_TLIGHTS = 64;   // must match MAXTLIGHTS in glcore.js — see the sizing note there
+/* Bounds of the WHOLE scene, from the chunk AABBs — as opposed to `trackAABB`, which is the
+ * road surface only. The difference is the point: a caster does not have to be near the
+ * tarmac. Centrifuge's is a dome enclosing the entire circuit, 1191 m of vertical. */
+let sceneAABB = null;          // {x0,y0,z0,x1,y1,z1} or null
 let trackLights = [];          // every resolved lamp, world space
 let lampsBaked = false;        // night lamps live in the vertex buffers, not the light loop
 /* What the last setTrackLights / setShadow actually put on the GPU. The lit loop overrides
@@ -2615,7 +2678,33 @@ function renderCarDepth(cm, dir, timeChanged) {
     for (const g of ghostDraws) spread = Math.max(spread, far2(g.mat));
   }
   const nearR = Math.max(near.R, spread + 12);   // +12 m so a car at the edge keeps its own shadow
-  const nlv = buildLightVP(dir, nearR, [cx, cy, cz], SHADOW_CASTER_REACH);
+  /* HOW FAR UP-SUN THE NEAR CASCADE MUST LOOK, derived rather than assumed.
+   *
+   * This was the flat SHADOW_CASTER_REACH above, and a constant cannot be right for every
+   * track. Centrifuge is a dome enclosing the circuit with 1191 m of vertical: its roof sits
+   * FURTHER up-sun than 600 m, so it fell outside the near box, the near cascade found no
+   * occluder above the car, and reported the ground lit. The visible result is a pool of
+   * light that travels with the car through what should be shade — the near box drawn in
+   * light, exactly the shape of the box. The far cascade had the dome all along, which is
+   * why everything OUTSIDE the box was correctly dark.
+   *
+   * The reach now comes from the scene's own bounds: the largest distance, along the light
+   * direction, from the cascade centre to any corner of the whole-scene box. That is by
+   * construction enough to contain every caster on the track, whatever its height, and it
+   * costs only depth precision (24-bit over a couple of kilometres is still sub-millimetre)
+   * — whereas being short silently deletes shadows, which is the failure this just had. */
+  let reach = SHADOW_CASTER_REACH;
+  if (sceneAABB) {
+    const A = sceneAABB;
+    for (let i = 0; i < 8; i++) {
+      const px = (i & 1 ? A.x1 : A.x0) - cx;
+      const py = (i & 2 ? A.y1 : A.y0) - cy;
+      const pz = (i & 4 ? A.z1 : A.z0) - cz;
+      const along = px * dir[0] + py * dir[1] + pz * dir[2];   // dir points TO the light
+      if (along > reach) reach = along;
+    }
+  }
+  const nlv = buildLightVP(dir, nearR, [cx, cy, cz], reach);
   near.vp = nlv.vp; near.depth = nlv.depth;
   gl.bindFramebuffer(gl.FRAMEBUFFER, near.fbo); gl.viewport(0, 0, near.size, near.size); gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.uniformMatrix4fv(depthLoc.lightVP, false, near.vp);
@@ -2629,12 +2718,42 @@ function renderCarDepth(cm, dir, timeChanged) {
   // FAR — static whole-track bake, only when the sun moved (or first time this track)
   const far = SHADOW_CASCADES[1];
   if (trackAABB && (timeChanged || staticBakeTime === null)) {
-    // the far box is already kilometres deep from its own radius, so it needs no extra reach
-    const flv = buildLightVP(dir, trackAABB.radius + 120, [trackAABB.cx, trackAABB.cy, trackAABB.cz]);
+    /* SIZE THE FAR BOX TO THE CASTERS, NOT TO THE ROAD.
+     *
+     * This was `trackAABB.radius + 120`, and trackAABB comes from the ROAD MESH — a box
+     * drawn around the tarmac with a flat 120 m margin. That assumes casters sit near the
+     * track. Centrifuge's caster is a dome ENCLOSING it: road radius 1206 m gives a 1326 m
+     * box against a 1352 m scene, so the outermost dome sections are not in the depth map
+     * at all. Light leaks through where the shell should block it, and because which part
+     * of the dome covers a given point depends on the sun angle, the leak MOVES as the time
+     * of day changes — patches appearing and sliding in ways the geometry cannot explain.
+     *
+     * The scene bounds are the honest extent, and they are already computed for the near
+     * cascade's reach. Centred on the scene too, not on the road: a box centred on the
+     * tarmac of an enclosing structure is off-centre for the thing doing the casting.
+     *
+     * CAPPED, because one bad chunk should not wreck the resolution of every track. The
+     * T-180 test track carries a distant environment shell 3540 m across that casts nothing
+     * anyone sees; sizing to it would quadruple the texel footprint of a 943 m circuit. The
+     * cap keeps a genuinely enclosing caster (centrifuge, 1.1x the road) and rejects a
+     * far-off backdrop (the test track, 6x). */
+    const roadR = trackAABB.radius + 120;
+    let fr = roadR, fc = [trackAABB.cx, trackAABB.cy, trackAABB.cz];
+    if (sceneAABB) {
+      const A = sceneAABB;
+      const sc = [(A.x0 + A.x1) / 2, (A.y0 + A.y1) / 2, (A.z0 + A.z1) / 2];
+      const sr = 0.5 * Math.hypot(A.x1 - A.x0, A.y1 - A.y0, A.z1 - A.z0);
+      if (sr > fr && sr <= roadR * 2.5) { fr = sr; fc = sc; }
+    }
+    const flv = buildLightVP(dir, fr, fc);
     far.vp = flv.vp; far.depth = flv.depth;
     gl.bindFramebuffer(gl.FRAMEBUFFER, far.fbo); gl.viewport(0, 0, far.size, far.size); gl.clear(gl.DEPTH_BUFFER_BIT);
     gl.uniformMatrix4fv(depthLoc.lightVP, false, far.vp);
-    if (sceneGroups) drawG(sceneGroups, IDENT4, frustumPlanes(far.vp));   // track only — the car is in the near cascade
+    // counted because "the ground outside the near box is always lit" has two very different
+    // causes — the bake never running, or it running and drawing nothing — and they look
+    // identical on screen
+    if (sceneGroups) cullStat.far = drawG(sceneGroups, IDENT4, frustumPlanes(far.vp));   // track only — the car is in the near cascade
+    cullStat.bakes++;
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); shadowsRendered = true;
 }
@@ -3363,6 +3482,12 @@ function render() {
       gl.uniform1f(tLoc.shadowTexel0, 1 / c0.size); gl.uniform1f(tLoc.shadowTexel1, 1 / c1.size);
       gl.uniform1f(tLoc.shadowDepth0, c0.depth || 1);   // so the shader's metre-based bias converts correctly
       gl.uniform1f(tLoc.shadowOn, 1); _shadowBase = 1;
+      /* Soften the shadow edge after dark. By day the sun is effectively a point and the
+       * edge should stay crisp; at night the light through a roof opening is skylight from
+       * a source the size of the sky, and a hard rim makes the pool read as a solid object
+       * lying on the floor rather than as light. Scales with nightF so dusk crosses over
+       * gradually instead of snapping. */
+      gl.uniform1f(tLoc.shadowSoft, 1 + nightF * SHADOW_NIGHT_SOFT);
       gl.activeTexture(gl.TEXTURE0);
     } else { gl.uniform1f(tLoc.shadowOn, 0); _shadowBase = 0; }
   };
@@ -3409,6 +3534,11 @@ function render() {
        * keeper's Assetto workaround; the leaves keep their texture and the sun's diffuse
        * term, which is all that ever read as foliage anyway. */
       if (g.radius && !sphereInFrustum(camPlanes, g.centre, g.radius)) continue;
+      if (MAT_DEBUG) {
+        let mi = matOrder.indexOf(g.matName); if (mi < 0) { matOrder.push(g.matName); mi = matOrder.length - 1; }
+        const c = MAT_PALETTE[mi % MAT_PALETTE.length];
+        gl.uniform1f(tLoc.matDebug, 1); gl.uniform3f(tLoc.matDebugCol, c[0], c[1], c[2]);
+      } else gl.uniform1f(tLoc.matDebug, 0);
       cullStat.track++;
       const unlit = g.foliage && TREE_MODE >= 2;
       gl.uniform1i(tLoc.tLightN, unlit ? 0 : _tlN);
@@ -3770,6 +3900,16 @@ addEventListener("keydown", e => {
     e.preventDefault(); return;
   }
   if (k === "l") { setTrackLampsOn(!TRACK_LIGHTS_ON); e.preventDefault(); return; }
+  if (k === "k") {
+    MAT_DEBUG = MAT_DEBUG ? 0 : 1;
+    if (MAT_DEBUG && sceneGroups) {
+      const seen = [];
+      for (const g of sceneGroups) if (!seen.includes(g.matName)) seen.push(g.matName);
+      const NAMES = ["red","green","blue","yellow","magenta","cyan","orange","purple","pale","white"];
+      matLegend = " | MAT: " + seen.map((n,i)=>NAMES[i%NAMES.length]+"="+n).join(" ");
+    } else matLegend = "";
+    e.preventDefault(); return;
+  }
   if (FLY.has(k)) { flyKeys.add(k); e.preventDefault(); }
 });
 addEventListener("keyup", e => flyKeys.delete(e.key.toLowerCase()));
@@ -4424,6 +4564,28 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
         for (const t of scene.textures) texByName[t.name] = t;
         for (const g of scene.groups) {
           const mat = scene.materials[g.materialId] || {};
+          /* NAME-BASED MATERIAL RULES ON A TRACK: DON'T. Three attempts died here.
+           *
+           * Centrifuge's dome openings sit on a material named "Transparent". It was drawn
+           * blended at a hardcoded alpha 0.16 because the NAME matched /transparent|glass/,
+           * which painted a milky white film over every opening. Trusting the file's
+           * blendMode 0 instead filled them with plate. Dropping the material entirely
+           * deleted 852,176 triangles across 25 chunks — 26% of the track, including chunks
+           * 1033 m tall that are dome STRUCTURE, not glazing — and exposed everything behind
+           * them, which is where the stray shapes came from.
+           *
+           * The track says what it is, in its own CSP config, and none of the three guesses
+           * were close:
+           *     [SHADER_REPLACEMENT] MATERIALS = Light, Transparent  CULL_MODE = DOUBLESIDED
+           *     [MATERIAL_ADJUSTMENT] CONDITION = NIGHT_SHARP  MATERIALS = Transparent
+           *                           ksEmissive = 10,10,10,12   (off: 1,1,1)
+           * It is a DOUBLE-SIDED EMISSIVE surface — the openings are meant to glow, and are
+           * the light source. Not glass, not a hole, not a wall.
+           *
+           * So the material name buys nothing here and the CSP config buys everything.
+           * Reading MATERIAL_ADJUSTMENT / SHADER_REPLACEMENT is the real fix; until then
+           * these render as ordinary opaque geometry, which is at least what the kn5 says
+           * and leaves the structure intact. */
           let tex;
           try {
             const entry = mat.txDiffuse && texByName[mat.txDiffuse];
@@ -4456,7 +4618,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
               if (ee) emisTex = await makeSceneTexture(ee.blob, ee.name);
             } catch (e) { emisTex = null; }
           }
-          const translucent = /transparent|glass/i.test(mat.name || "");
+          const translucent = mat.blendMode === 1;   // skylight panes were dropped above
           allGroups.push({ posBuf, nrmBuf, uvBuf, idxBuf, count: g.idx.length, tex,
                            alphaTested: !!(mat.alphaTested), translucent,
                            emissive: mat.emissive || null, emisTex,
@@ -4473,6 +4635,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
                             * frustum culling had no bounds so it rejected 0 of 43 chunks, and
                             * the lamp bake had no vertex data so it produced no buffer. Two
                             * near-identical group descriptors, one live and one not. */
+                           matName: mat.name || "?",
                            foliage: isFoliageMaterial(mat),
                            tris: (g.idx.length / 3) | 0,
                            centre: g.centre, radius: g.radius,
@@ -4514,6 +4677,19 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
 
     if (allGroups.length) {
       allGroups.sort((a, b) => (a.translucent ? 1 : 0) - (b.translucent ? 1 : 0));
+      // whole-scene bounds, before the bake releases anything — the shadow reach needs them
+      { let x0 = 1e18, y0 = 1e18, z0 = 1e18, x1 = -1e18, y1 = -1e18, z1 = -1e18, any = false;
+        for (const g of allGroups) {
+          if (!g.centre || g.radius === undefined) continue;
+          any = true;
+          if (g.centre[0] - g.radius < x0) x0 = g.centre[0] - g.radius;
+          if (g.centre[1] - g.radius < y0) y0 = g.centre[1] - g.radius;
+          if (g.centre[2] - g.radius < z0) z0 = g.centre[2] - g.radius;
+          if (g.centre[0] + g.radius > x1) x1 = g.centre[0] + g.radius;
+          if (g.centre[1] + g.radius > y1) y1 = g.centre[1] + g.radius;
+          if (g.centre[2] + g.radius > z1) z1 = g.centre[2] + g.radius;
+        }
+        sceneAABB = any ? { x0, y0, z0, x1, y1, z1 } : null; }
       bakeTrackLamps(allGroups);
       sceneGroups = allGroups;
     } else if (roadChunks.length) {
@@ -4593,6 +4769,7 @@ function resetTrackScene() {
     }
     sceneGroups = null;
   }
+  sceneAABB = null;   // bounds belong to the track that was unloaded, not the next one
   trackLights = [];   // lamps belong to the track that was unloaded, not the next one
   lampsBaked = false;
   if (carGroups) {
@@ -4667,7 +4844,28 @@ function bakeTrackLamps(groups) {
   for (const g of groups) { g.lampBuf = null; }
   const lamps = trackLights.filter(L => L.night);
   lampsBaked = false;
-  if (!lamps.length) { for (const g of groups) { g.pos = g.nrm = null; } return; }
+  /* ONLY BAKE WHEN IT PAYS, because baking is not free in looks.
+   *
+   * The bake stores one colour PER VERTEX and lets the rasteriser interpolate it. On dense
+   * geometry that is invisible. On a coarse mesh it is not: centrifuge's dome is a faceted
+   * sphere, and a per-vertex value across a facet metres wide renders as a flat polygon of
+   * slightly different brightness — faint hexagons in fixed spots, visible from inside,
+   * receiving shadows like any other surface, and impossible to remove by deleting meshes
+   * because they are not a mesh. Reported as "you put them there", which was exactly right;
+   * five attempts went into hunting geometry that the renderer had painted on.
+   *
+   * The bake exists to delete a 60-lamp per-fragment loop on the T-180 test track, roughly
+   * 230M iterations a frame. Centrifuge declares FIVE lamps. Five in the live loop cost
+   * nothing measurable, so there is no gain here to trade an artifact for.
+   *
+   * A threshold rather than a switch: above it the loop dominates and faceting is worth
+   * accepting; below it the loop is noise and it is not. */
+  const BAKE_MIN_LAMPS = 24;
+  if (lamps.length < BAKE_MIN_LAMPS) {
+    for (const g of groups) { g.pos = g.nrm = null; }
+    console.log(`[lamps] ${lamps.length} night lamp(s) — below ${BAKE_MIN_LAMPS}, keeping the live loop (no vertex bake)`);
+    return;
+  }
 
   let litVerts = 0, pairs = 0;
   lampsBaked = true;
@@ -5046,6 +5244,7 @@ function loadFile(file) {
 // In the BLACKBOX app: native disk access — the replay folder is auto-listed,
 // files load with no prompts, and a replay's track is fetched from the Steam
 // AC install automatically. Feature-detected via the global Tauri API.
+window.__bbStage = "reached TAURI probe (line ~5196)";
 const TAURI = (window.__TAURI__ && window.__TAURI__.core) ? window.__TAURI__.core : null;
 const inTauri = !!TAURI;
 function tinvoke(cmd, args) { return TAURI.invoke(cmd, args); }
@@ -5339,7 +5538,7 @@ if (inTauri) {
     "NO TRACK LOADED — the ribbon is your driven line. The track loads itself once a replay is open.";
   document.getElementById("hdrHome").addEventListener("click", showGallery);
   document.getElementById("tlback").addEventListener("click", showGallery);
-  const boot = () => { showGallery(); renderGallery(); };
+  const boot = () => { window.__bbStage = "boot() running"; showGallery(); renderGallery(); };
   if (document.readyState === "loading") window.addEventListener("DOMContentLoaded", boot);
   else boot();
 }
@@ -5503,7 +5702,8 @@ const GT = (function () {
 /* How many chunks survived culling, for the HUD. Reported rather than assumed: a culling
  * system that silently rejects nothing looks exactly like one that works, and the first
  * question about any of this is "is it actually skipping anything". */
-const cullStat = { track: 0, shadow: 0, total: 0 };
+const cullStat = { track: 0, shadow: 0, far: -1, bakes: 0, total: 0 };
+const matOrder = [];   // material name -> palette index, stable across frames
 let frameMsEMA = 0, fpsPrev = 0, frameMsWorst = 0, frameWorstAt = 0;
 let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on shift-frame crossings
 function loop(ts) {
@@ -5604,7 +5804,7 @@ function loop(ts) {
       bfPrevFrame = i;
     }
     let _smk = 0; if (ex.smokeSlip) for (let k = 0; k < 4; k++) _smk = Math.max(_smk, ex.smokeSlip[i * 4 + k]);
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)}) · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total}${GT.text()}`;
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)}) · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${GT.text()}${matLegend}`;
     drawScrub();
   }
   render();

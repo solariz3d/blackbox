@@ -57,11 +57,13 @@ const rows = [];
 const chunkR = [];   // every chunk's bounding radius, for the sizing report
 let bx0 = Infinity, by0 = Infinity, bz0 = Infinity, bx1 = -Infinity, by1 = -Infinity, bz1 = -Infinity;
 
+let ab = null;
 for (const { p } of kn5s.slice(0, 6)) {
   let scene;
   try {
     const b = fs.readFileSync(p);
-    scene = K.extractScene(b.buffer.slice(b.byteOffset, b.byteOffset + b.length), { lod0Only: true });
+    ab = b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+    scene = K.extractScene(ab, { lod0Only: true });
   } catch (e) { console.log(`  (skip ${path.basename(p)}: ${e.message})`); continue; }
 
   const mats = scene.materials || [];
@@ -88,7 +90,7 @@ console.log("heaviest materials:");
 rows.sort((a, b) => b.tris - a.tris);
 console.log(`  ${"tris".padStart(8)} ${"meshes".padStart(7)}  ${"tris/mesh".padStart(9)}  material`);
 for (const r of rows.slice(0, 14)) {
-  console.log(`  ${String(r.tris).padStart(8)} ${String(r.meshes).padStart(7)}  ` +
+  console.log(`  ${String(r.tris).padStart(8)} ${String(r.meshes).padStart(7)} bm${r.blend} at${r.alpha?1:0} ` +
               `${String(Math.round(r.tris / r.meshes)).padStart(9)}  ${r.foliage ? "FOLIAGE " : "        "}` +
               `${r.name.slice(0, 22).padEnd(23)} ${r.shader.slice(0, 20)}`);
 }
@@ -115,6 +117,34 @@ if (chunkR.length) {
   console.log(`\nchunk sizes (radius, metres):`);
   console.log(`  track radius ${trackR.toFixed(0)}   chunks ${chunkR.length}   ` +
               `median ${med.toFixed(0)}   largest ${chunkR[chunkR.length - 1].toFixed(0)}`);
+  /* THE FAR SHADOW CASCADE is sized from `trackAABB`, which is built from the ROAD MESH
+   * only, plus a flat 120 m margin. Anything outside that box is clipped out of the bake and
+   * casts no shadow beyond the near cascade. On a track whose caster ENCLOSES the road —
+   * centrifuge's dome — the caster can sit entirely outside a box drawn around the tarmac. */
+  try {
+    const road = K.extractRoadMesh(ab);
+    if (road && road.verts && road.verts.length) {
+      let a = 1e18, b2 = 1e18, c2 = 1e18, d2 = -1e18, e2 = -1e18, f2 = -1e18;
+      const V = road.verts;
+      for (let v = 0; v < V.length; v += 3) {
+        if (V[v] < a) a = V[v]; if (V[v] > d2) d2 = V[v];
+        if (V[v+1] < b2) b2 = V[v+1]; if (V[v+1] > e2) e2 = V[v+1];
+        if (V[v+2] < c2) c2 = V[v+2]; if (V[v+2] > f2) f2 = V[v+2];
+      }
+      const roadR = 0.5 * Math.hypot(d2 - a, e2 - b2, f2 - c2);
+      const boxR = roadR + 120;
+      console.log(`\nfar shadow cascade coverage:`);
+      console.log(`  road-only radius ${roadR.toFixed(0)} m  ->  far box half-width ${boxR.toFixed(0)} m`);
+      console.log(`  whole-scene radius ${trackR.toFixed(0)} m`);
+      const outside = chunkR.filter((r, i) => r > boxR).length;
+      console.log(boxR >= trackR
+        ? `  => the box covers the scene; casters are not being clipped by size.`
+        : `  => THE BOX IS SMALLER THAN THE SCENE by ${(trackR - boxR).toFixed(0)} m. Casters ` +
+          `outside it\n     cast no shadow past the near cascade — the ground reads as lit.`);
+      if (outside) console.log(`  ${outside} chunk(s) are individually larger than the whole box`);
+    }
+  } catch (e) { console.log(`\n(road mesh unavailable: ${e.message})`); }
+
   const spanning = chunkR.filter(r => r > trackR * 0.5).length;
   console.log(`  ${spanning} chunk(s) span more than half the track — those cull rarely`);
   console.log(`  => a chunk of radius ${med.toFixed(0)} m in a ${trackR.toFixed(0)} m circuit is ` +
