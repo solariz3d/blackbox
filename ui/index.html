@@ -4587,25 +4587,6 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
            * Reading MATERIAL_ADJUSTMENT / SHADER_REPLACEMENT is the real fix; until then
            * these render as ordinary opaque geometry, which is at least what the kn5 says
            * and leaves the structure intact. */
-          let tex;
-          try {
-            const entry = mat.txDiffuse && texByName[mat.txDiffuse];
-            tex = entry ? await makeSceneTexture(entry.blob, entry.name) : makeFallbackTexture([120, 124, 132]);
-          } catch (e) {
-            tex = makeFallbackTexture([120, 124, 132]);
-          }
-          const posBuf = gl.createBuffer();
-          gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
-          gl.bufferData(gl.ARRAY_BUFFER, g.pos, gl.STATIC_DRAW);
-          const nrmBuf = gl.createBuffer();
-          gl.bindBuffer(gl.ARRAY_BUFFER, nrmBuf);
-          gl.bufferData(gl.ARRAY_BUFFER, g.nrm, gl.STATIC_DRAW);
-          const uvBuf = gl.createBuffer();
-          gl.bindBuffer(gl.ARRAY_BUFFER, uvBuf);
-          gl.bufferData(gl.ARRAY_BUFFER, g.uv, gl.STATIC_DRAW);
-          const idxBuf = gl.createBuffer();
-          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
-          gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, g.idx, gl.STATIC_DRAW);
           /* The emissive MASK, when the material declares one. Uploaded on its own texture
            * unit rather than folded into the diffuse, because the two are sampled with the
            * same UVs but mean different things: one is the surface, one is where the light
@@ -4619,29 +4600,15 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
               if (ee) emisTex = await makeSceneTexture(ee.blob, ee.name);
             } catch (e) { emisTex = null; }
           }
-          const translucent = mat.blendMode === 1;   // skylight panes were dropped above
-          allGroups.push({ posBuf, nrmBuf, uvBuf, idxBuf, count: g.idx.length, tex,
-                           alphaTested: !!(mat.alphaTested), translucent,
-                           emissive: mat.emissive || null, emisTex,
-                           spec: mat.specular || 0, specExp: mat.specExp || 10,
-                           // 0 on disk means "unset" — 280 of 294 materials say 0, and
-                           // taking that literally would make every alpha-tested fence
-                           // opaque, since every texel passes `a < 0`.
-                           alphaRef: mat.alphaRef > 0 ? mat.alphaRef : 0.5,
-                           /* THE TRACK IS BUILT HERE, not by uploadGroups — that one serves
-                            * cars. Three separate features were added to the other
-                            * descriptor and silently did nothing on the only geometry they
-                            * were written for: the foliage policy had no flag to test (which
-                            * is why stripping sakura's 831k canopy triangles changed nothing),
-                            * frustum culling had no bounds so it rejected 0 of 43 chunks, and
-                            * the lamp bake had no vertex data so it produced no buffer. Two
-                            * near-identical group descriptors, one live and one not. */
-                           matName: mat.name || "?",
-                           foliage: isFoliageMaterial(mat),
-                           tris: (g.idx.length / 3) | 0,
-                           centre: g.centre, radius: g.radius,
-                           pos: g.pos, nrm: g.nrm });   // released by bakeTrackLamps
-          if (!translucent) collGroups.push({ pos: g.pos, idx: g.idx }); // solid → collider
+          // Built by the SAME factory as the car groups — see makeGroup's birth
+          // certificate for the 2026-07-25 bug that mandates it. Track-only extras ride
+          // in `extra`; everything else gets the shared defaults.
+          const grp = await makeGroup(g, mat, texByName, [120, 124, 132], {
+            emissive: mat.emissive || null, emisTex,
+            spec: mat.specular || 0, specExp: mat.specExp || 10,
+          });
+          allGroups.push(grp);
+          if (!grp.translucent) collGroups.push({ pos: g.pos, idx: g.idx }); // solid → collider
           triCount += g.triCount;
         }
       } catch (sceneErr) {
@@ -4651,7 +4618,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
         // Match this TRACK's own drivable surface keys, not the Kunos defaults. AC names
         // a physical mesh <digit><SURFACE_KEY> and resolves the key in surfaces.ini, and
         // real circuits define their own (spa: ASPH-SPA_BLACK, monza: MONZA-ASPH). With
-        // the hardcoded ROAD|KERB|PIT|RUNOFF, 15 of 62 installed tracks found no road at
+        // the hardcoded ROAD|KERB|PIT|RUNOFF, 15 tracks (of a then-62 library; now 32 — see docs/TRACK_ROAD_DETECTION.md) found no road at
         // all — spa, monza, mugello, zandvoort among them — so smoke never collided and
         // the edge readout never worked there.
         const road = KN5.extractRoadMesh(item.ab, roadKeyPattern);
@@ -4767,6 +4734,9 @@ function resetTrackScene() {
       gl.deleteBuffer(g.uvBuf); gl.deleteBuffer(g.idxBuf);
       if (g.lampBuf) gl.deleteBuffer(g.lampBuf);   // the baked lamp light, one per chunk
       if (g.tex) gl.deleteTexture(g.tex);
+      // the emissive mask was the one GPU resource this loop forgot — every track swap
+      // leaked them until the 2026-07-26 structure audit counted the deletion sites
+      if (g.emisTex) gl.deleteTexture(g.emisTex);
     }
     sceneGroups = null;
   }
@@ -4933,33 +4903,62 @@ function bakeTrackLamps(groups) {
 }
 
 // upload a list of baked kn5 mesh groups to the GPU
+/* EVERY GPU-facing mesh group is built here — track chunks and car parts alike.
+ *
+ * This factory exists because two near-identical constructors (this site and an inline
+ * push in the track loader) let three separate features land on the dead one on
+ * 2026-07-25: the foliage policy had no flag to test, frustum culling had no bounds, and
+ * the lamp bake had no vertex data — all live in code, all silently doing nothing, all
+ * tests green. A field that any render pass reads must be set HERE, once, with a default;
+ * per-kind extras (car: glass; track: the emissive family) ride in `extra`.
+ * test_groupshape.js pins the contract: the field-union every pass reads must exist on
+ * both kinds, and `posBuf:` may appear in exactly one object literal in this file.
+ *
+ * Notes carried from the old constructors:
+ * - alphaRef: 0 on disk means "unset" — 280 of 294 materials say 0, and taking that
+ *   literally would make every alpha-tested fence opaque (every texel passes `a < 0`).
+ * - emissive/spec default to the neutral values the car pass uploads anyway, so cars
+ *   gaining these fields changes nothing.
+ * - centre/radius come from the chunker for EVERY scene — in world space for tracks, in
+ *   MODEL space for cars. Passes must only cull with them against a matching frustum;
+ *   today only track draws pass planes, and that is a call-convention contract, not a
+ *   data guarantee.
+ * - pos/nrm are kept until bakeTrackLamps releases them (track); cars keep them, and
+ *   carLights/wheel code reads the raw scene groups instead. */
+async function makeGroup(g, mat, texByName, fallbackRGB, extra) {
+  let tex;
+  try {
+    const entry = mat.txDiffuse && texByName[mat.txDiffuse];
+    tex = entry ? await makeSceneTexture(entry.blob, entry.name) : makeFallbackTexture(fallbackRGB);
+  } catch (e) { tex = makeFallbackTexture(fallbackRGB); }
+  const mk = (data, target) => { const b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); return b; };
+  return Object.assign({
+    posBuf: mk(g.pos, gl.ARRAY_BUFFER), nrmBuf: mk(g.nrm, gl.ARRAY_BUFFER),
+    uvBuf: mk(g.uv, gl.ARRAY_BUFFER), idxBuf: mk(g.idx, gl.ELEMENT_ARRAY_BUFFER),
+    count: g.idx.length, tex,
+    alphaTested: !!mat.alphaTested,
+    translucent: mat.blendMode === 1,
+    alphaRef: mat.alphaRef > 0 ? mat.alphaRef : 0.5,
+    emissive: null, emisTex: null, spec: 0, specExp: 10,
+    matName: mat.name || "?",
+    foliage: isFoliageMaterial(mat),
+    tris: (g.idx.length / 3) | 0,
+    centre: g.centre, radius: g.radius,
+    lampBuf: null,
+    glass: false,
+    pos: g.pos, nrm: g.nrm,
+  }, extra || {});
+}
+
 async function uploadGroups(groupList, scene, fallbackRGB) {
   const texByName = {};
   for (const t of scene.textures) texByName[t.name] = t;
   const out = [];
   for (const g of groupList) {
     const mat = scene.materials[g.materialId] || {};
-    let tex;
-    try {
-      const entry = mat.txDiffuse && texByName[mat.txDiffuse];
-      tex = entry ? await makeSceneTexture(entry.blob, entry.name) : makeFallbackTexture(fallbackRGB);
-    } catch (e) { tex = makeFallbackTexture(fallbackRGB); }
-    const mk = (data, target) => { const b = gl.createBuffer(); gl.bindBuffer(target, b); gl.bufferData(target, data, gl.STATIC_DRAW); return b; };
-    out.push({
-      posBuf: mk(g.pos, gl.ARRAY_BUFFER), nrmBuf: mk(g.nrm, gl.ARRAY_BUFFER),
-      uvBuf: mk(g.uv, gl.ARRAY_BUFFER), idxBuf: mk(g.idx, gl.ELEMENT_ARRAY_BUFFER),
-      count: g.idx.length, tex, alphaTested: !!mat.alphaTested,
-      blend: mat.blendMode === 1,   // transparent (alpha-blend)
+    out.push(await makeGroup(g, mat, texByName, fallbackRGB, {
       glass: /glass/i.test(mat.name || "") && !/headlight/i.test(mat.name || ""),   // windscreen → reflective pass
-      foliage: isFoliageMaterial(mat),   // canopy, not trunk — see kn5.js for why that line
-      tris: (g.idx.length / 3) | 0,
-      // world-space bounds of this spatial chunk, for frustum culling. Car geometry has
-      // none (it moves, and its groups are baked in model space) — absent radius simply
-      // means "always draw", which is correct for anything not chunked in world space.
-      centre: g.centre, radius: g.radius,
-      // kept only until bakeTrackLamps has read them, then released — see there
-      pos: g.pos, nrm: g.nrm,
-    });
+    }));
   }
   return out;
 }
@@ -4995,7 +4994,10 @@ async function loadCarModel(carId) {
     const scene = KN5.extractScene(ab, { lod0Only: true, skipTransparent: false });   // keep glass (windscreen) — normally skipped
     carGroups = await uploadSceneGroups(scene, [150, 152, 158]);
     carGlass = carGroups.filter(g => g.glass);       // windscreen → reflective glass pass
-    carGroups = carGroups.filter(g => !g.blend);     // opaque body only (all transparent stays out of the solid pass)
+    // `translucent`, not the old car-only alias `blend` — one name across both group kinds,
+    // because a pass reading the alias on the other kind gets undefined and silently no-ops
+    // (the exact shape of the 2026-07-25 foliage bug).
+    carGroups = carGroups.filter(g => !g.translucent);   // opaque body only
     // light emitters from the model's own housings (model space): headlight/brakelight
     // bulbs as one centroid per side, and the LED arrays (white + red) clustered per lamp.
     // head = per-side beam origins (2); headLamps/tail = the individual 3-per-side lamps

@@ -1,6 +1,9 @@
 # Road-surface detection — open problem
 
-**Status: 15 of 62 installed tracks find no road mesh. One fix attempted and reverted.**
+**Status: 15 tracks found no road mesh when this was measured against a 62-track library.
+The library is now 32 tracks (counted 2026-07-26) — the affected list below predates that
+change and needs a re-count before anyone acts on the numbers. One fix attempted and
+reverted.**
 
 ## The symptom
 
