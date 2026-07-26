@@ -516,6 +516,208 @@ const depthLoc = {
   model: gl.getUniformLocation(progDepth, "uModel"),
 };
 
+/* ===================== THE ENVIRONMENT REMASTER — instanced trees =====================
+ * Two programs: an instanced lit pass and an instanced ALPHA-TESTED depth pass (the
+ * keeper's dappled shadows — progDepth above cannot alpha-test, which is why the original
+ * trees cast solid quad blobs; a confirmed bug these trees fix by construction).
+ *
+ * GL2-only by design: instancing pairs with the cascade system, which is itself GL2-gated
+ * (initShadow bails on GL1). On GL1 the remaster never activates and the original trees
+ * keep drawing.
+ *
+ * The shadow-receive block below is a DUPLICATE of FST's pcf/pcfSoft/shadowFactor, shared
+ * by string CONCATENATION (never template interpolation — test_shadersyntax's scanner
+ * reads plain template literals). FST keeps its own inline copy on purpose: that shader
+ * has twice been killed by one-character edits (a backtick, a shadowed built-in), and the
+ * conservative move is to not restructure it. If you change shadow math, change BOTH and
+ * say so in both places. NO BACKTICKS IN GLSL COMMENTS — one closes the JS template and
+ * the whole app dies with the gallery (2026-07-26, twice).
+ *
+ * Attribute locations 0..4 are PINNED with bindAttribLocation on BOTH programs before
+ * linking, so one VAO per tree type serves the lit pass and every depth pass. */
+const SHADOW_GLSL = `
+uniform sampler2D uShadowMap0, uShadowMap1;
+uniform mat4 uLightVP0, uLightVP1;
+uniform float uShadowOn, uShadowTexel0, uShadowTexel1;
+uniform float uShadowDepth0;
+uniform float uShadowSoft;
+float pcf(sampler2D map, vec2 uv, float z, float bias, float texel){
+  float sh = 0.0;
+  for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) {
+    float d = texture2D(map, uv + vec2(float(x), float(y)) * texel).r;
+    sh += (z - bias > d) ? 0.0 : 1.0;
+  }
+  return sh / 9.0;
+}
+float pcfSoft(sampler2D map, vec2 uv, float z, float bias, float texel, float soft){
+  if (soft <= 1.01) return pcf(map, uv, z, bias, texel);
+  float sp = texel * soft;
+  float sh = 0.0;
+  sh += (z - bias > texture2D(map, uv).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.326, -0.406) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.840, -0.074) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.696,  0.457) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.203,  0.621) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.962, -0.195) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.473, -0.480) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.519,  0.767) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.185, -0.893) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.507,  0.064) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2( 0.896,  0.412) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.322, -0.933) * sp).r) ? 0.0 : 1.0;
+  sh += (z - bias > texture2D(map, uv + vec2(-0.792, -0.598) * sp).r) ? 0.0 : 1.0;
+  return sh / 13.0;
+}
+float shadowFactor(vec3 wp, float bias){
+  vec4 lp0 = uLightVP0 * vec4(wp, 1.0);
+  vec3 c0 = lp0.xyz / lp0.w * 0.5 + 0.5;
+  float wNear = 0.0;
+  if (c0.z < 1.0) {
+    vec2 e0 = min(c0.xy, 1.0 - c0.xy);
+    wNear = smoothstep(0.02, 0.12, min(e0.x, e0.y));
+  }
+  float sNear = wNear > 0.0 ? pcfSoft(uShadowMap0, c0.xy, c0.z, bias, uShadowTexel0, uShadowSoft) : 1.0;
+  if (wNear >= 1.0) return sNear;
+  vec4 lp1 = uLightVP1 * vec4(wp, 1.0);
+  vec3 c1 = lp1.xyz / lp1.w * 0.5 + 0.5;
+  float sFar = 1.0;
+  if (c1.z <= 1.0) {
+    vec2 e1 = min(c1.xy, 1.0 - c1.xy);
+    float edge = smoothstep(0.0, 0.05, min(e1.x, e1.y));
+    if (edge > 0.0) sFar = mix(1.0, pcfSoft(uShadowMap1, c1.xy, c1.z, 0.0009, uShadowTexel1, uShadowSoft), edge);
+  }
+  return mix(sFar, sNear, wNear);
+}
+`;
+/* Instanced VS, shared shape for lit + depth: rotate unit-space tree by per-instance yaw,
+ * scale, translate; a cheap wind sway keyed to uTime (identical in BOTH programs so the
+ * dappled shadow sways WITH the canopy instead of detaching — the asset report's rule).
+ * Sway phase derives from world position, so it costs no instance bytes. */
+/* aInstA = x,y,z world base + w HEIGHT scale; aInstB = x yaw, y tintLerp, z brightness,
+ * w RADIUS scale. Height and radius scale SEPARATELY because the harvest measured the
+ * fantasy proportions directly (height p50 87 m vs radius p50 54 m — no uniform scale fits
+ * both), which retired the spec's redundant typeId byte: type = which VAO is bound. Sway
+ * amplitude rides the radius scale and the phase derives from world position, so it costs
+ * no instance bytes; the depth VS shares this function so the dappled shadow sways WITH
+ * the canopy instead of detaching. */
+const INST_XFORM_GLSL = `
+attribute vec3 aPos; attribute vec4 aInstA; attribute vec4 aInstB;
+uniform float uTime;
+vec3 instWorld(){
+  float cy = cos(aInstB.x), sy = sin(aInstB.x);
+  vec3 p = vec3(aPos.x * aInstB.w, aPos.y * aInstA.w, aPos.z * aInstB.w);
+  vec3 wp = vec3(p.x*cy + p.z*sy, p.y, -p.x*sy + p.z*cy) + aInstA.xyz;
+  float ph = dot(aInstA.xz, vec2(0.171, 0.257));
+  wp.xz += 0.02 * aInstB.w * aPos.y * aPos.y * vec2(sin(uTime*1.3 + ph), cos(uTime*1.1 + ph));
+  return wp;
+}
+`;
+const VST_INST = INST_XFORM_GLSL + `
+attribute vec3 aNrm; attribute vec2 aUV;
+uniform mat4 uVP;
+uniform vec3 uTintA, uTintB;
+varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld; varying vec3 vTint;
+void main(){
+  vec3 wp = instWorld();
+  float cy = cos(aInstB.x), sy = sin(aInstB.x);
+  gl_Position = uVP * vec4(wp, 1.0);
+  vWorld = wp;
+  vNrm = vec3(aNrm.x*cy + aNrm.z*sy, aNrm.y, -aNrm.x*sy + aNrm.z*cy);
+  vUV = aUV;
+  vTint = mix(uTintA, uTintB, aInstB.y) * aInstB.z;
+}
+`;
+const FST_INST = `
+precision mediump float;
+varying vec3 vNrm; varying vec2 vUV; varying vec3 vWorld; varying vec3 vTint;
+uniform sampler2D uTex;
+uniform float uAlphaRef;
+uniform vec3 uEye;
+uniform vec3 uSunDir, uSunCol, uAmbSky, uAmbGround;
+uniform float uFogDensity; uniform vec3 uFogColor;
+` + SHADOW_GLSL + `
+void main(){
+  vec4 tex = texture2D(uTex, vUV);
+  float dEye = length(uEye - vWorld);
+  float aRef = uAlphaRef * (1.0 - 0.92 * smoothstep(80.0, 600.0, dEye));
+  if (tex.a < aRef) discard;
+  vec3 n = normalize(vNrm);
+  float ndl = max(dot(n, normalize(uSunDir)), 0.0);
+  vec3 ambient = mix(uAmbGround, uAmbSky, 0.5 + 0.5 * n.y);
+  float wrap = ndl * 0.85 + 0.15 * (0.5 + 0.5 * dot(n, normalize(uSunDir)));
+  float sbias = (0.10 + 0.30 * (1.0 - ndl)) / max(uShadowDepth0, 1.0);
+  float shF = uShadowOn > 0.5 ? shadowFactor(vWorld + n * 0.06, sbias) : 1.0;
+  vec3 col = tex.rgb * vTint * (ambient + uSunCol * (0.9 * wrap) * shF);
+  float depth = gl_FragCoord.z / gl_FragCoord.w;
+  float fog = clamp(exp(-uFogDensity * depth), 0.0, 1.0);
+  gl_FragColor = vec4(mix(uFogColor, col, fog), 1.0);
+}
+`;
+const VST_INST_DEPTH = INST_XFORM_GLSL + `
+attribute vec2 aUV;
+uniform mat4 uLightVP;
+varying vec2 vUV;
+void main(){
+  gl_Position = uLightVP * vec4(instWorld(), 1.0);
+  vUV = aUV;
+}
+`;
+/* Flat 0.5 threshold, deliberately NOT distance-compensated: compensation is an
+ * eye-distance concept and the light has no eye. Distant dapple degrades statistically as
+ * cards shrink under the far cascade's texel — that IS the dappled look; the receiving
+ * side's PCF softens it further. */
+const FST_INST_DEPTH = `
+precision mediump float; varying vec2 vUV;
+uniform sampler2D uTex;
+void main(){
+  if (texture2D(uTex, vUV).a < 0.5) discard;
+  gl_FragColor = vec4(1.0);
+}
+`;
+let progInstLit = null, progInstDepth = null, instLoc = null, instDepthLoc = null;
+if (isGL2) {
+  const INST_ATTRS = ["aPos", "aNrm", "aUV", "aInstA", "aInstB"];
+  progInstLit = gl.createProgram();
+  gl.attachShader(progInstLit, shader(gl.VERTEX_SHADER, VST_INST));
+  gl.attachShader(progInstLit, shader(gl.FRAGMENT_SHADER, FST_INST));
+  INST_ATTRS.forEach((n, i) => gl.bindAttribLocation(progInstLit, i, n));
+  gl.linkProgram(progInstLit);
+  progInstDepth = gl.createProgram();
+  gl.attachShader(progInstDepth, shader(gl.VERTEX_SHADER, VST_INST_DEPTH));
+  gl.attachShader(progInstDepth, shader(gl.FRAGMENT_SHADER, FST_INST_DEPTH));
+  INST_ATTRS.forEach((n, i) => gl.bindAttribLocation(progInstDepth, i, n));
+  gl.linkProgram(progInstDepth);
+  instLoc = {
+    vp: gl.getUniformLocation(progInstLit, "uVP"),
+    time: gl.getUniformLocation(progInstLit, "uTime"),
+    tintA: gl.getUniformLocation(progInstLit, "uTintA"),
+    tintB: gl.getUniformLocation(progInstLit, "uTintB"),
+    tex: gl.getUniformLocation(progInstLit, "uTex"),
+    alphaRef: gl.getUniformLocation(progInstLit, "uAlphaRef"),
+    eye: gl.getUniformLocation(progInstLit, "uEye"),
+    sunDir: gl.getUniformLocation(progInstLit, "uSunDir"),
+    sunCol: gl.getUniformLocation(progInstLit, "uSunCol"),
+    ambSky: gl.getUniformLocation(progInstLit, "uAmbSky"),
+    ambGround: gl.getUniformLocation(progInstLit, "uAmbGround"),
+    fogD: gl.getUniformLocation(progInstLit, "uFogDensity"),
+    fogC: gl.getUniformLocation(progInstLit, "uFogColor"),
+    shadowMap0: gl.getUniformLocation(progInstLit, "uShadowMap0"),
+    shadowMap1: gl.getUniformLocation(progInstLit, "uShadowMap1"),
+    lightVP0: gl.getUniformLocation(progInstLit, "uLightVP0"),
+    lightVP1: gl.getUniformLocation(progInstLit, "uLightVP1"),
+    shadowOn: gl.getUniformLocation(progInstLit, "uShadowOn"),
+    shadowTexel0: gl.getUniformLocation(progInstLit, "uShadowTexel0"),
+    shadowTexel1: gl.getUniformLocation(progInstLit, "uShadowTexel1"),
+    shadowDepth0: gl.getUniformLocation(progInstLit, "uShadowDepth0"),
+    shadowSoft: gl.getUniformLocation(progInstLit, "uShadowSoft"),
+  };
+  instDepthLoc = {
+    lightVP: gl.getUniformLocation(progInstDepth, "uLightVP"),
+    time: gl.getUniformLocation(progInstDepth, "uTime"),
+    tex: gl.getUniformLocation(progInstDepth, "uTex"),
+  };
+}
+
 /* program: tyre skid marks — a dark ribbon laid along the recorded contact patch.
  * The WHOLE mesh is prebuilt once (each vertex tagged with the frame + lap it was
  * laid at and its slip intensity); the shader reveals it up to the current frame,

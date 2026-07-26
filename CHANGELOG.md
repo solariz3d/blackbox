@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-07-26 — The environment remaster: sakura's forest, rebuilt and instanced
+
+The keeper's directive, verbatim: "remove all trees and put good ones that would maximize
+space… the track is genius, but the environment not so much." Built from three parallel
+investigation reports (placement harvest, procedural assets, instanced integration) in one
+session. Worst corridors measured 80–90 fps at campaign start; with the remaster: **143
+minimum, 240 sustained**. First-light verdict on the art: "trees look a little cheap, the
+cherry blossom is nice" — the renderer is right, the assets get a polish pass next.
+
+### Added
+- **ui/remaster.js** — the remaster's data layer, zero GL:
+  - `harvestTrees(scene)`: decomposes the author's merged foliage into individual trees via
+    connected components + trunk-seeded assembly. Sakura: **746 trees in ~0.5 s**, validated
+    1:1 against his 740 trunk meshes; the premise correction that mattered: **each mesh is
+    ONE tree** — fantasy scale, 60–105 m tall, 40–63 m canopies built of 30–60 m cards, plus
+    four giant landmark sakuras (126–181 m) carrying thousands of leaf puffs. Generality:
+    eagleton 490 trees; nordic/t180/centrifuge 0 — correctly, so the remaster is inert there
+    by construction and the goldens stay green untouched.
+  - `makeTreeMesh`: 26 cards / **52 tris per tree**; golden-angle azimuth coverage,
+    horizontal cap cards, SPHERICAL normals so the canopy lights as one volume.
+  - `generateLeafTexture` + `buildLeafMips`: procedural blossom/leaf textures with
+    **coverage-preserving mip chains** (Castano rescale, +1 LSB headroom). Measured on the
+    track's own sakura1.png: naive mipping hits 0.000 alpha coverage by mip 8 — which IS
+    the "trees load in as you approach" bug — while the preserved chain holds flat to 4×4,
+    so a distant tree decays to a solid pixel, never to nothing.
+- **glcore.js: two instanced programs** (GL2-only, VAO-fenced so no divisor ever leaks into
+  the default-VAO renderer): a lit pass with the full cascade shadow receive (shadow GLSL
+  shared by CONCATENATION, never interpolation — the syntax lint's scanner stays honest),
+  fog, per-instance tint, the distance-compensated alpha test; and an **alpha-tested
+  instanced depth pass — the keeper's dappled shadows**, which the stock progDepth
+  structurally cannot do. Wind sway lives in the shared transform, identical in lit and
+  depth so the dapple sways WITH the canopy. Height and radius scale separately per
+  instance — the measured proportions (h p50 87 m vs r p50 54 m) fit no uniform scale.
+- **Suppression, draw-list-side only**: alpha-tested canopy materials (sakura: six ksTree
+  materials, **463,536 tris — the measured corridor overdraw**) skip the lit pass, both
+  cascades and the beam pass via `g.remastered` + `treeHidden()`. Trunks stay (real
+  geometry, honest shadows). Opaque canopy stays — the four giants are the author's
+  signature pieces. `extractScene` output untouched; `test_goldens` green by construction.
+- **remaster button** (live toggle, localStorage-persisted, far-bake invalidation on flip),
+  `trees N/total` in the HUD, a "trees" GT timer, teardown as one complete site in
+  `resetTrackScene`. TREE_MODE carries over: 1 = instanced trees stop casting, 2 = unlit.
+- **The `_lm` state-cache reset that two comments promised and the code never had** — a
+  latent stale-texture bug the tree atlas would have made real every frame; found by the
+  integration investigation, fixed as one line at pass start.
+- `test_remaster.js` (mesh determinism/bounds, texture coverage + anti-dust, the mip
+  divergence proof, the suppression-rule truth table); `test_groupshape` UNION consciously
+  extended with `remastered`.
+
+### The build's own lesson
+One non-idempotent patch script double-applied mid-build (a second run re-inserted ten
+patches) and was recovered by `git checkout` + a marker-guarded idempotent rewrite whose
+second run verifiably applies zero. Patch scripts must be re-runnable; now they are.
+
 ## 2026-07-26 — Centrifuge: open skylights, light that tracks the sun — and making this app admit when it breaks
 
 Centrifuge's dome sat behind three separate faults that all looked like one, and the hour

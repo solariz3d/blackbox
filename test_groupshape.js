@@ -75,6 +75,7 @@ const UNION = [
   "alphaTested", "translucent", "alphaRef",
   "emissive", "emisTex", "spec", "specExp",
   "matName", "foliage", "tris", "centre", "radius", "lampBuf", "glass", "pos", "nrm",
+  "remastered",   // 2026-07-26: the environment remaster's suppression flag — conscious contract extension
 ];
 
 const G = { pos: new Float32Array(9), nrm: new Float32Array(9), uv: new Float32Array(6),

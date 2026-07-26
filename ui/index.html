@@ -401,6 +401,7 @@
   <button id="btnShadow" class="on">shadows</button>
   <button id="btnLamps" class="on" title="the track's own lamps (L) — off gives an unlit night run, and is also how you see what the lamp pass costs">lamps</button>
   <button id="btnTrees" title="foliage cost — click to cycle: full · no shadows · unlit. Canopies are a quarter of sakura's geometry and their shadows alias into noise; trunks keep casting either way.">trees · full</button>
+  <button id="btnRemaster" disabled title="remastered trees">remaster</button>
   <button id="btnTyres" class="on" title="skid marks + smoke — click to cycle: lap · keep · off">tyres · lap</button>
   <span id="volCtl" title="Volume" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;opacity:.85"><span id="volIcon" title="mute / unmute" style="cursor:pointer">🔊</span><input id="volSlider" type="range" min="0" max="100" value="100" style="width:78px;vertical-align:middle"></span>
   <button id="btnLap" class="on">lap only</button>
@@ -543,6 +544,7 @@
 <script src="ghosts.js"></script>
 <script src="tracklights.js"></script>
 <script src="kn5.js"></script>
+<script src="remaster.js"></script>
 <script src="kn5tex.js"></script>
 <script src="carrender.js"></script>
 <script src="fsb5.js"></script>
@@ -2103,6 +2105,14 @@ let TRACK_LIGHTS_ON = 1;
  * This is not only a speed knob. A leaf-sized caster in a cascade sized for a whole circuit
  * aliases into noise, so the shadows it buys are bad shadows — which is why the track looks
  * wrong as well as running badly. Trunks keep casting, so the trees stay grounded. */
+/* THE ENVIRONMENT REMASTER — instanced trees replacing a track's authored canopy.
+ * treeSys is NOT a group and never enters sceneGroups (the two-constructor lesson).
+ * Suppression is draw-list-side only, so extractScene output — and the goldens — are
+ * untouched by construction. */
+let treeSys = null;
+let REMASTER_ON = true;
+try { REMASTER_ON = localStorage.getItem("bb_remaster") !== "off"; } catch (_) {}
+const treeHidden = (g) => REMASTER_ON && !!treeSys && g.remastered;
 let SHADOW_NIGHT_SOFT = 5;   // extra PCF spread at full night — see pcfSoft in glcore.js
 /* FOLIAGE DISTANCE DISSOLVE — the "too many trees" lever, sized by measurement.
  *
@@ -2672,6 +2682,7 @@ function renderCarDepth(cm, dir, timeChanged) {
     let drawn = 0;
     for (const g of groups) {
       if (g.foliage && TREE_MODE >= 1) continue;   // canopies stop casting; trunks still do
+      if (treeHidden(g)) continue;   // cascades: the instanced depth pass casts the dapple instead
       if (planes && g.radius && !sphereInFrustum(planes, g.centre, g.radius)) continue;
       drawn++;
       gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
@@ -2731,6 +2742,9 @@ function renderCarDepth(cm, dir, timeChanged) {
   gl.bindFramebuffer(gl.FRAMEBUFFER, near.fbo); gl.viewport(0, 0, near.size, near.size); gl.clear(gl.DEPTH_BUFFER_BIT);
   gl.uniformMatrix4fv(depthLoc.lightVP, false, near.vp);
   if (sceneGroups) cullStat.shadow = drawG(sceneGroups, IDENT4, frustumPlanes(near.vp));
+  // instanced trees cast into the near map every frame, culled by the LIGHT box
+  drawTreesDepth(near.vp, frustumPlanes(near.vp));
+  gl.useProgram(progDepth);
   drawG(carGroups, cm);
   // ghosts cast too - a car with no shadow reads as floating, and with the car pass now
   // RECEIVING shadows this is also what makes one car darken another. Poses are solved
@@ -2775,6 +2789,8 @@ function renderCarDepth(cm, dir, timeChanged) {
     // causes — the bake never running, or it running and drawing nothing — and they look
     // identical on screen
     if (sceneGroups) cullStat.far = drawG(sceneGroups, IDENT4, frustumPlanes(far.vp));   // track only — the car is in the near cascade
+    drawTreesDepth(far.vp, null);   // the bake must hold every caster; runs only on sun moves
+    gl.useProgram(progDepth);
     cullStat.bakes++;
   }
   gl.bindFramebuffer(gl.FRAMEBUFFER, null); shadowsRendered = true;
@@ -2823,6 +2839,7 @@ function renderHeadlightDepth(cm, headVP) {
     gl.uniformMatrix4fv(depthLoc.model, false, model);
     for (const g of groups) {
       if (g.foliage && TREE_MODE >= 1) continue;   // a canopy should not shadow your headlights either
+      if (treeHidden(g)) continue;   // beam: same replacement, same reason
       if (planes && g.radius && !sphereInFrustum(planes, g.centre, g.radius)) continue;
       gl.bindBuffer(gl.ARRAY_BUFFER, g.posBuf);
       gl.enableVertexAttribArray(depthLoc.pos); gl.vertexAttribPointer(depthLoc.pos, 3, gl.FLOAT, false, 12, 0);
@@ -2831,6 +2848,8 @@ function renderHeadlightDepth(cm, headVP) {
     }
   };
   if (sceneGroups) drawG(sceneGroups, IDENT4, frustumPlanes(headVP));   // ONLY the track occludes the beam — the car
+  drawTreesDepth(headVP, frustumPlanes(headVP));   // canopies dapple the headlight beam too
+  gl.useProgram(progDepth);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);       // must not occlude its own headlights (nose spar → black blob)
 }
 
@@ -3526,6 +3545,9 @@ function render() {
   // textured scene pass (track verts are already world-space → model = identity)
   if (sceneGroups) {
     GT.begin("track");
+    _lm = {};   // the reset both comments promise: later passes change global state
+                // (texture unit 0, blend) — including the tree atlas — so per-pass is
+                // the only correct cache lifetime (spec finding: the reset never existed)
     // The camera's own frustum. Chunks outside it cannot contribute a pixel, so this is an
     // exact rejection, not an approximation — the same argument as the lamp cull.
     const camPlanes = frustumPlanes(mvp);
@@ -3566,6 +3588,7 @@ function render() {
        * keeper's Assetto workaround; the leaves keep their texture and the sun's diffuse
        * term, which is all that ever read as foliage anyway. */
       if (g.radius && !sphereInFrustum(camPlanes, g.centre, g.radius)) continue;
+      if (treeHidden(g)) continue;   // lit: suppressed canopy is replaced by the instanced forest
       // foliage beyond the dissolve horizon is skipped outright — no draw, no state
       if (g.foliage && FOLIAGE_FADE_END > 0 && g._d2 !== undefined &&
           g._d2 > FOLIAGE_FADE_END * FOLIAGE_FADE_END) continue;
@@ -3679,6 +3702,9 @@ function render() {
     // its textures assuming unit 0 is current — put it back
     gl.activeTexture(gl.TEXTURE0);
     GT.end();   // "track"
+    // the remastered forest draws with the same frustum, after the sorted opaque track,
+    // so early-z is already primed by near geometry
+    drawTreesLit(mvp, L, nightF, fogD, camPlanes);
   }
 
   // tyre skid marks: dark ribbon on the track, revealed up to the current frame.
@@ -4348,6 +4374,17 @@ function setTrackLampsOn(on) {
   const btn = document.getElementById("btnLamps");
   if (btn) btn.addEventListener("click", () => setTrackLampsOn(!TRACK_LIGHTS_ON));
 })();
+(function () {   // the remaster toggle — per-machine preference, like MSAA but live
+  const btn = document.getElementById("btnRemaster");
+  if (btn) btn.addEventListener("click", () => {
+    REMASTER_ON = !REMASTER_ON;
+    try { localStorage.setItem("bb_remaster", REMASTER_ON ? "on" : "off"); } catch (_) {}
+    // the far cascade is a BAKE: without this the suppressed originals' solid-quad
+    // shadows (or the new dapple) would survive the toggle inside it
+    staticBakeTime = null;
+    updateRemasterUI();
+  });
+})();
 (function () {   // foliage policy: full → no shadows → unlit
   const btn = document.getElementById("btnTrees");
   if (!btn) return;
@@ -4623,6 +4660,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
     const t0 = performance.now();
     let triCount = 0;
     const allGroups = [];
+    const treeHarvest = [];   // remaster instances, accumulated per kn5
     const roadChunks = []; // {verts, tris} per file for the edge index
     const collGroups = []; // {pos, idx} of solid meshes for the world collider
 
@@ -4637,6 +4675,12 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
     for (const item of items) {
       try {
         const scene = KN5.extractScene(item.ab, { collectNodes: true });
+        // the remaster placement harvest — per scene, additive across the track's kn5s;
+        // ~0.5 s on sakura's trees.kn5, near-zero on foliage-free files
+        if (window.Remaster && isGL2) {
+          try { treeHarvest.push(...Remaster.harvestTrees(scene)); }
+          catch (e) { console.warn("tree harvest failed:", e); }
+        }
         if (scene.nodes && scene.nodes.length) lightNodes.push(...scene.nodes);
         const texByName = {};
         for (const t of scene.textures) texByName[t.name] = t;
@@ -4683,6 +4727,9 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
           const grp = await makeGroup(g, mat, texByName, [120, 124, 132], {
             emissive: mat.emissive || null, emisTex,
             spec: mat.specular || 0, specExp: mat.specExp || 10,
+            // alpha-tested canopy only — the measured fill problem. Trunks, opaque canopy
+            // (the four giant landmark sakuras) and everything else keep drawing.
+            remastered: !!(window.Remaster && isGL2 && Remaster.isSuppressedMaterial(mat)),
           });
           allGroups.push(grp);
           if (!grp.translucent) collGroups.push({ pos: g.pos, idx: g.idx }); // solid → collider
@@ -4736,6 +4783,7 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
         }
         sceneAABB = any ? { x0, y0, z0, x1, y1, z1 } : null; }
       bakeTrackLamps(allGroups);
+      buildTreeSys(treeHarvest, allGroups);
       sceneGroups = allGroups;
     } else if (roadChunks.length) {
       // bare fallback from the first road chunk set
@@ -4817,6 +4865,7 @@ function resetTrackScene() {
     }
     sceneGroups = null;
   }
+  teardownTreeSys();   // VAOs, mesh + instance buffers, atlases — one site, complete
   sceneAABB = null;   // bounds belong to the track that was unloaded, not the next one
   trackLights = [];   // lamps belong to the track that was unloaded, not the next one
   lampsBaked = false;
@@ -4980,6 +5029,200 @@ function bakeTrackLamps(groups) {
 }
 
 // upload a list of baked kn5 mesh groups to the GPU
+
+/* ============== THE ENVIRONMENT REMASTER — build, draw, tear down ==============
+ * treeSys is not a group and never enters sceneGroups. Instances are packed 32 B each
+ * (aInstA = xyz + height scale, aInstB = yaw + tintLerp + brightness + radius scale),
+ * sorted by (type, 300 m cell) so each cell is one contiguous instanced draw with its own
+ * bounding sphere for per-pass frustum culling. All instanced pointer/divisor state lives
+ * in per-type VAOs — the rest of the renderer runs on the default VAO and never sees a
+ * divisor (the leak the VAO design exists to prevent). */
+let _treeTime = 0;   // one clock per frame, shared by lit + depth so the dapple sways WITH the canopy
+
+function teardownTreeSys() {
+  if (!treeSys) return;
+  for (const ty of treeSys.types) {
+    if (!ty) continue;
+    gl.deleteVertexArray(ty.vao);
+    gl.deleteBuffer(ty.vbMesh); gl.deleteBuffer(ty.vbNrm); gl.deleteBuffer(ty.vbUV); gl.deleteBuffer(ty.vbIdx);
+    gl.deleteTexture(ty.tex);
+  }
+  gl.deleteBuffer(treeSys.instBuf);
+  treeSys = null;
+  updateRemasterUI();
+}
+
+function buildTreeSys(harvest, groups) {
+  teardownTreeSys();
+  if (!window.Remaster || !isGL2 || !progInstLit) { updateRemasterUI(); return; }
+  /* only trees whose canopy came mostly from SUPPRESSED materials — an instance is worth
+   * drawing only when it replaces something that stops drawing. The four giants keep
+   * their originals (opaque, exonerated, the author's signature pieces). */
+  const worth = harvest.filter(t => !t.giant && t.suppressedFrac > 0.5);
+  if (!worth.length) { updateRemasterUI(); return; }
+  const CELL = 300;
+  const byKey = new Map();
+  for (const t of worth) {
+    const type = t.type === "sakura-pink" ? 1 : 0;
+    const k = type + ":" + Math.floor(t.x / CELL) + ":" + Math.floor(t.z / CELL);
+    let a = byKey.get(k); if (!a) { a = { type, trees: [] }; byKey.set(k, a); }
+    a.trees.push(t);
+  }
+  const runsByType = [[], []];
+  const data = new Float32Array(worth.length * 8);
+  let off = 0;
+  for (const [k, cell] of [...byKey.entries()].sort()) {
+    const start = off;
+    let x0 = 1/0, y0 = 1/0, z0 = 1/0, x1 = -1/0, y1 = -1/0, z1 = -1/0;
+    for (const t of cell.trees) {
+      const rnd = Remaster.mulberry32(Math.floor(t.tintSeed * 0xffffffff));
+      /* height/1.3: the unit mesh's cards top out at y = 1.3, so the crown lands at the
+       * measured tree top and starts about 7% up — matching the harvested canopyBottom
+       * stats. radius*0.85/1.35: unit cards span 1.35 each way, shrunk 15% because the
+       * harvested radius is geometric card extent while our denser textures read fuller
+       * (0.29 vs 0.14-0.22 coverage). Both constants are look-tunable. */
+      const hScale = t.height / 1.3;
+      const rScale = Math.max(4, t.canopyRadius * 0.85 / 1.35);
+      const o8 = off * 8;
+      data[o8] = t.x; data[o8+1] = t.y; data[o8+2] = t.z; data[o8+3] = hScale;
+      data[o8+4] = rnd() * Math.PI * 2;
+      data[o8+5] = rnd();
+      data[o8+6] = 0.85 + 0.3 * rnd();
+      data[o8+7] = rScale;
+      const rr = Math.max(rScale * 1.6, hScale * 1.4);
+      if (t.x - rr < x0) x0 = t.x - rr; if (t.x + rr > x1) x1 = t.x + rr;
+      if (t.y < y0) y0 = t.y; if (t.y + t.height > y1) y1 = t.y + t.height;
+      if (t.z - rr < z0) z0 = t.z - rr; if (t.z + rr > z1) z1 = t.z + rr;
+      off++;
+    }
+    runsByType[cell.type].push({ byteOff: start * 32, count: cell.trees.length,
+      centre: [(x0+x1)/2, (y0+y1)/2, (z0+z1)/2], radius: 0.5 * Math.hypot(x1-x0, y1-y0, z1-z0) });
+  }
+  const instBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  const specs = [
+    { pal: "green",  meshSeed: 8, texSeed: 8, tintA: [0.80, 0.92, 0.62], tintB: [0.55, 0.68, 0.45] },
+    { pal: "sakura", meshSeed: 7, texSeed: 7, tintA: [1.06, 0.94, 0.99], tintB: [0.92, 0.74, 0.80] },
+  ];
+  const types = [];
+  for (let ty = 0; ty < 2; ty++) {
+    if (!runsByType[ty].length) { types.push(null); continue; }
+    const spec = specs[ty];
+    const mesh = Remaster.makeTreeMesh(26, spec.meshSeed);
+    const mips = Remaster.buildLeafMips(Remaster.generateLeafTexture(256, spec.pal, spec.texSeed), 256, { threshold: 0.5 });
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    // level-by-level upload of the coverage-preserving chain — NEVER generateMipmap here;
+    // regenerating would reintroduce the exact mip-alpha decay these trees exist to kill
+    for (let l = 0; l < mips.length; l++)
+      gl.texImage2D(gl.TEXTURE_2D, l, gl.RGBA, mips[l].w, mips[l].h, 0, gl.RGBA, gl.UNSIGNED_BYTE, mips[l].data);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    const mk = (d, tgt) => { const b = gl.createBuffer(); gl.bindBuffer(tgt, b); gl.bufferData(tgt, d, gl.STATIC_DRAW); return b; };
+    const vbMesh = mk(mesh.pos, gl.ARRAY_BUFFER), vbNrm = mk(mesh.nrm, gl.ARRAY_BUFFER);
+    const vbUV = mk(mesh.uv, gl.ARRAY_BUFFER), vbIdx = mk(mesh.idx, gl.ELEMENT_ARRAY_BUFFER);
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbMesh); gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 12, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbNrm);  gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 12, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, vbUV);   gl.enableVertexAttribArray(2); gl.vertexAttribPointer(2, 2, gl.FLOAT, false, 8, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, instBuf);
+    gl.enableVertexAttribArray(3); gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 32, 0);  gl.vertexAttribDivisor(3, 1);
+    gl.enableVertexAttribArray(4); gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 32, 16); gl.vertexAttribDivisor(4, 1);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, vbIdx);
+    gl.bindVertexArray(null);
+    types.push({ vao, vbMesh, vbNrm, vbUV, vbIdx, idxCount: mesh.idx.length, tex,
+                 tintA: spec.tintA, tintB: spec.tintB, ranges: runsByType[ty] });
+  }
+  treeSys = { types, instBuf, count: worth.length };
+  updateRemasterUI();
+  console.log("[remaster] " + worth.length + " instanced trees, " +
+              (runsByType[0].length + runsByType[1].length) + " cell runs, 52 tris/tree");
+}
+
+/* Per-run draws re-point attribs 3/4 WHILE the VAO is bound (VAO-owned state, invisible
+ * outside it) because WebGL2 has no baseInstance. */
+function drawTreeRuns(planes, loc) {
+  let drawn = 0;
+  for (const ty of treeSys.types) {
+    if (!ty) continue;
+    gl.bindTexture(gl.TEXTURE_2D, ty.tex);
+    if (loc === instLoc) { gl.uniform3fv(instLoc.tintA, ty.tintA); gl.uniform3fv(instLoc.tintB, ty.tintB); }
+    gl.bindVertexArray(ty.vao);
+    gl.bindBuffer(gl.ARRAY_BUFFER, treeSys.instBuf);
+    for (const r of ty.ranges) {
+      if (planes && !sphereInFrustum(planes, r.centre, r.radius)) continue;
+      gl.vertexAttribPointer(3, 4, gl.FLOAT, false, 32, r.byteOff);
+      gl.vertexAttribPointer(4, 4, gl.FLOAT, false, 32, r.byteOff + 16);
+      gl.drawElementsInstanced(gl.TRIANGLES, ty.idxCount, gl.UNSIGNED_SHORT, 0, r.count);
+      drawn += r.count;
+    }
+  }
+  gl.bindVertexArray(null);
+  gl.activeTexture(gl.TEXTURE0);
+  return drawn;
+}
+
+function drawTreesLit(vp, L, nightF, fogDv, planes) {
+  if (!treeSys || !REMASTER_ON) { cullStat.trees = 0; cullStat.treesTotal = treeSys ? treeSys.count : 0; return; }
+  GT.begin("trees");
+  gl.useProgram(progInstLit);
+  gl.uniformMatrix4fv(instLoc.vp, false, vp);
+  gl.uniform1f(instLoc.time, _treeTime);
+  gl.uniform3fv(instLoc.eye, camEye());
+  gl.uniform3f(instLoc.sunDir, L.dir[0], L.dir[1], L.dir[2]);
+  gl.uniform3f(instLoc.sunCol, L.sun[0], L.sun[1], L.sun[2]);
+  gl.uniform3f(instLoc.ambSky, L.ambSky[0], L.ambSky[1], L.ambSky[2]);
+  gl.uniform3f(instLoc.ambGround, L.ambGround[0], L.ambGround[1], L.ambGround[2]);
+  gl.uniform3f(instLoc.fogC, L.fog[0], L.fog[1], L.fog[2]);
+  gl.uniform1f(instLoc.fogD, fogDv);
+  gl.uniform1f(instLoc.alphaRef, 0.5);
+  // TREE_MODE carries over: 2 = unlit trees (shadow receive off), same lever as before
+  const shOn = TREE_MODE < 2 && SHADOW_ON && shadowsRendered ? 1 : 0;
+  gl.uniform1f(instLoc.shadowOn, shOn);
+  if (shOn) {
+    const c0 = SHADOW_CASCADES[0], c1 = SHADOW_CASCADES[1];
+    gl.uniform1i(instLoc.shadowMap0, 1); gl.uniform1i(instLoc.shadowMap1, 3);
+    gl.uniformMatrix4fv(instLoc.lightVP0, false, c0.vp);
+    gl.uniformMatrix4fv(instLoc.lightVP1, false, c1.vp);
+    gl.uniform1f(instLoc.shadowTexel0, 1 / c0.size); gl.uniform1f(instLoc.shadowTexel1, 1 / c1.size);
+    gl.uniform1f(instLoc.shadowDepth0, c0.depth || 1);
+    gl.uniform1f(instLoc.shadowSoft, 1 + nightF * SHADOW_NIGHT_SOFT);
+  }
+  gl.uniform1i(instLoc.tex, 0);
+  gl.activeTexture(gl.TEXTURE0);
+  cullStat.trees = drawTreeRuns(planes, instLoc);
+  cullStat.treesTotal = treeSys.count;
+  GT.end();
+}
+
+function drawTreesDepth(lightVP, planes) {
+  // TREE_MODE 1+ = trees stop casting, the same measurement lever the campaign relies on
+  if (!treeSys || !REMASTER_ON || TREE_MODE >= 1) return;
+  gl.useProgram(progInstDepth);
+  gl.uniformMatrix4fv(instDepthLoc.lightVP, false, lightVP);
+  gl.uniform1f(instDepthLoc.time, _treeTime);
+  gl.uniform1i(instDepthLoc.tex, 0);
+  gl.activeTexture(gl.TEXTURE0);
+  drawTreeRuns(planes, instDepthLoc);
+}
+
+function updateRemasterUI() {
+  const btn = document.getElementById("btnRemaster");
+  if (!btn) return;
+  if (!treeSys) {
+    btn.disabled = true; btn.classList.remove("on");
+    btn.title = isGL2 ? "no replaceable trees on this track" : "remaster needs WebGL2";
+  } else {
+    btn.disabled = false;
+    btn.classList.toggle("on", REMASTER_ON);
+    btn.title = treeSys.count + " instanced trees replace the original canopy; off returns the author's";
+  }
+}
+
 /* EVERY GPU-facing mesh group is built here — track chunks and car parts alike.
  *
  * This factory exists because two near-identical constructors (this site and an inline
@@ -5022,6 +5265,7 @@ async function makeGroup(g, mat, texByName, fallbackRGB, extra) {
     tris: (g.idx.length / 3) | 0,
     centre: g.centre, radius: g.radius,
     lampBuf: null,
+    remastered: false,   // true only on track canopy the instanced trees replace
     glass: false,
     pos: g.pos, nrm: g.nrm,
   }, extra || {});
@@ -5798,7 +6042,7 @@ const GT = (function () {
 /* How many chunks survived culling, for the HUD. Reported rather than assumed: a culling
  * system that silently rejects nothing looks exactly like one that works, and the first
  * question about any of this is "is it actually skipping anything". */
-const cullStat = { track: 0, shadow: 0, far: -1, bakes: 0, total: 0 };
+const cullStat = { track: 0, shadow: 0, far: -1, bakes: 0, total: 0, trees: 0, treesTotal: 0 };
 const matOrder = [];   // material name -> palette index, stable across frames
 /* Persistent draw-order machinery for the lit pass — see the FRONT-TO-BACK note at the
  * call site. Split once per track (the translucent tail never changes), sort only the
@@ -5831,6 +6075,7 @@ function sortedSceneGroups(eye) {
 let frameMsEMA = 0, fpsPrev = 0, frameMsWorst = 0, frameWorstAt = 0;
 let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on shift-frame crossings
 function loop(ts) {
+  _treeTime = ts * 0.001;   // one sway clock per frame — lit and depth must agree
   if (fpsPrev) {
     const dtMs = ts - fpsPrev;
     // a duplicate or coalesced timestamp is not a fast frame — it is no frame. Dropping it
@@ -5928,7 +6173,7 @@ function loop(ts) {
       bfPrevFrame = i;
     }
     let _smk = 0; if (ex.smokeSlip) for (let k = 0; k < 4; k++) _smk = Math.max(_smk, ex.smokeSlip[i * 4 + k]);
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)}) · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${GT.text()}${matLegend}`;
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)}) · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
     drawScrub();
   }
   render();
