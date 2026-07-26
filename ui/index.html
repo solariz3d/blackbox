@@ -1596,13 +1596,54 @@ function collideSegment(C, p0, p1) {
     const tt = (e2x * qx + e2y * qy + e2z * qz) * inv;
     if (tt > 1e-4 && tt <= 1 && (best < 0 || tt < best)) best = tt;
   };
-  const c0 = Math.max(0, Math.floor((Math.min(p0[0], p1[0]) - minX) / cell));
-  const c1 = Math.min(nx - 1, Math.floor((Math.max(p0[0], p1[0]) - minX) / cell));
-  const r0 = Math.max(0, Math.floor((Math.min(p0[2], p1[2]) - minZ) / cell));
-  const r1 = Math.min(nz - 1, Math.floor((Math.max(p0[2], p1[2]) - minZ) / cell));
-  for (let cz = r0; cz <= r1; cz++) for (let cx = c0; cx <= c1; cx++) {
-    const list = cells[cz * nx + cx]; if (!list) continue;
-    for (let n = 0; n < list.length; n++) test(list[n]);
+  /* WALK THE RAY, don't sweep its bounding box.
+   *
+   * This iterated every cell in the segment's XZ bounding box, so its cost was width x
+   * height — an AREA — when the ray only ever passes through a LINE of cells. The waste is
+   * zero for an axis-aligned segment and grows with the diagonal.
+   *
+   * Which is why the stalls arrived on banking, and only in follow cam. Behind a car on the
+   * flat the boom's XZ footprint is a thin sliver and the box is a couple of cells. As the
+   * car banks, the camera swings out sideways: the footprint widens in BOTH axes at once
+   * and the box area goes up with the product. Same boom, same length, many times the work.
+   *
+   * It also fought the finer grid from the previous commit: halving the cell size quarters
+   * the density per cell but QUADRUPLES how many cells a fixed-size box covers. A DDA walk
+   * is proportional to ray length over cell size, so it improves with a finer grid instead
+   * of fighting it, and the two changes finally point the same way.
+   *
+   * This is exact, not an approximation — the visited set is a subset of the old one. A
+   * triangle sits in the cells its XZ bounds overlap, so a ray that never enters those
+   * cells in XZ cannot intersect it. Standard Amanatides-Woo in two dimensions, on the XZ
+   * plane the grid is built in. */
+  const dxs = p1[0] - p0[0], dzs = p1[2] - p0[2];
+  let cx = Math.max(0, Math.min(nx - 1, Math.floor((p0[0] - minX) / cell)));
+  let cz = Math.max(0, Math.min(nz - 1, Math.floor((p0[2] - minZ) / cell)));
+  const ecx = Math.max(0, Math.min(nx - 1, Math.floor((p1[0] - minX) / cell)));
+  const ecz = Math.max(0, Math.min(nz - 1, Math.floor((p1[2] - minZ) / cell)));
+  const stepX = dxs > 0 ? 1 : (dxs < 0 ? -1 : 0);
+  const stepZ = dzs > 0 ? 1 : (dzs < 0 ? -1 : 0);
+  // t at which the ray crosses its next cell boundary on each axis, and the t per whole cell
+  let tMaxX = Infinity, tDeltaX = Infinity, tMaxZ = Infinity, tDeltaZ = Infinity;
+  if (stepX !== 0) {
+    const bx = minX + (cx + (stepX > 0 ? 1 : 0)) * cell;
+    tMaxX = (bx - p0[0]) / dxs; tDeltaX = cell / Math.abs(dxs);
+  }
+  if (stepZ !== 0) {
+    const bz = minZ + (cz + (stepZ > 0 ? 1 : 0)) * cell;
+    tMaxZ = (bz - p0[2]) / dzs; tDeltaZ = cell / Math.abs(dzs);
+  }
+  // a walk can never need more steps than the grid is wide plus tall; the guard means a
+  // degenerate ray or a rounding edge cannot spin here forever
+  let guard = nx + nz + 4;
+  for (;;) {
+    const list = cells[cz * nx + cx];
+    if (list) for (let n = 0; n < list.length; n++) test(list[n]);
+    if (cx === ecx && cz === ecz) break;
+    if (--guard < 0) break;
+    if (tMaxX < tMaxZ) { if (tMaxX > 1) break; cx += stepX; tMaxX += tDeltaX; }
+    else { if (tMaxZ > 1) break; cz += stepZ; tMaxZ += tDeltaZ; }
+    if (cx < 0 || cx >= nx || cz < 0 || cz >= nz) break;
   }
   for (let n = 0; n < bigTris.length; n++) test(bigTris[n]);
   return best;
