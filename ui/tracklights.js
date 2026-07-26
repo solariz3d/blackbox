@@ -191,22 +191,31 @@ function resolveTrackLights(iniText, nodes, opts) {
   return out;
 }
 
-/** The n lights most worth drawing from `eye` — nearest first, out-of-reach dropped. */
+/**
+ * The n lights worth sending to the shader, nearest the camera first.
+ *
+ * NO DISTANCE REJECTION, and the reasoning matters because I had it backwards twice.
+ *
+ * A lamp lights the ground AROUND ITSELF, not around the camera. Rejecting lamps further
+ * than their own RANGE from the eye therefore answers the wrong question: stand 500 m away
+ * from a circuit and every lamp fails that test, so nothing is sent and the entire track
+ * goes black — while the pools of light you are looking at are exactly the thing that
+ * should still be there. Illumination has to be visible as far as the source is.
+ *
+ * The reach test only ever looked correct because the chase camera sits on the car, inside
+ * the pools. It is deleted rather than widened: there is no radius around the EYE that
+ * answers a question about lamps lighting ground near THEMSELVES.
+ *
+ * What remains is a budget, not a cull. The shader carries a fixed number of slots, so the
+ * nearest n to the camera win. That is an approximation with a known failure — from high
+ * above a big circuit, pools beyond the nearest n stay unlit — and nearest-to-camera is
+ * simply the best proxy available for "which pools fill the most of the screen".
+ */
 function cullLights(lights, eye, n) {
   const scored = [];
   for (const L of lights) {
     const dx = L.pos[0] - eye[0], dy = L.pos[1] - eye[1], dz = L.pos[2] - eye[2];
-    const d2 = dx * dx + dy * dy + dz * dz;
-    /* RANGE, because this cull is about ILLUMINATION and nothing else. It briefly used
-     * FADE_AT, to stop distant lamps disappearing — which was the right problem solved in
-     * the wrong place. Being SEEN is now a separate pass with no distance limit at all, so
-     * this one is back to the only question it can answer: can this lamp put light on a
-     * surface near the camera? Past RANGE the shader's falloff is exactly zero, so a lamp
-     * admitted on FADE_AT (1700 m on sakura, against a 60 m range) merely occupied one of
-     * twelve slots and contributed nothing. */
-    const reach = L.range + 40;
-    if (d2 > reach * reach) continue;
-    scored.push({ L, d2 });
+    scored.push({ L, d2: dx * dx + dy * dy + dz * dz });
   }
   scored.sort((a, b) => a.d2 - b.d2);
   return scored.slice(0, n).map(s => s.L);

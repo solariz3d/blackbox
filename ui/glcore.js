@@ -94,7 +94,12 @@ uniform int uCarN;                    // how many of those slots are live
 // LIGHT_SERIES config. Static in the world, unlike the car lamps above, so they are a
 // separate set: a track can declare hundreds (nordic 207, thunderhead 156) and the CPU
 // sends only the nearest handful each frame.
-const int MAXTLIGHTS = 12;
+// 24, raised from 12 once the distance rejection came out of the cull. With rejection, a
+// slot was only ever spent on a lamp already lighting the camera's surroundings; without
+// it, the slots are a budget for how many of a circuit's pools can be lit AT ONCE, and 12
+// of sakura's 143 leaves the track visibly patchy from any distance. Must match
+// MAX_TLIGHTS in index.html.
+const int MAXTLIGHTS = 24;
 uniform vec3 uTLightPos[MAXTLIGHTS];   // world position
 uniform vec3 uTLightCol[MAXTLIGHTS];   // colour * intensity, already night-scaled
 uniform vec3 uTLightDir[MAXTLIGHTS];   // aim, for spots

@@ -1030,8 +1030,30 @@ function drawTrackLampGlare(mvp, nightF, th) {
     if (L.radius > LAMP_FIXTURE_MAX_RADIUS) continue;
     const dx = L.pos[0] - eye[0], dy = L.pos[1] - eye[1], dz = L.pos[2] - eye[2];
     const d = Math.hypot(dx, dy, dz) || 1;
+    /* A LAMP IS SHIELDED BY ITS OWN BODY. The T-180 test track's lamps aim straight down
+     * (DIRECTION = 0,-1,0) and are solid geometry above the bulb, so from above you should
+     * see the housing and no light at all — the sprite was punching through it, because
+     * it is nudged toward the eye precisely so a fixture cannot hide its own glare.
+     *
+     * The nudge is still right for a viewer the lamp is pointing at. What was missing is
+     * that visibility of a SOURCE follows the same cone as its emission, so the same SPOT
+     * angle the shader uses for the light is used here for the sight of it. Same
+     * smoothstep shape as the shader's cone, so a lamp dims out at the rim rather than
+     * blinking off. Point lights and NORMAL-aimed lamps have no usable cone and are seen
+     * from everywhere, which for an unshielded bulb is correct. */
+    let cone = 1;
+    if (L.spotUsable) {
+      const dl = Math.hypot(L.dir[0], L.dir[1], L.dir[2]) || 1;
+      // direction from the LAMP to the eye, against where the lamp is pointing
+      const c = -(dx * L.dir[0] + dy * L.dir[1] + dz * L.dir[2]) / (d * dl);
+      const cosHalf = Math.cos(Math.min(359, L.spot) * 0.5 * Math.PI / 180);
+      const outer = cosHalf, inner = cosHalf + (1 - cosHalf) * 0.35;
+      cone = Math.max(0, Math.min(1, (c - outer) / Math.max(1e-4, inner - outer)));
+      cone = cone * cone * (3 - 2 * cone);            // smoothstep
+      if (cone <= 0.004) continue;                    // behind the shield: nothing to draw
+    }
     // no distance term at all — see the note on the constants above
-    const b = gate * LAMP_GLARE_GAIN;
+    const b = gate * LAMP_GLARE_GAIN * cone;
     if (b <= 0.004) continue;
     /* Size: a real fixture's angular size, EXCEPT that it is not allowed below 5 px. The
      * floor is the whole point. A lamp 900 m away subtends about 0.7 px, so the honest
@@ -2010,7 +2032,7 @@ let TRACK_LIGHT_GAIN = 0.5;
  * be set by eye, and both are the first thing to reach for if a track looks overcooked. */
 let TRACK_EMISSIVE_GAIN = 0.6;
 let TRACK_SPEC_GAIN = 0.5;
-const MAX_TLIGHTS = 12;
+const MAX_TLIGHTS = 24;   // must match MAXTLIGHTS in glcore.js — see the note there
 let trackLights = [];          // every resolved lamp, world space
 const _tlPos = new Float32Array(MAX_TLIGHTS * 3);
 const _tlCol = new Float32Array(MAX_TLIGHTS * 3);
@@ -2321,7 +2343,13 @@ function setTrackLights(eye, nightF) {
       // a lamp declared DIRECTION = NORMAL, whose true aim we cannot know — pointing it
       // somewhere confident and wrong is worse than lighting in all directions.
       _tlArg[n*2] = L.range;
-      _tlArg[n*2+1] = L.spotUsable ? Math.cos(Math.min(179, L.spot) * 0.5 * Math.PI / 180) : -1;
+      /* SPOT is the cone's FULL angle and this halves it, so the clamp belongs at 359, not
+       * 179. Clamping the full angle to 179 capped every cone at a 89.5 deg half-angle —
+       * the T-180 test track declares SPOT = 250, a deliberately wide 125 deg downward
+       * wash, and it was being rendered as a narrow one. Anything at or above 359 is a
+       * point light and never reaches here; spotUsable has already sent it down the -1
+       * path, which skips the cone test in the shader entirely. */
+      _tlArg[n*2+1] = L.spotUsable ? Math.cos(Math.min(359, L.spot) * 0.5 * Math.PI / 180) : -1;
       if (++n >= MAX_TLIGHTS) break;
     }
   }

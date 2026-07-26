@@ -126,21 +126,56 @@ console.log("the depth nudge scales, because depth precision does not");
   ok(scaled(30, 13) > 13, "a 13 m lamp head is nudged past its own radius");
 }
 
-console.log("illumination stays local — the other half of the separation");
+console.log("emission carries as far as the source — no distance rejection in the cull");
 {
   const TL = require("./ui/tracklights.js");
   const at = (x) => ({ pos: [x, 0, 0], range: 60, fadeAt: 1700, intensity: 1, color: [1, 1, 1] });
   const eye = [0, 0, 0];
-  // a sakura lamp declares RANGE 60 and FADE_AT 1700. It must be SEEN from 1700 m — that
-  // is the glare pass above — and must not be handed to the shader as a light source from
-  // there, where its falloff is exactly zero and it would occupy one of twelve slots.
-  const kept = TL.cullLights([at(50), at(500), at(1500)], eye, 12);
-  ok(kept.length === 1, "only the lamp within RANGE(+margin) is sent to the shader: got " + kept.length);
-  ok(kept[0].pos[0] === 50, "and it is the near one");
-  // the margin exists so a lamp does not blink out of the sent set the instant it passes
-  // its own range boundary
-  ok(TL.cullLights([at(85)], eye, 12).length === 1, "a small margin past RANGE is kept");
-  ok(TL.cullLights([at(200)], eye, 12).length === 0, "but well past it, no");
+  /* A lamp lights the ground AROUND ITSELF, not around the camera. Rejecting lamps further
+   * from the eye than their own RANGE answers the wrong question: from 500 m away every
+   * lamp on a circuit fails it, nothing is sent, and the whole track goes black — while
+   * the pools of light being looked at are exactly what should still be there. */
+  const far = TL.cullLights([at(50), at(500), at(1500)], eye, 24);
+  ok(far.length === 3, "lamps far beyond their own RANGE are still sent: got " + far.length);
+  ok(far[0].pos[0] === 50 && far[2].pos[0] === 1500, "and they are ordered nearest first");
+  ok(TL.cullLights([at(20000)], eye, 24).length === 1, "distance alone never rejects a lamp");
+  // what remains is a BUDGET, not a cull — the shader has a fixed number of slots
+  const many = TL.cullLights(Array.from({ length: 100 }, (_, i) => at((i + 1) * 10)), eye, 24);
+  ok(many.length === 24, "the slot budget still caps how many are sent: got " + many.length);
+  ok(many[0].pos[0] === 10 && many[23].pos[0] === 240, "and the nearest win the slots");
+}
+
+console.log("a shielded lamp is not visible from behind its shield");
+{
+  /* The T-180 test track's lamps aim straight down and are solid geometry above the bulb.
+   * Visibility of a source follows the same cone as its emission, so the SPOT angle the
+   * shader uses for the light governs the sight of it too. */
+  const coneAt = (toEyeDir, dir, spotDeg) => {
+    const dl = Math.hypot(...dir) || 1;
+    const c = (toEyeDir[0]*dir[0] + toEyeDir[1]*dir[1] + toEyeDir[2]*dir[2]) / dl;
+    // 359, not 179: SPOT is the FULL angle and this halves it, so clamping at 179 caps
+    // every cone at a 89.5 deg half-angle and silently narrows a wide wash
+    const cosHalf = Math.cos(Math.min(359, spotDeg) * 0.5 * Math.PI / 180);
+    const outer = cosHalf, inner = cosHalf + (1 - cosHalf) * 0.35;
+    let t = Math.max(0, Math.min(1, (c - outer) / Math.max(1e-4, inner - outer)));
+    return t * t * (3 - 2 * t);
+  };
+  const DOWN = [0, -1, 0], SPOT = 250;      // the test track's own values
+  ok(coneAt([0, -1, 0], DOWN, SPOT) === 1, "from directly below a downlight, fully visible");
+  ok(coneAt([0, 1, 0], DOWN, SPOT) === 0, "from directly above it, not visible at all");
+  ok(coneAt([1, 0, 0], DOWN, SPOT) > 0, "from level with it, still visible — a 250 deg cone is wide");
+  /* It must dim through the rim rather than blink off as the camera crosses a threshold.
+   * The cone's edge is at 125 deg from straight down; sample a direction just inside it. */
+  const rim = 125 * Math.PI / 180, eps = 0.03;
+  const nearRim = [Math.sin(rim - eps), -Math.cos(rim - eps), 0];
+  const v = coneAt(nearRim, DOWN, SPOT);
+  ok(v > 0 && v < 1, "and dims through the rim rather than switching: " + v.toFixed(3));
+  // a lamp with no usable cone — a point light, or a NORMAL-aimed one — must skip this
+  // entirely; an unshielded bulb IS visible from every side
+  const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+  const fn = src.slice(src.indexOf("function drawTrackLampGlare"));
+  ok(/if \(L\.spotUsable\)/.test(fn.slice(0, fn.indexOf("\n}"))),
+     "the cone is applied only when the lamp has a usable one");
 }
 
 console.log("the pixel floor — the reason a distant lamp does not disappear");
@@ -199,6 +234,7 @@ console.log("constants match the shipped source");
   ok(body.includes("Math.min(8, L.radius"), "world size comes from the fixture's radius");
   ok(body.includes("LAMP_FIXTURE_MAX_RADIUS"), "structures are excluded from the sprite pass");
   ok(body.includes("d * 0.004"), "the depth nudge scales with distance");
+  ok(!/Math\.min\(179/.test(src), "no full-angle SPOT is clamped at 179 anywhere — that halves to 89.5 deg");
   // the load-bearing negative: no distance term may creep back into brightness
   ok(!/const b = [^;]*\bd\b/.test(body), "brightness does not reference distance");
   ok(!body.includes("fadeAt"), "and the glare pass does not consult FADE_AT at all");

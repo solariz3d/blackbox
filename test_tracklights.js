@@ -126,14 +126,22 @@ console.log("\nexplicit POSITION, OFFSET, ACTIVE");
   ok(a.length === 0, "ACTIVE = 0 is skipped");
 }
 
-console.log("\nculling: nearest first, out-of-range dropped");
+console.log("\nculling: a slot budget, not a distance cull");
 {
   const mk = (x, range) => ({ pos: [x, 0, 0], color: [1,1,1], intensity: 1, range, dir: [0,-1,0], spot: 360, sharpness: 0.3, night: true });
   const lights = [mk(10, 50), mk(500, 50), mk(30, 50), mk(20, 50)];
   const got = T.cullLights(lights, [0, 0, 0], 2);
   ok(got.length === 2, "capped at n");
   ok(got[0].pos[0] === 10 && got[1].pos[0] === 20, "nearest two, in order");
-  ok(!T.cullLights(lights, [0,0,0], 10).some(l => l.pos[0] === 500), "a lamp far beyond its own range is dropped");
+  /* This used to assert the opposite — that a lamp further from the eye than its own RANGE
+   * is dropped — and that was the wrong model, not merely a tight one. A lamp lights the
+   * ground AROUND ITSELF. Judging it by its distance from the CAMERA means that from 500 m
+   * away every lamp on a circuit fails, nothing is sent, and the whole track goes black,
+   * while the pools being looked at are exactly what should still be lit. The test is
+   * inverted rather than deleted, because the old behaviour is a regression worth naming. */
+  ok(T.cullLights(lights, [0,0,0], 10).some(l => l.pos[0] === 500),
+     "a lamp far beyond its own RANGE is still sent — it lights the ground around itself");
+  ok(T.cullLights([mk(50000, 50)], [0,0,0], 4).length === 1, "distance alone never rejects");
   ok(T.cullLights([], [0,0,0], 4).length === 0, "no lights is not a crash");
 }
 
