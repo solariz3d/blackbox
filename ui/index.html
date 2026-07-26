@@ -3509,6 +3509,16 @@ function render() {
     // exact rejection, not an approximation — the same argument as the lamp cull.
     const camPlanes = frustumPlanes(mvp);
     cullStat.track = 0; cullStat.total = sceneGroups.length;
+    /* FRONT-TO-BACK, opaque prefix only. The chunks used to draw in kn5-file → material →
+     * cell insertion order — arbitrary in depth — so whether a canopy layer was z-rejected
+     * or fully shaded was a coin flip on draw order, and sakura's corridors sit under a
+     * median of 36 overlapping alpha-tested layers. Sorting near-first lets early-z kill
+     * the layers behind the first surviving one: measured-model expectation is the shaded
+     * count per pixel dropping from ~(1/a)ln(aN) ≈ 5.8 to ~1/a ≈ 2. Depth testing makes
+     * this invisible for opaque/cutout geometry — the image is identical by construction.
+     * The translucent tail keeps its original order and stays last (it blends; order IS
+     * its appearance). ~800 chunk sort per frame is microseconds of CPU. */
+    const drawList = sortedSceneGroups(camEye());
     gl.useProgram(progT);
     gl.uniformMatrix4fv(tLoc.mvp, false, mvp);
     gl.uniformMatrix4fv(tLoc.model, false, IDENT4);
@@ -3527,7 +3537,7 @@ function render() {
     gl.uniform1i(tLoc.emisTex, 1);              // the emissive mask lives on unit 1
     gl.uniform3fv(tLoc.eye, camEye());          // for the specular half-vector
     gl.activeTexture(gl.TEXTURE0);
-    for (const g of sceneGroups) {
+    for (const g of drawList) {
       /* TREE_MODE 2 — unlit foliage. A canopy is alpha-tested, so every one of its
        * fragments that survives the test still samples two shadow cascades and walks the
        * lamp loop, over hundreds of thousands of triangles of mostly-transparent quads.
@@ -5712,6 +5722,25 @@ const GT = (function () {
  * question about any of this is "is it actually skipping anything". */
 const cullStat = { track: 0, shadow: 0, far: -1, bakes: 0, total: 0 };
 const matOrder = [];   // material name -> palette index, stable across frames
+/* Persistent draw-order machinery for the lit pass — see the FRONT-TO-BACK note at the
+ * call site. Split once per track (the translucent tail never changes), sort only the
+ * opaque head, reuse one ordered array so a 240 Hz loop allocates nothing per frame. */
+let _sgRef = null, _sgOpaque = [], _sgOrdered = [];
+function sortedSceneGroups(eye) {
+  if (_sgRef !== sceneGroups) {
+    _sgRef = sceneGroups;
+    _sgOpaque = sceneGroups.filter(g => !g.translucent);
+    _sgOrdered = _sgOpaque.concat(sceneGroups.filter(g => g.translucent));
+  }
+  for (const g of _sgOpaque) {
+    const c = g.centre;
+    if (c) { const dx = c[0]-eye[0], dy = c[1]-eye[1], dz = c[2]-eye[2]; g._d2 = dx*dx+dy*dy+dz*dz; }
+    else g._d2 = 0;   // boundless groups draw first; they were never cullable anyway
+  }
+  _sgOpaque.sort((a, b) => a._d2 - b._d2);
+  for (let i = 0; i < _sgOpaque.length; i++) _sgOrdered[i] = _sgOpaque[i];
+  return _sgOrdered;
+}
 let frameMsEMA = 0, fpsPrev = 0, frameMsWorst = 0, frameWorstAt = 0;
 let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on shift-frame crossings
 function loop(ts) {
