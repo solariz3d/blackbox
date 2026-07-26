@@ -2384,7 +2384,7 @@ function drawGhostCars(mvp, headVP, nightF, allCars) {
       if (!run.rig) run.rig = { roll: 0, pitch: 0, headYaw: 0, headRoll: 0 };
       const dp = driverPose(f, gm, gsteer, run.ex, run.rig);
       if (animS) driverSkinUpload(driverAnimWorlds(animS, animT(animS, gspin * DRIVER_GRIP_SPIN_SIGN)));
-      else driverSeatedSkin(gspin * DRIVER_GRIP_SPIN_SIGN);
+      else driverSeatedSkin(gspin * DRIVER_GRIP_SPIN_SIGN, run);   // `run` identifies this ghost
       for (const sm of carDriver.skinned) drawCarGroups([sm.grp], dp.body);
       drawCarGroups(carDriver.headGroups, dp.head);   // ghosts are never the camera car, so no head-hide
     }
@@ -3936,7 +3936,7 @@ function render() {
     if (carDriver) {                                           // driver: authored steer anim when present (palms wrapped on the grips), IK fallback otherwise
       const dp = driverPose(tCur / ex.dt, cm, carSteerAngle);
       if (animS) driverSkinUpload(driverAnimWorlds(animS, animT(animS, wheelSpin * DRIVER_GRIP_SPIN_SIGN)));
-      else driverSeatedSkin(wheelSpin * DRIVER_GRIP_SPIN_SIGN);   // hands ride the SAME spin as the wheel
+      else driverSeatedSkin(wheelSpin * DRIVER_GRIP_SPIN_SIGN, 0);   // hands ride the SAME spin as the wheel
       for (const sm of carDriver.skinned) drawCarGroups([sm.grp], dp.body);
       /* Drop the head when the camera is right on top of it. A helmet is ~20 cm across, so once the
        * eye is inside that radius the mesh straddles the near plane and you see its interior across
@@ -5655,7 +5655,8 @@ async function loadCarModel(carId) {
                       // reach on THIS car's rig (shoulder lean included) — self-calibrated
                       gripLock: (arms && arms.length) ? gripLockCalib(arms, wheelC, wheelAxis, DRIVER_SHOULDER_REACH) : 0 };
         if (steerAnim) driverSkinUpload(driverAnimWorlds(steerAnim, animT(steerAnim, 0)));   // seat at anim centre
-        else driverSeatedSkin(0);   // seat the body onto the wheel (neutral)
+        // load-time seating: force it through, never let the rate cap defer the first pose
+    else { driverPoseReset(); driverSeatedSkin(0, 0); }
       }
     } catch (e) { console.warn("driver load failed:", e); carDriver = null; }
   } catch (e) { console.warn("car model load failed:", e); carGroups = null; carWheels = null; carDriver = null; }

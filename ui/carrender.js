@@ -800,10 +800,62 @@ function driverSeatedPose(spin) {
   return world;
 }
 
-function driverSeatedSkin(spin) {
+/* DRIVER POSE RATE, decoupled from the display rate.
+ *
+ * The whole IK re-pose plus skin runs here, and it was running once per car per FRAME —
+ * 360 times a second on a 360 Hz panel. It is by a wide margin the largest per-frame
+ * allocator in the app, and it is resampling a signal that does not move anywhere near that
+ * fast: a driver's forearms and fingers at 360 Hz is 360 solutions of a pose that changes
+ * over tenths of a second.
+ *
+ * WHY THIS IS SAFE, and it is the reason to do it this way rather than rewrite the IK maths
+ * with out-params: the driver is skinned in CAR-LOCAL space and placed in the world by the
+ * car matrix, which still updates every single frame. So capping this rate makes the
+ * ARTICULATION update at 144 Hz while the driver still rides the car exactly as before. The
+ * position is never stale; only the elbow angle is, by up to 7 ms.
+ *
+ * Skipping also skips the upload, which is correct — the VBO still holds the last skin, and
+ * re-uploading identical vertices would keep the bandwidth while dropping only the maths.
+ *
+ * THE SKIN BUFFERS ARE SHARED BY EVERY CAR, and that constrains what may be skipped. There
+ * is one driver model; each car poses into it, uploads, and draws, in sequence. So skipping
+ * car A's pose does not leave A's arms in the buffer — it leaves whichever car posed LAST,
+ * which with ghosts on track would put one driver's steering on another's body.
+ *
+ * Hence the cache key is WHICH CAR POSED LAST, not a per-car map. With one car on track it
+ * is always the same car, so the cap applies and the saving is real. With ghosts the caller
+ * alternates, the key never matches, and every car poses every frame exactly as before —
+ * correct by construction, and the optimisation simply switches itself off rather than
+ * needing a special case. Giving each car its own skin buffers would lift that restriction;
+ * that is a bigger change than this one.
+ *
+ * `spin` is remembered too: if the steering has moved meaningfully the pose is redone
+ * regardless of the clock, so a fast correction is never smeared across the interval.
+ */
+/* Target, not a guarantee — the ACHIEVED rate is quantised to the frame clock, because a
+ * pose can only happen on a frame. The gate fires once the interval has elapsed, so the
+ * real rate is frameRate / ceil(frameRate / target): at 360 Hz that is every third frame,
+ * i.e. 120 Hz, not 144. At 240 Hz also 120; at 144 Hz exactly 144; at 60 Hz the cap is
+ * above the frame rate and nothing is skipped at all, so a slow display never gets worse. */
+let DRIVER_POSE_HZ = 144;
+let _dposeLast = null;             // { key, t, spin } — the car that most recently posed
+function driverSeatedSkin(spin, key) {
+  const k = key === undefined ? 0 : key;
+  const nowMs = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+  const p = _dposeLast;
+  if (p && p.key === k && DRIVER_POSE_HZ > 0) {
+    const due = nowMs - p.t >= 1000 / DRIVER_POSE_HZ;
+    // 0.4 degrees of wheel movement — narrower than the hand's own grip on the rim, so a
+    // skip can never hide a change in where the hands visibly are
+    const moved = Math.abs(spin - p.spin) > 0.007;
+    if (!due && !moved) return;
+  }
   const world = driverSeatedPose(spin);
   if (world) driverSkinUpload(world);
+  _dposeLast = { key: k, t: nowMs, spin };
 }
+/** forget the cached pose — call when the car or the run set changes */
+function driverPoseReset() { _dposeLast = null; }
 
 if (typeof module !== "undefined") module.exports = { gripSat, armSolve, gripLockCalib, driverSeatedPose, snapToMesh, palmGrip,
   ksanimLocal, driverAnimWorlds, driverAnimInit, animT, steerOfFrame, steerRefCalib };
