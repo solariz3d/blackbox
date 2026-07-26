@@ -1064,6 +1064,7 @@ const lampLoc = {
 };
 const lampBuf = gl.createBuffer();
 let TRACK_LAMP_GLOW = 1;
+let _glareBuf = null;      // reused sprite staging — see drawTrackLampGlare
 let LAMP_GLARE_GAIN = 1.0;
 /* Above this bounding radius a matched mesh is a lit STRUCTURE, not a fixture, and gets no
  * glare sprite — it is seen as its own emissive geometry instead. 20 m is comfortably above
@@ -1091,7 +1092,15 @@ function drawTrackLampGlare(mvp, nightF, th) {
   // leaving its glares hanging in the air would be a strange half-state
   if (!TRACK_LIGHTS_ON || !TRACK_LAMP_GLOW || !trackLights.length) return;
   const eye = camEye(), Hpx = cv.height;
-  const v = [];
+  /* Reused staging buffer with a write cursor, instead of a JS array grown by push() and
+   * then copied into a fresh Float32Array every frame. Written by me, and at 60 lamps it
+   * was ~10 KB of garbage a frame — on nordic's 207 lamps, ~34 KB. Sized on first use to
+   * whatever the track actually declares, since that never changes while it is loaded. */
+  if (!_glareBuf || _glareBuf.length < trackLights.length * 8) {
+    _glareBuf = new Float32Array(Math.max(64, trackLights.length) * 8);
+  }
+  const v = _glareBuf;
+  let vn = 0;
   for (const L of trackLights) {
     const gate = L.night ? nightF : 1;
     if (gate <= 0.02) continue;
@@ -1181,13 +1190,17 @@ function drawTrackLampGlare(mvp, nightF, th) {
       const k = Math.max(0.5, d * 0.004, (L.radius || 0) * 1.1) / d;
       sx = L.pos[0] - dx * k; sy = L.pos[1] - dy * k; sz = L.pos[2] - dz * k;
     }
-    v.push(sx, sy, sz, L.color[0], L.color[1], L.color[2], px, b);
+    v[vn] = sx; v[vn+1] = sy; v[vn+2] = sz;
+    v[vn+3] = L.color[0]; v[vn+4] = L.color[1]; v[vn+5] = L.color[2];
+    v[vn+6] = px; v[vn+7] = b;
+    vn += 8;
   }
-  if (!v.length) return;
+  if (!vn) return;
   gl.useProgram(progLamp);
   gl.uniformMatrix4fv(lampLoc.mvp, false, mvp);
   gl.bindBuffer(gl.ARRAY_BUFFER, lampBuf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(v), gl.DYNAMIC_DRAW);
+  // subarray, not a copy — a view costs one small object instead of the whole staging array
+  gl.bufferData(gl.ARRAY_BUFFER, v.subarray(0, vn), gl.DYNAMIC_DRAW);
   gl.enableVertexAttribArray(lampLoc.pos);
   gl.vertexAttribPointer(lampLoc.pos, 3, gl.FLOAT, false, 32, 0);
   gl.enableVertexAttribArray(lampLoc.col);
@@ -1204,7 +1217,7 @@ function drawTrackLampGlare(mvp, nightF, th) {
   gl.blendFunc(gl.ONE, gl.ONE);
   gl.depthMask(false);                          // a lamp behind a grandstand stays hidden,
   gl.enable(gl.DEPTH_TEST);                     // but glare must not occlude what follows
-  gl.drawArrays(gl.POINTS, 0, v.length / 8);
+  gl.drawArrays(gl.POINTS, 0, vn / 8);   // the cursor, not the buffer's capacity
   gl.disableVertexAttribArray(lampLoc.col);
   gl.disableVertexAttribArray(lampLoc.sb);
   gl.disable(gl.BLEND);
@@ -2573,6 +2586,12 @@ function setTrackLights(eye, nightF, vp, skipNight) {
   _tlN = n;
 }
 
+// the car-lamp upload buffers, hoisted out of setCarLamps — see the note at its top
+const _clp = {
+  hp: new Float32Array(8 * 3), ha: new Float32Array(4 * 3), hi: new Float32Array(4),
+  bp: new Float32Array(8 * 3), ba: new Float32Array(4 * 3), bi: new Float32Array(4),
+};
+
 function setSceneLighting(L) {   // push the lit-scene program's light + atmosphere uniforms
   gl.uniform3f(tLoc.fogC, L.fog[0], L.fog[1], L.fog[2]);
   gl.uniform3f(tLoc.sun, L.dir[0], L.dir[1], L.dir[2]);
@@ -2596,8 +2615,18 @@ function setSceneLighting(L) {   // push the lit-scene program's light + atmosph
  */
 function setCarLamps(cars, headVP, skip) {
   const N = Math.min(cars.length, 4);
-  const hp = new Float32Array(8 * 3), ha = new Float32Array(4 * 3), hi = new Float32Array(4);
-  const bp = new Float32Array(8 * 3), ba = new Float32Array(4 * 3), bi = new Float32Array(4);
+  /* Reused, following the same pattern as _tlPos/_tlCol/_tlDir/_tlArg above — six fresh
+   * typed arrays per call, six calls per frame, was ~1 KB of garbage a frame for nothing.
+   *
+   * THE ZEROING IS LOAD-BEARING, and it is why `new` looked correct here. A fresh
+   * Float32Array is zero-filled, and the loop below only writes slots for cars that clear
+   * the intensity threshold — the shader reads all four regardless. Reuse without clearing
+   * leaves the previous frame's lamps lit on cars that no longer have any, which would
+   * appear as a ghost's headlights hanging in the air after it stopped emitting. */
+  _clp.hp.fill(0); _clp.ha.fill(0); _clp.hi.fill(0);
+  _clp.bp.fill(0); _clp.ba.fill(0); _clp.bi.fill(0);
+  const hp = _clp.hp, ha = _clp.ha, hi = _clp.hi;
+  const bp = _clp.bp, ba = _clp.ba, bi = _clp.bi;
   let n = 0;
   const haveHead = carLights && carLights.head && carLights.head.length >= 2;
   const haveBrake = carLights && carLights.brake && carLights.brake.length >= 2;

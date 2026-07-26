@@ -419,7 +419,24 @@ function driverPose(fp, carMat, steer, src, rig) {
 // upload the driver's skinned meshes for a given posed skeleton `world` (array of mat4)
 function driverSkinUpload(world) {
   for (const sm of carDriver.skinned) {
-    const bm = sm.boneNodeIdx.map((ni, b) => ni < 0 ? null : rvMul(sm.invBind[b], world[ni]));
+    /* Reused bone-matrix palette, built once per mesh and refilled in place.
+     *
+     * This was `.map(... rvMul(...))` — a fresh result array, a fresh closure, and a fresh
+     * Float32Array(16) PER BONE, per skinned mesh, per car, every frame. At 360 Hz with a
+     * 60-bone palette that is millions of matrices a minute, and the measured heap climbed
+     * from 160 MB to 320 MB across a session with collections costing 8-11 ms.
+     *
+     * `bm` is dead the moment the vertex loop below finishes — nothing retains it, nothing
+     * reads it on a later frame — so a per-mesh scratch is safe. The null entries have to
+     * stay null rather than become identity: the inner loop tests `if (!M) continue` to skip
+     * an unmapped bone, and an identity there would silently pull those vertices to the
+     * model origin instead of leaving their weight unapplied. */
+    if (!sm._bm) sm._bm = sm.boneNodeIdx.map(ni => ni < 0 ? null : new Float32Array(16));
+    const bm = sm._bm;
+    for (let b = 0; b < sm.boneNodeIdx.length; b++) {
+      const ni = sm.boneNodeIdx[b];
+      if (ni >= 0) rvMulInto(bm[b], sm.invBind[b], world[ni]);
+    }
     const bp = sm.bindPos, bn = sm.bindNrm, bw = sm.bw, bi = sm.bi, op = sm.skinPos, on = sm.skinNrm, nv = bp.length / 3;
     for (let v = 0; v < nv; v++) {
       const x = bp[v*3], y = bp[v*3+1], z = bp[v*3+2], nx = bn[v*3], ny = bn[v*3+1], nz = bn[v*3+2];

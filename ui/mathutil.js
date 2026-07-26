@@ -63,6 +63,18 @@ const mT = p=>new Float32Array([1,0,0,0,0,1,0,0,0,0,1,0,p[0],p[1],p[2],1]);
 
 /* ---- row-vector (v' = v·M, row-major): kn5 / driver-skeleton convention ---- */
 function rvMul(a, b) { const o = new Float32Array(16); for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) o[r*4+c] = a[r*4]*b[c] + a[r*4+1]*b[4+c] + a[r*4+2]*b[8+c] + a[r*4+3]*b[12+c]; return o; }
+/* Same product, into a caller-owned matrix. Per-frame paths that call rvMul once per bone
+ * allocate a 16-float matrix per bone per car per frame; at 360 Hz that is the largest
+ * single contributor to a heap that was measured climbing from 160 MB to 320 MB across a
+ * session, with collections costing 8-11 ms.
+ *
+ * `o` may alias neither `a` nor `b` — every element of the result is read from both inputs,
+ * so writing into an input corrupts the rows still to be computed. Callers pass scratch. */
+function rvMulInto(o, a, b) {
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++)
+    o[r*4+c] = a[r*4]*b[c] + a[r*4+1]*b[4+c] + a[r*4+2]*b[8+c] + a[r*4+3]*b[12+c];
+  return o;
+}
 const rvRotAbout = (M, R, piv) => rvMul(M, rvMul(rvMul(mT(v3sc(piv,-1)), R), mT(piv)));
 function rvFromTo(u, v) {   // row-vector rotation taking unit u→v (shortest arc)
   u = v3nrm(u); v = v3nrm(v); let c = v3dot(u, v), ax = v3cross(u, v), s = v3len(ax);
@@ -153,6 +165,6 @@ function easeK(rate, dt) { return 1 - Math.exp(-rate * Math.max(0, Math.min(0.1,
 if (typeof module !== "undefined") module.exports = {
   IDENT4, mPerspective, mLookAt, mMul, rotP, scaleMat, mOrtho,
   v3sub, v3add, v3sc, v3dot, v3len, v3nrm, v3cross, mXfPt, mRot, mT,
-  rvMul, rvRotAbout, rvFromTo, rvInv, rvTRS, ik2bone, easeK,
+  rvMul, rvMulInto, rvRotAbout, rvFromTo, rvInv, rvTRS, ik2bone, easeK,
   frustumPlanes, sphereInFrustum,
 };
