@@ -19,16 +19,13 @@ const path = require("path");
 let fails = 0;
 function ok(cond, msg) { if (!cond) { console.log("  FAIL " + msg); fails++; } }
 
-const MIN_PX = 5, MAX_PX = 70, NUDGE_M = 0.5, FALLOFF_EXP = 0.45, MIN_REACH = 1500;
+const MIN_PX = 5, MAX_PX = 70, NUDGE_M = 0.5;
 
-/** brightness of a lamp's glare at distance d — mirrors drawTrackLampGlare */
-function glare(d, declaredFade, gate) {
-  // FADE_AT is a cost hint, not a visibility limit — Miandros declares 250 m on lamps 100 m
-  // in the air. The glare uses the larger of the author's number and our floor.
-  const fade = Math.max(declaredFade, MIN_REACH);
-  if (d > fade) return 0;
-  return Math.pow(1 - d / fade, FALLOFF_EXP) * gate;
-}
+/** brightness of a lamp's glare at distance d — mirrors drawTrackLampGlare.
+ *  `d` is accepted and deliberately unused: a light source is visible at whatever distance
+ *  you can see it, and every earlier version of this feature failed by making brightness a
+ *  function of distance — first RANGE, then FADE_AT, then a floor under FADE_AT. */
+function glare(d, _declaredFade, gate) { return gate; }
 /** what actually reaches the framebuffer, given the blend mode — the bug lived HERE */
 function contribution(b, blendSrcIsAlpha) {
   const a = b;                       // sprite centre: core 1.0, halo 0.42, before shaping
@@ -59,41 +56,39 @@ console.log("premultiplied blend — the bug that made the first version reach n
   ok(contribution(dim, false) === dim, "premultiplied output reaches the framebuffer unchanged");
 }
 
-console.log("the test track's own numbers: 180 m pool, 1000 m declared fade, 943 m circuit");
+console.log("a light source has no distance limit — the source, not its emission");
 {
-  const fade = 1000;
-  // the complaint, restated as a number: at the far side of the track a lamp must still
-  // be plainly bright — not merely non-zero, which the first version technically was
-  ok(glare(943, fade, 1) > 0.6, "a lamp across the whole track is still strong: " + glare(943, fade, 1).toFixed(3));
-  ok(glare(500, fade, 1) > 0.8, "and at mid-distance it has barely dropped: " + glare(500, fade, 1).toFixed(3));
-  // it must not be flat either — a light 50 m away should read as nearer than one at
-  // 900 m, or the depth cue is gone and the track becomes a sheet of identical dots
-  ok(glare(50, fade, 1) > glare(900, fade, 1) * 1.15, "near lamps still read as nearer than far ones");
-  // and it does end, without a pop at the boundary
-  ok(glare(MIN_REACH, fade, 1) === 0, "brightness reaches zero at the reach");
-  ok(glare(MIN_REACH + 1, fade, 1) === 0, "and stays zero beyond it");
-  ok(glare(MIN_REACH - 1, fade, 1) < 0.05, "approaching it, already near zero — nothing pops out of existence");
+  // The T-180 test track: 180 m pool, 1000 m declared fade, 943 m circuit. None of those
+  // numbers may bound whether the lamp is SEEN.
+  ok(glare(943, 1000, 1) === 1, "a lamp across the whole circuit is at full brightness");
+  ok(glare(5000, 1000, 1) === 1, "and so is one five kilometres out — past every declared fade");
+  ok(glare(50, 1000, 1) === glare(5000, 1000, 1),
+     "near and far are equally bright; SIZE is what separates them, as with real lights");
+  // Miandros declares 250 m on floodlights standing 100 m in the air — a statement about
+  // processing cost, not about whether a stadium light can be seen from the far straight.
+  ok(glare(900, 250, 1) === 1, "a short declared FADE_AT does not dim the source either");
+  // the regression this replaces: every previous version made brightness a function of
+  // distance, and each time the answer was "still not far enough"
+  for (const d of [100, 500, 943, 2000, 10000]) {
+    ok(glare(d, 1000, 1) > 0.99, "no falloff at " + d + " m");
+  }
 }
 
-console.log("the reach floor overrides a short FADE_AT, deliberately");
+console.log("illumination stays local — the other half of the separation");
 {
-  // Miandros declares 250 m on floodlights standing 100 m in the air. That is a statement
-  // about processing cost, not about whether a stadium light can be seen from the far
-  // straight, and taking it literally is what left tracks dark past the next corner.
-  ok(glare(900, 250, 1) > 0.5, "a Miandros floodlight is visible from 900 m: " + glare(900, 250, 1).toFixed(2));
-  // a LONGER declared fade is still respected — the floor only ever raises
-  ok(glare(1900, 2000, 1) > 0, "nordic's declared 2000 m is not clipped back to the floor");
-  ok(glare(1900, 250, 1) === 0, "while a short one is raised to the floor, not to infinity");
-}
-
-console.log("falloff is gentler than illumination, and that is the point");
-{
-  // Illumination falls off toward zero across its RANGE; glare must not, or the effect
-  // collapses back into the thing being fixed. At half the reach a quadratic pool is down
-  // to 25%; the glare should still be holding most of its strength.
-  const quad = (1 - 0.5) * (1 - 0.5);
-  ok(glare(750, 1000, 1) > 0.7, "at half the reach: glare " + glare(750, 1000, 1).toFixed(2) + " vs a quadratic pool's " + quad);
-  ok(FALLOFF_EXP < 0.6, "the exponent is well below 1, i.e. it holds up right across a circuit");
+  const TL = require("./ui/tracklights.js");
+  const at = (x) => ({ pos: [x, 0, 0], range: 60, fadeAt: 1700, intensity: 1, color: [1, 1, 1] });
+  const eye = [0, 0, 0];
+  // a sakura lamp declares RANGE 60 and FADE_AT 1700. It must be SEEN from 1700 m — that
+  // is the glare pass above — and must not be handed to the shader as a light source from
+  // there, where its falloff is exactly zero and it would occupy one of twelve slots.
+  const kept = TL.cullLights([at(50), at(500), at(1500)], eye, 12);
+  ok(kept.length === 1, "only the lamp within RANGE(+margin) is sent to the shader: got " + kept.length);
+  ok(kept[0].pos[0] === 50, "and it is the near one");
+  // the margin exists so a lamp does not blink out of the sent set the instant it passes
+  // its own range boundary
+  ok(TL.cullLights([at(85)], eye, 12).length === 1, "a small margin past RANGE is kept");
+  ok(TL.cullLights([at(200)], eye, 12).length === 0, "but well past it, no");
 }
 
 console.log("the pixel floor — the reason a distant lamp does not disappear");
@@ -147,13 +142,14 @@ console.log("constants match the shipped source");
   const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
   const fn = src.slice(src.indexOf("function drawTrackLampGlare"));
   const body = fn.slice(0, fn.indexOf("\n}"));
-  ok(body.includes("0.45"), "falloff exponent 0.45 present in drawTrackLampGlare");
   ok(body.includes("Math.max(5,") && body.includes("70"), "pixel floor 5 and cap 70 present");
   ok(body.includes("0.55 + 0.22"), "world-size formula present");
   ok(body.includes("Math.min(4, L.intensity)"), "intensity clamp at 4 present");
   ok(body.includes("0.5 / d"), "half-metre depth nudge present");
-  ok(body.includes("L.fadeAt || L.range"), "fades on FADE_AT, falling back to RANGE");
-  ok(body.includes("LAMP_GLARE_MIN_REACH"), "and raises a short fade to the reach floor");
+  // the load-bearing negative: no distance term may creep back into brightness
+  ok(!/const b = [^;]*\bd\b/.test(body), "brightness does not reference distance");
+  ok(!body.includes("fadeAt"), "and the glare pass does not consult FADE_AT at all");
+  ok(!/if \(d > /.test(body), "no distance cull");
   ok(/blendFunc\(gl\.ONE,\s*gl\.ONE\)/.test(body),
      "blend is PREMULTIPLIED additive — SRC_ALPHA here squares an already-premultiplied colour");
   ok(!/blendFunc\(gl\.SRC_ALPHA/.test(body), "and the quadratic blend has not come back");

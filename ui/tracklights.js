@@ -185,10 +185,14 @@ function cullLights(lights, eye, n) {
   for (const L of lights) {
     const dx = L.pos[0] - eye[0], dy = L.pos[1] - eye[1], dz = L.pos[2] - eye[2];
     const d2 = dx * dx + dy * dy + dz * dz;
-    // FADE_AT when the author gave one, else RANGE — a stadium floodlight is meant to be
-    // seen from well outside the pool it lights, and culling on RANGE alone hid exactly
-    // the lamps that make a night lap legible.
-    const reach = (L.fadeAt || L.range) + 40;
+    /* RANGE, because this cull is about ILLUMINATION and nothing else. It briefly used
+     * FADE_AT, to stop distant lamps disappearing — which was the right problem solved in
+     * the wrong place. Being SEEN is now a separate pass with no distance limit at all, so
+     * this one is back to the only question it can answer: can this lamp put light on a
+     * surface near the camera? Past RANGE the shader's falloff is exactly zero, so a lamp
+     * admitted on FADE_AT (1700 m on sakura, against a 60 m range) merely occupied one of
+     * twelve slots and contributed nothing. */
+    const reach = L.range + 40;
     if (d2 > reach * reach) continue;
     scored.push({ L, d2 });
   }

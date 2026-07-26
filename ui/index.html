@@ -986,14 +986,19 @@ const lampLoc = {
 const lampBuf = gl.createBuffer();
 let TRACK_LAMP_GLOW = 1;
 let LAMP_GLARE_GAIN = 1.0;
-/* A floor under the author's FADE_AT, and it is knowingly overriding the config.
+/* NO DISTANCE LIMIT, and that is the design rather than an oversight.
  *
- * FADE_AT is a performance hint about when CSP may stop processing a light source, not a
- * statement that the lamp becomes invisible there — Miandros sets 250 m on lamps 100 m in
- * the air, which is about cost, not about sight. Real lights carry much further than that,
- * so the fade used for GLARE is the larger of the author's number and this. Illumination is
- * untouched and still honours RANGE exactly; this only governs how far the lamp is seen. */
-let LAMP_GLARE_MIN_REACH = 1500;
+ * A light source is visible from however far away you can see it — that is what makes it a
+ * light. Its EMISSION is local, bounded by RANGE, and that is a separate thing: the pool on
+ * the tarmac ends where the author said it ends. Two properties of one lamp, and every
+ * version of this before now conflated them, first by using RANGE for both, then FADE_AT,
+ * then a floor under FADE_AT. Each was a bigger number standing in for the right idea.
+ *
+ * So there is no fade and no cull here. Brightness does not fall off with distance either:
+ * what reaches the eye from a distant point source is glare, and glare is why a street lamp
+ * a mile off and one across the road look about equally bright — what changes is how big
+ * they are, not how bright. Size still carries that, all the way down to the pixel floor.
+ * The frustum and the depth buffer remain the only things that hide a lamp. */
 
 /* Draw every track lamp as an additive sprite, sized by distance but never allowed to
  * vanish. `th` is tan(fov/2), so the projection matches the car's glow layer. */
@@ -1008,23 +1013,20 @@ function drawTrackLampGlare(mvp, nightF, th) {
     if (gate <= 0.02) continue;
     const dx = L.pos[0] - eye[0], dy = L.pos[1] - eye[1], dz = L.pos[2] - eye[2];
     const d = Math.hypot(dx, dy, dz) || 1;
-    const fade = Math.max(L.fadeAt || L.range, LAMP_GLARE_MIN_REACH);
-    if (d > fade) continue;
-    /* Brightness falls off far more slowly than the illumination does. That is not a
-     * fudge: what carries a distant light to the eye is glare, and glare falls off with
-     * the source's apparent brightness, not with the inverse square of a pool of light on
-     * tarmac. Linear in d/fade, raised to 0.45 so it holds most of its strength right
-     * across the circuit and only lets go approaching the fade. */
-    const b = Math.pow(1 - d / fade, 0.45) * gate * LAMP_GLARE_GAIN;
+    // no distance term at all — see the note on the constants above
+    const b = gate * LAMP_GLARE_GAIN;
     if (b <= 0.004) continue;
     /* Size: a real fixture's angular size, EXCEPT that it is not allowed below 5 px. The
      * floor is the whole point. A lamp 900 m away subtends about 0.7 px, so the honest
      * projection makes it disappear — but a real light at that distance is still plainly
      * visible, because the eye receives its glare rather than resolving its shape. Five
-     * pixels because two was arithmetically sufficient and visually still nothing: a
-     * 2-pixel dot at a fraction of full brightness is not a light, it is a stuck sensor
-     * pixel. Below about a pixel a sprite also shimmers as it crosses the sample grid, so
-     * the floor fixes the flicker and the vanishing in one move. */
+     * pixels because 2.5 was arithmetically sufficient and visually still nothing.
+     *
+     * With no distance term on brightness, THIS is now the only thing that distinguishes a
+     * near lamp from a far one — which is right, and is how real lights behave: what
+     * changes across a mile is their size, not their brightness. Below about a pixel a
+     * sprite also shimmers as it crosses the sample grid, so the floor fixes the flicker
+     * and the vanishing in one move. */
     const world = 0.55 + 0.22 * Math.min(4, L.intensity);
     const px = Math.max(5, Math.min(70, world * Hpx / (d * th)));
     /* Pull the sprite toward the eye. Its position is the lamp mesh's bounding-sphere
