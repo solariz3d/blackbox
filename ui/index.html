@@ -1498,12 +1498,49 @@ function buildWorldCollider(verts, tris, cellOverride, bigCapOverride) {
   const spanX = Math.max(1, maxX - minX), spanZ = Math.max(1, maxZ - minZ);
   // small cells → few tris per cell → cheap per-particle queries (the smoke collider passes
   // an override; the camera collider uses the coarse default tuned for a few queries/frame).
-  const cell = cellOverride || Math.max(6, Math.min(48, Math.max(spanX, spanZ) / 96));
+  /* CELL SIZE IS A CELL BUDGET, NOT A LENGTH CAP.
+   *
+   * This was `min(48, max(spanX,spanZ)/96)`, which sizes cells by the scene's EXTENT — and
+   * extent is the wrong variable, because it is set by whatever is furthest away rather
+   * than by where the geometry actually is. The T-180 test track carries a distant
+   * environment shell, so its collider spans 5000 m while the circuit occupies about
+   * 950x500 m of that. Cells hit the 48 m cap, almost all of them ended up empty, and the
+   * few holding the track held FIFTEEN THOUSAND triangles each (median 4, p99 4342, max
+   * 15504 — measured, not estimated).
+   *
+   * The follow cam raycasts this grid once per frame and its boom is always in those cells,
+   * because it sits behind the car on the racing surface. Free fly never calls it at all,
+   * which is exactly why 11 ms spikes appeared only in follow cam.
+   *
+   * Budgeting cells instead keeps resolution proportional to the space rather than to the
+   * furthest prop, and degrades sensibly on a genuinely huge track: sakura's 49 km extent
+   * still lands at ~43 m cells, which is fine there because its geometry really is spread
+   * out (p99 of 89). Two million cells of mostly-empty array is a few megabytes, once, at
+   * track load — cheap against a per-frame raycast. */
+  const CELL_BUDGET = 2000000;
+  const cell = cellOverride ||
+    Math.max(2, Math.min(48, Math.sqrt(spanX * spanZ / CELL_BUDGET)));
+  /* BIGCAP has to be a WORLD AREA, not a cell count, or it fights the line above.
+   *
+   * At 48 m cells a 200 m triangle spans 25 cells and buckets normally; at 3.5 m it spans
+   * 3200 and gets dumped into bigTris — which collideSegment tests in FULL on every call.
+   * Shrinking cells without fixing this trades one stall for a worse one: measured, it took
+   * nordic's always-tested list from 79 triangles to 33,472. Expressed as a size on the
+   * ground it means the same thing at any resolution, and only genuinely enormous geometry
+   * (backdrops, environment shells) lands in the list.
+   *
+   * Measured worst case — densest cell plus the whole bigTris list — before and after:
+   *   t180testtrack 15,609 -> 791     nordic 2,443 -> 309     centrifuge 5,378 -> 397
+   * Sakura only improves 1.9x (43,812 -> 22,967): its 49 km extent pins the cell at the
+   * 48 m ceiling, so its density problem is a different one and is not fixed here. */
+  const BIG_WORLD_M = 400;
   const nx = Math.max(1, Math.ceil(spanX / cell)), nz = Math.max(1, Math.ceil(spanZ / cell));
   if (nx * nz > 8000000) return buildWorldCollider(verts, tris);   // guard: too many cells → fall back to coarse
   const cells = new Array(nx * nz);
   const bigTris = [];              // triangles too large to bucket sanely
-  const BIGCAP = bigCapOverride || 48;   // max cells a triangle may occupy before it's an always-tested "big" tri
+  // max cells a triangle may occupy before it becomes an always-tested "big" tri — derived
+  // from BIG_WORLD_M above, with the old 48 as a floor so a coarse grid behaves as before
+  const BIGCAP = bigCapOverride || Math.max(48, Math.round((BIG_WORLD_M / cell) * (BIG_WORLD_M / cell)));
   for (let t = 0; t < nt; t++) {
     const i0 = tris[t * 3], i1 = tris[t * 3 + 1], i2 = tris[t * 3 + 2];
     const ax = verts[i0 * 3], az = verts[i0 * 3 + 2];
