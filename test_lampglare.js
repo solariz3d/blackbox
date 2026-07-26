@@ -172,7 +172,7 @@ console.log("a shielded lamp is not visible from behind its shield");
   ok(v > 0 && v < 1, "and dims through the rim rather than switching: " + v.toFixed(3));
   // a lamp with no usable cone — a point light, or a NORMAL-aimed one — must skip this
   // entirely; an unshielded bulb IS visible from every side
-  const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+  const src = require("./testenv.js").uiSource();
   const fn = src.slice(src.indexOf("function drawTrackLampGlare"));
   ok(/if \(L\.spotUsable\)/.test(fn.slice(0, fn.indexOf("\n}"))),
      "the cone is applied only when the lamp has a usable one");
@@ -227,7 +227,7 @@ console.log("the depth nudge");
 
 console.log("constants match the shipped source");
 {
-  const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+  const src = require("./testenv.js").uiSource();
   const fn = src.slice(src.indexOf("function drawTrackLampGlare"));
   const body = fn.slice(0, fn.indexOf("\n}"));
   ok(body.includes("Math.max(5,") && body.includes("70"), "pixel floor 5 and cap 70 present");

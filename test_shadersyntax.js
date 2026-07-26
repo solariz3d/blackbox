@@ -51,9 +51,15 @@ console.log("\nevery UI script parses as JavaScript");
   }
 }
 
-/* The inline script in index.html is 5000+ lines and carries most of the app; a syntax
- * error there is just as fatal and just as invisible. */
-console.log("\nthe inline script in index.html parses");
+/* index.html's remaining inline scripts — the head error reporter and the shared state plus
+ * the main loop. Much smaller since the module split moved 5,821 lines out into ui/*.js, but
+ * a syntax error in either is still fatal and still silent.
+ *
+ * This reads index.html DIRECTLY and must keep doing so: it parses the file as HTML to find
+ * <script> blocks without a src. Pointing it at the concatenated UI source, which a
+ * mechanical repoint briefly did, makes the regex match `<script` occurrences inside JS
+ * string literals and then fail to parse them — a failure about the test, not the code. */
+console.log("\nthe inline scripts in index.html parse");
 {
   const html = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
   const re = /<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g;

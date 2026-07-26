@@ -20,16 +20,22 @@ const sandbox = { Math, Float32Array, Float64Array, Array, console, window: {}, 
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync(path.join(ui, "mathutil.js"), "utf8"), sandbox, { filename: "mathutil.js" });
 
-// pull buildLightVP + the reach constant straight out of the shipped page
-const html = fs.readFileSync(path.join(ui, "index.html"), "utf8");
-const fn = html.match(/function buildLightVP[\s\S]*?\n\}/);
-const konst = html.match(/const SHADOW_CASTER_REACH\s*=\s*\d+;/);
-if (!fn) { console.log("could not extract buildLightVP"); process.exit(2); }
-vm.runInContext(fn[0], sandbox);
+/* Pull buildLightVP + the reach constant straight out of the shipped source, wherever it
+ * lives. It used to be found by regex against index.html; the module split moved it to
+ * shadowpass.js and the test failed on a relocation rather than a defect. uiFunction
+ * brace-matches from the declaration, so it also returns the WHOLE body rather than
+ * stopping at the first line starting with `}` — which the old `[\s\S]*?\n\}` would do the
+ * moment the function gained a nested block at column 0. */
+const E = require("./testenv.js");
+const src = E.uiSource();
+const fn = E.uiFunction("buildLightVP");
+const konst = src.match(/const SHADOW_CASTER_REACH\s*=\s*\d+;/);
+if (!fn) { console.log("could not extract buildLightVP from any ui/ source"); process.exit(2); }
+vm.runInContext(fn, sandbox);
 // `const` in a vm context is a lexical binding, NOT a property of the sandbox — read the
 // literal out of the source instead, so the test can never silently run with reach
 // undefined (which quietly re-tests the old behaviour and passes for the wrong reason).
-if (!konst) { console.log("SHADOW_CASTER_REACH not found in index.html"); process.exit(2); }
+if (!konst) { console.log("SHADOW_CASTER_REACH not found in any ui/ source"); process.exit(2); }
 sandbox.SHADOW_CASTER_REACH = Number(konst[0].match(/\d+/)[0]);
 console.log(`  (extracted buildLightVP, SHADOW_CASTER_REACH = ${sandbox.SHADOW_CASTER_REACH} m)`);
 

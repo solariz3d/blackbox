@@ -86,7 +86,7 @@ console.log("the same code answers correctly on a 60 Hz panel");
 
 console.log("constants match the shipped source");
 {
-  const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+  const src = require("./testenv.js").uiSource();
   ok(src.includes("Math.round(dtMs / frameBudgetMs()) - 1"), "the round-to-nearest-period rule is in the loop");
   ok(!src.includes("frameBudgetMs() - 0.5"), "and the off-by-one version has not come back");
   ok(src.includes("missed ${vsyncMissedShown}/s"), "the HUD reports missed periods per second");

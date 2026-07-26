@@ -132,7 +132,7 @@ console.log("several cars: each is capped independently");
 
 console.log("constants match the shipped source");
 {
-  const cr = fs.readFileSync(path.join(__dirname, "ui", "carrender.js"), "utf8");
+  const cr = require("./testenv.js").uiSource();
   ok(/let DRIVER_POSE_HZ = \d+/.test(cr), `DRIVER_POSE_HZ present (currently ${HZ})`);
   ok(HZ >= 30 && HZ <= 240, `and in a sane range — ${HZ} Hz`);
   ok(cr.includes("Math.abs(spin - p.spin) > 0.007"), "the movement escape hatch is present");
@@ -142,7 +142,7 @@ console.log("constants match the shipped source");
      "a skipped car re-uploads its OWN skin — the GL buffer is shared, so it must");
   ok(/if \(!slot\) return false/.test(cr),
      "and falls through to a full pose when a car has no cached skin yet");
-  const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+  const src = require("./testenv.js").uiSource();
   ok(src.includes("driverPoseReset(); driverSeatedSkin(0, 0)"),
      "load-time seating forces a pose through rather than letting the cap defer it");
   ok(/driverSeatedSkin\([^)]*, run\)/.test(src), "ghosts pass their run as the key");

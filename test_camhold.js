@@ -104,7 +104,7 @@ console.log("the rest of the rig's smoothing was already rate-independent");
 
 console.log("constants match the shipped source");
 {
-  const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+  const src = require("./testenv.js").uiSource();
   ok(src.includes("const HIT_HOLD_S = 0.033"), "HIT_HOLD_S present at 0.033 s");
   ok(src.includes("R.hitTime = rawHit ? (R.hitTime || 0) + dt : 0"),
      "the hold accumulates dt, not frames");

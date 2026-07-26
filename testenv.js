@@ -19,6 +19,51 @@
 const fs = require("fs");
 const path = require("path");
 
+/**
+ * The whole UI source as one string — every ui/*.js plus index.html's inline script.
+ *
+ * Several tests verify that a constant or a rule is present in the shipped source, which is
+ * what makes them more than a mirror of themselves. They used to read index.html directly,
+ * and the module split broke all eight at once: the code had moved to lightfx.js,
+ * collider.js, perf.js and the rest, so the assertions could no longer find what they were
+ * guarding and reported failures that were really relocations.
+ *
+ * Searching the whole UI instead makes them robust to the NEXT move as well. The thing being
+ * asserted is "this rule exists in the code that ships", and that was never a claim about
+ * which file it lives in.
+ */
+function uiSource() {
+  const ui = path.join(__dirname, "ui");
+  let out = "";
+  for (const f of fs.readdirSync(ui)) {
+    if (f.endsWith(".js")) out += "\n/*FILE:" + f + "*/\n" + fs.readFileSync(path.join(ui, f), "utf8");
+  }
+  out += "\n/*FILE:index.html*/\n" + fs.readFileSync(path.join(ui, "index.html"), "utf8");
+  return out;
+}
+
+/**
+ * The text of one top-level function, found wherever it lives.
+ *
+ * Brace-matched from the declaration, so it returns the whole body rather than a fixed
+ * number of lines. Returns null when the function is absent, which a caller should treat as
+ * a failure rather than as an empty body.
+ */
+function uiFunction(name) {
+  const src = uiSource();
+  const m = new RegExp("^(?:async )?function " + name + "\\s*\\(", "m").exec(src);
+  if (!m) return null;
+  let i = src.indexOf("{", m.index);
+  if (i < 0) return null;
+  let depth = 0;
+  for (let j = i; j < src.length; j++) {
+    const c = src[j];
+    if (c === "{") depth++;
+    else if (c === "}") { depth--; if (depth === 0) return src.slice(m.index, j + 1); }
+  }
+  return null;
+}
+
 /** Steam library roots, parsed from libraryfolders.vdf — mirrors steam_libs() in lib.rs. */
 function steamLibraries() {
   const libs = [];
@@ -153,4 +198,4 @@ function skip(why) {
 }
 
 module.exports = { steamLibraries, acContent, carDir, trackDir, trackKn5, sampleReplay,
-                   sampleReplayB, sameTrackReplayPair, skip };
+                   sampleReplayB, sameTrackReplayPair, skip, uiSource, uiFunction };

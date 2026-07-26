@@ -17,7 +17,7 @@ const path = require("path");
 let fails = 0;
 const ok = (c, m) => { console.log(`  ${c ? "ok " : "FAIL"} - ${m}`); if (!c) fails++; };
 
-const html = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+const html = require("./testenv.js").uiSource();
 const grab = (name) => {
   const m = html.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n\\}`));
   if (!m) { console.log(`could not extract ${name}`); process.exit(2); }

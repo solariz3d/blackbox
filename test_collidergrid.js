@@ -96,7 +96,7 @@ console.log("the two knobs together must reduce the WORST case, not trade it");
 
 console.log("constants match the shipped source");
 {
-  const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+  const src = require("./testenv.js").uiSource();
   ok(src.includes("const CELL_BUDGET = 2000000"), "CELL_BUDGET present");
   ok(src.includes("const BIG_WORLD_M = 400"), "BIG_WORLD_M present");
   ok(src.includes("Math.sqrt(spanX * spanZ / CELL_BUDGET)"), "cell size is budget-derived");

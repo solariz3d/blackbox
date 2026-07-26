@@ -28,7 +28,7 @@ const vm = require("vm");
 let fails = 0;
 const ok = (c, m) => { console.log(`  ${c ? "ok " : "FAIL"} - ${m}`); if (!c) fails++; };
 
-const html = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+const html = require("./testenv.js").uiSource();
 
 console.log("the tripwire: one constructor, ever");
 {

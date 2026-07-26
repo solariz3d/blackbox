@@ -148,7 +148,7 @@ console.log("it improves with a finer grid instead of fighting it");
 
 console.log("constants match the shipped source");
 {
-  const src = fs.readFileSync(path.join(__dirname, "ui", "index.html"), "utf8");
+  const src = require("./testenv.js").uiSource();
   const fn = src.slice(src.indexOf("function collideSegment"));
   const body = fn.slice(0, fn.indexOf("\n}"));
   ok(body.includes("tMaxX") && body.includes("tDeltaZ"), "collideSegment uses a DDA walk");
