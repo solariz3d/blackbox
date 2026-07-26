@@ -3329,6 +3329,13 @@ function smokeStepAndDraw(mvp, view, L, fogD, i, nightF, softOn, zNear, zFar) {
       simAccum -= SIM_STEP; steps++;
     }
     if (steps >= SIM_MAX_CATCHUP) simAccum = 0;   // gave up catching up; do not hold the debt
+    /* Recorded so a spike can be checked against it. The sim is a FIXED 60 Hz while the
+     * render loop runs at the panel's rate, so at 360 Hz these two cadences are 1:6 — the
+     * sim does a frame's worth of work on one frame in six and nothing on the other five.
+     * That is the only periodic asymmetry left in the frame, now that the far shadow bake
+     * is known to run once per sun angle, so if stalls land on sim frames the cause is in
+     * here, and if they scatter evenly across all six it is somewhere else entirely. */
+    lastSimSteps = steps;
   }
   const P = smoke.pool; if (!P.length) return;
   const FL = 9;                                                  // floats/vertex: center3, corner2, size, alpha, seed, life
@@ -6238,6 +6245,8 @@ const spikeLog = [];
  * 0 is a clean second, and each unit is one visible hitch. That number is actionable in a
  * way a percentage never is. */
 let vsyncMissed = 0, vsyncMissedShown = 0, vsyncWindowAt = 0;
+let lastSimSteps = 0;          // smoke/air sim steps taken on the frame just drawn
+let simFrames = 0, simSpikes = 0, allFrames = 0, allSpikes = 0;   // for the correlation readout
 let cpuMsPrev = 0;                        // wall time inside our own frame body, last frame
 let bakesPrev = 0;                        // so a spike can report whether a bake ran THAT frame
 function recordSpike(ts, dtMs) {
@@ -6250,6 +6259,7 @@ function recordSpike(ts, dtMs) {
     gpuMs: null,                          // filled in when the timer query resolves
     _frame: GT.ok ? GT.frame() - 1 : -1,   // the frame this spike measured
     bakedThisFrame: cullStat.bakes !== bakesPrev,
+    sim: lastSimSteps,                    // did the 60 Hz smoke/air sim run on this frame?
     chunks: cullStat.track + "+" + cullStat.shadow,
     trees: cullStat.trees,
     smoke: smoke.pool.length,
@@ -6304,18 +6314,39 @@ function renderSpikePanel() {
   const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
   let out = `<span class="hdr">panel ${displayHz || "?"}Hz · budget ${bud ? bud.toFixed(2) : "?"}ms · ` +
             `recording over ${bud ? (SPIKE_FACTOR * bud).toFixed(2) : "?"}ms · ${spikeLog.length} spikes</span>\n`;
+  /* THE VERDICT LINE. The smoke/air sim is fixed at 60 Hz while the render loop runs at the
+   * panel rate, so at 360 Hz one frame in six does a sim step and five do none. If spikes
+   * land on sim frames far more often than that base rate, the cause is the sim's
+   * allocation burst; if they track the base rate, it is somewhere else and the audit's
+   * headline finding is not this stall. Stated as both numbers so the comparison is
+   * visible rather than asserted. */
+  /* Both counters run over every frame since load. An earlier version of this line divided
+   * simSpikes (all spikes ever) by spikeLog.length (the last twelve), which are different
+   * populations and produce a ratio that means nothing — the exact kind of confident wrong
+   * number this panel exists to prevent. */
+  if (allFrames > 0 && allSpikes > 0) {
+    const base = 100 * simFrames / allFrames;          // how often a sim frame occurs at all
+    const onSim = 100 * simSpikes / allSpikes;         // how often a spike lands on one
+    const judged = allSpikes >= 8;
+    const verdict = !judged ? "  (need 8+ spikes to judge)"
+      : onSim > base * 2 ? "  <span class=\"hot\">← SIM CORRELATED</span>"
+      : "  <span class=\"cool\">← not the sim</span>";
+    out += `<span class="hdr">sim runs on ${base.toFixed(1)}% of frames · ` +
+           `${onSim.toFixed(0)}% of spikes land there (${simSpikes}/${allSpikes})${verdict}</span>\n`;
+  }
   if (!spikeLog.length) {
     spikePanel.innerHTML = out + "\nnothing has exceeded the budget yet";
     return;
   }
   out += `<span class="hdr">${"at".padStart(7)}${"frame".padStart(8)}${"cpu".padStart(7)}` +
-         `${"gpu".padStart(7)}  ${"bake".padStart(4)} ${"chunks".padStart(9)} ${"trees".padStart(5)} ` +
+         `${"gpu".padStart(7)}  ${"sim".padStart(3)}  ${"bake".padStart(4)} ${"chunks".padStart(9)} ${"trees".padStart(5)} ` +
          `${"smk".padStart(4)} ${"heapMB".padStart(7)}  verdict</span>\n`;
   for (const s of spikeLog.slice().reverse()) {
     const v = spikeVerdict(s);
     const cls = v.startsWith("CPU STALLED") ? "hot" : (v.startsWith("GPU") ? "cool" : "");
     out += `${String(s.at).padStart(7)}${s.frameMs.toFixed(2).padStart(8)}` +
            `${s.cpuMs.toFixed(2).padStart(7)}${(s.gpuMs === null ? "—" : s.gpuMs.toFixed(2)).padStart(7)}` +
+           `  ${(s.sim > 0 ? "SIM" : "-").padStart(3)}` +
            `  ${(s.bakedThisFrame ? "YES" : "-").padStart(4)} ${esc(s.chunks).padStart(9)} ` +
            `${String(s.trees).padStart(5)} ${String(s.smoke).padStart(4)} ` +
            `${(s.heapMB === null ? "—" : s.heapMB.toFixed(0)).padStart(7)}  <span class="${cls}">${v}</span>\n`;
@@ -6346,7 +6377,17 @@ function loop(ts) {
        * otherwise — a fixed millisecond threshold would be meaningless across a 360 Hz and
        * a 60 Hz display, which is exactly the pair of monitors this is being watched on. */
       const bud = frameBudgetMs() || (frameMsEMA * 1.0);
-      if (bud > 0 && dtMs > bud * SPIKE_FACTOR) recordSpike(ts, dtMs);
+      /* Correlation, counted over EVERY frame rather than eyeballed from the spike list.
+       * The spike log holds twelve entries; a run of twelve that all happen to be sim
+       * frames is not that unlikely by chance, and reading a pattern off it would be
+       * exactly the kind of too-neat answer that has needed retracting twice today. These
+       * counters cover every frame since load, so the comparison is against the real base
+       * rate: at 360 Hz roughly one frame in six is a sim frame, so if spikes were
+       * independent of the sim about 17% of them would land there. */
+      allFrames++;
+      if (lastSimSteps > 0) simFrames++;
+      const isSpike = bud > 0 && dtMs > bud * SPIKE_FACTOR;
+      if (isSpike) { recordSpike(ts, dtMs); allSpikes++; if (lastSimSteps > 0) simSpikes++; }
       /* Count LOST REFRESH PERIODS, not slow frames. A frame of 2.9 ms on a 2.78 ms panel
        * lost nothing — that is measurement jitter around a frame that arrived on time. A
        * frame of 5.6 ms lost one period, 8.4 lost two. Round to the NEAREST number of
