@@ -31,7 +31,20 @@ const CENTRIFUGE = "G:/SteamLibrary/steamapps/common/assettocorsa/content/tracks
 // own logicSkipped count is 31, matching exactly.
 //
 // This guard still does its job: it catches any FURTHER unintended drift in extractScene.
-const CENTRIFUGE_BASELINE = { meshCount: 113, triCount: 3237218 };
+//
+// RE-PINNED 2026-07-26, 3,237,218 -> 2,385,042, for the skylight fix in c1cb41f. Centrifuge
+// fills its dome openings with geometry on a material named "Transparent" — NULL diffuse,
+// emissive [1,1,1] — which drew as a pale panel across every hole; it is now excluded.
+//
+// The evidence this is the intended change and not drift, checked before touching the
+// number rather than assumed from the commit message: the delta is 852,176 triangles, which
+// is EXACTLY the size the changelog records for that material, and re-parsing centrifuge
+// here shows no group carrying a "Transparent" material at all. Nothing else moved —
+// meshCount is still 113 and logicSkipped still 31.
+//
+// It failed on arrival rather than being caught at the source because this file hardcodes
+// G:\SteamLibrary, so it cannot run on the laptop that made the change.
+const CENTRIFUGE_BASELINE = { meshCount: 113, triCount: 2385042 };
 const CENTRIFUGE_LOGIC_HIDDEN = 31;
 
 let failures = 0;
