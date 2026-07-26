@@ -40,6 +40,7 @@
   addEventListener("load", function () {
     setTimeout(function () {
       var g = document.getElementById("gallery");
+      if (window.__bbGalleryShown) return;                     // it opened; a hide after that is the user's doing
       if (g && !g.classList.contains("hidden")) return;        // gallery is up: nothing to say
       panel("BLACKBOX — the track gallery never opened.",
         "This is why you are being asked to drop a replay instead of picking a track.\n\n" +
@@ -5284,6 +5285,11 @@ function showGallery() {
   hideOverlays();
   document.getElementById("tracklist").classList.add("hidden");
   document.getElementById("gallery").classList.remove("hidden");
+  // Tells the head watchdog the gallery genuinely opened. It checks this flag, not current
+  // visibility: a user who picks a track within the watchdog's 2.5 s window has LEGITIMATELY
+  // hidden the gallery, and painting the failure panel over their freshly loaded replay
+  // would be the watchdog inventing the very kind of false alarm it exists to end.
+  window.__bbGalleryShown = true;
 }
 
 /* ---- units (metric / imperial), user-toggleable in Settings ---- */
