@@ -1,4 +1,4 @@
-/* test_poserate.js — the driver's pose rate, decoupled from the display rate.
+﻿/* test_poserate.js — the driver's pose rate, decoupled from the display rate.
  *
  * The full IK re-pose plus skin ran once per car per FRAME: 360 times a second on a 360 Hz
  * panel, and by a wide margin the largest per-frame allocator in the app. It is resampling
@@ -25,14 +25,25 @@ const path = require("path");
 let fails = 0;
 const ok = (c, m) => { if (!c) { console.log("  FAIL " + m); fails++; } };
 
-const HZ = 144, SPIN_EPS = 0.007;
+/* Read the target out of the shipped source rather than restating it, because this number
+ * is deliberately a dial being tuned against measurements — pinning a literal here means
+ * every experiment breaks the test and the test teaches nothing. What the test guards is
+ * the BEHAVIOUR at whatever the dial says: never faster than the target, correct
+ * quantisation, an immediate re-pose on real movement, and the multi-car safety property. */
+const HZ = (() => {
+  const src = require("fs").readFileSync(require("path").join(__dirname, "ui", "carrender.js"), "utf8");
+  const m = /let DRIVER_POSE_HZ = (\d+)/.exec(src);
+  if (!m) throw new Error("DRIVER_POSE_HZ not found in ui/carrender.js");
+  return +m[1];
+})();
+const SPIN_EPS = 0.007;
 
 /** mirrors driverSeatedSkin's gate; returns true when a full re-pose happens */
 function makeGate() {
   let last = null;
   return function pose(key, nowMs, spin) {
     if (last && last.key === key && HZ > 0) {
-      const due = nowMs - last.t >= 1000 / HZ;
+      const due = nowMs - last.t >= (1000 / HZ) * 0.98;   // see the tolerance note in carrender.js
       const moved = Math.abs(spin - last.spin) > SPIN_EPS;
       if (!due && !moved) return false;
     }
@@ -52,9 +63,9 @@ console.log("one car: the pose rate is capped, the frame rate is not");
   let posed = 0;
   const frames = 360;                       // one second at 360 Hz
   for (let i = 0; i < frames; i++) if (g(0, i * (1000 / 360), 0.5)) posed++;
-  ok(posed === expected(360), `360 frames produced ${posed} poses (every 3rd frame = 120 Hz), not 360`);
+  ok(posed === expected(360), `360 frames produced ${posed} poses (1 in ${360 / posed}), not 360`);
   ok(posed <= HZ, "and never more often than the target asks for");
-  ok(frames / posed >= 3, `a ${(frames / posed).toFixed(1)}x reduction in the app's largest allocator`);
+  ok(frames / posed >= 2, `a ${(frames / posed).toFixed(1)}x reduction in the app's largest allocator`);
 }
 
 console.log("...and it scales with the panel, not against it");
@@ -77,6 +88,9 @@ console.log("...and it scales with the panel, not against it");
   const g60 = makeGate();
   let p60 = 0;
   for (let i = 0; i < 60; i++) if (g60(0, i * (1000 / 60), 0.5)) p60++;
+  /* THE PROPERTY THAT MADE THIS SAFE TO SHIP: on a display no faster than the target, the
+   * cap must skip nothing at all. Without the tolerance in the gate this measured 40/60 —
+   * a third of poses dropped on a 60 Hz monitor by float rounding on an exact boundary. */
   ok(p60 === 60, `at 60 fps every frame still poses (${p60}/60) — the cap never makes things worse`);
 }
 
@@ -106,7 +120,8 @@ console.log("several cars: the cap switches itself OFF rather than corrupting th
 console.log("constants match the shipped source");
 {
   const cr = fs.readFileSync(path.join(__dirname, "ui", "carrender.js"), "utf8");
-  ok(cr.includes("let DRIVER_POSE_HZ = 144"), "DRIVER_POSE_HZ present at 144");
+  ok(/let DRIVER_POSE_HZ = \d+/.test(cr), `DRIVER_POSE_HZ present (currently ${HZ})`);
+  ok(HZ >= 30 && HZ <= 240, `and in a sane range — ${HZ} Hz`);
   ok(cr.includes("Math.abs(spin - p.spin) > 0.007"), "the movement escape hatch is present");
   ok(/_dposeLast\s*=\s*\{\s*key:/.test(cr), "the cache records WHICH car posed last");
   ok(!/_dpose\s*=\s*new Map\(\)/.test(cr),
@@ -119,3 +134,4 @@ console.log("constants match the shipped source");
 
 console.log(fails ? `\n${fails} FAILED` : "\nall good");
 process.exit(fails ? 1 : 0);
+

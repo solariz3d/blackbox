@@ -834,17 +834,37 @@ function driverSeatedPose(spin) {
  */
 /* Target, not a guarantee — the ACHIEVED rate is quantised to the frame clock, because a
  * pose can only happen on a frame. The gate fires once the interval has elapsed, so the
- * real rate is frameRate / ceil(frameRate / target): at 360 Hz that is every third frame,
- * i.e. 120 Hz, not 144. At 240 Hz also 120; at 144 Hz exactly 144; at 60 Hz the cap is
- * above the frame rate and nothing is skipped at all, so a slow display never gets worse. */
-let DRIVER_POSE_HZ = 144;
+ * real rate is frameRate / ceil(frameRate / target): at 360 Hz a target of 60 lands on
+ * every sixth frame, exactly matching the smoke/air sim's own fixed 60 Hz step. At 60 Hz
+ * the cap equals the frame rate and nothing is skipped, so a slow display never gets worse.
+ *
+ * SET TO 60 AS AN EXPERIMENT, not as a settled value. The stalls are 10-22 ms spent in
+ * neither our JS (0.5-1.6 ms measured) nor the GPU (1.5-2.1 ms), which leaves collection as
+ * the leading explanation — and this is the largest remaining allocator, so halving its
+ * rate again is the cheapest test of whether allocation drives the stall at all. If the
+ * spike rate moves, a fixed-rate simulation with interpolated rendering is worth building
+ * properly. If it does not, allocation is not the cause and the architecture work would be
+ * effort spent on the wrong thing. Was 144 (achieving 120); if this reads worse in the
+ * hands, that is the number to go back to. */
+let DRIVER_POSE_HZ = 60;
 let _dposeLast = null;             // { key, t, spin } — the car that most recently posed
 function driverSeatedSkin(spin, key) {
   const k = key === undefined ? 0 : key;
   const nowMs = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
   const p = _dposeLast;
   if (p && p.key === k && DRIVER_POSE_HZ > 0) {
-    const due = nowMs - p.t >= 1000 / DRIVER_POSE_HZ;
+    /* A 2% tolerance on the interval, and it is load-bearing rather than cosmetic.
+     *
+     * Frame times and the interval are both derived from the same rates, so at a target
+     * equal to the refresh rate the comparison is float-against-identical-float and
+     * rounding decides it. Measured: a 60 Hz cap on a 60 Hz display posed 40 times a second
+     * instead of 60, dropping a third of them — which breaks the one property that made
+     * this safe to ship, that a slow display is never made worse. The same rounding cost
+     * 55 poses instead of 60 at 360 Hz.
+     *
+     * Firing 2% early can never overshoot the target meaningfully (it is 0.3 ms on a 60 Hz
+     * interval) and removes the boundary entirely. */
+    const due = nowMs - p.t >= (1000 / DRIVER_POSE_HZ) * 0.98;
     // 0.4 degrees of wheel movement — narrower than the hand's own grip on the rim, so a
     // skip can never hide a change in where the hands visibly are
     const moved = Math.abs(spin - p.spin) > 0.007;
