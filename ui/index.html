@@ -103,6 +103,19 @@
 
   #stage { position: relative; flex: 1 1 auto; min-height: 0; }
   #gl { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  /* Spike panel. On SCREEN rather than in the console, because a release build has no
+     console: tauri is compiled without the devtools feature, so Ctrl+Shift+I does nothing
+     and a console-only instrument is unreachable by the person who needs it. */
+  #spikepanel {
+    position: absolute; right: 12px; top: 64px; z-index: 30; display: none;
+    font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; line-height: 1.45;
+    background: rgba(8,10,14,0.92); border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 6px; padding: 10px 12px; color: #cfd6e4; max-width: 640px;
+    white-space: pre; overflow-x: auto; pointer-events: none;
+  }
+  #spikepanel .hot { color: #ff8080; }
+  #spikepanel .cool { color: #7fd6a0; }
+  #spikepanel .hdr { color: #8fa4c8; }
 
   #drop {
     position: absolute; inset: 0; display: flex; flex-direction: column;
@@ -451,7 +464,8 @@
     <div class="chip" id="chipTrack" style="color:var(--accent)">NO TRACK LOADED — the ribbon is your driven line, not the road. Click "load track kn5…" to render the real track.</div>
     <div class="chip hidden" id="chipBridge" style="color:var(--accent)"></div>
   </div>
-  <div id="help" class="hidden">drag look · WASD fly · Shift/Ctrl up/down · Space pause · wheel zoom · <span id="audioind" style="opacity:.5">M sound</span></div>
+  <div id="help" class="hidden">drag look · WASD fly · Shift/Ctrl up/down · Space pause · wheel zoom · <span id="audioind" style="opacity:.5">M sound</span> · <span style="opacity:.5">P spikes</span></div>
+  <div id="spikepanel"></div>
   <div id="transport" class="hidden">
     <canvas id="scrub" height="34" aria-label="Timeline scrubber"></canvas>
     <div id="timelabel"></div>
@@ -6211,6 +6225,19 @@ let bfPrevFrame = -1;   // last frame audio saw, for firing backfire cracks on s
  * allocates every frame would be the very thing it is hunting. */
 const SPIKE_FACTOR = 1.8;                 // over this multiple of budget = worth recording
 const spikeLog = [];
+
+/* MISSED VSYNCS, because an average frame time lies under vsync.
+ *
+ * With vsync on, a frame lasts one refresh period or two — 2.78 ms or 5.56 ms on a 360 Hz
+ * panel, never 2.9. So an average of 2.9 does NOT mean "4% too slow everywhere", which is
+ * what a budget percentage implies and would send anyone hunting for 4% to shave. It means
+ * on budget almost always and DOUBLED occasionally: 24 frames at 2.78 plus one at 5.56
+ * averages 2.89. The average is the artefact; the dropped frame is the event.
+ *
+ * So this counts events. `missed` is how many refresh periods were lost in the last second —
+ * 0 is a clean second, and each unit is one visible hitch. That number is actionable in a
+ * way a percentage never is. */
+let vsyncMissed = 0, vsyncMissedShown = 0, vsyncWindowAt = 0;
 let cpuMsPrev = 0;                        // wall time inside our own frame body, last frame
 let bakesPrev = 0;                        // so a spike can report whether a bake ran THAT frame
 function recordSpike(ts, dtMs) {
@@ -6245,31 +6272,65 @@ function recordSpike(ts, dtMs) {
  * texture decode, the driver, the compositor. The two have no fixes in common, and without
  * this split there is no way to tell them apart from the outside.
  */
-window.spikes = function () {
-  GT.poll();                              // drain anything that resolved since the last frame
+function spikeVerdict(s) {
+  if (s.gpuMs === null) return "gpu timing pending";
+  if (s.gpuMs > s.frameMs * 0.5) return "GPU did the work";
+  if (s.cpuMs > s.frameMs * 0.5) return "our JS ran long";
+  return "CPU STALLED — not our code";
+}
+/** Fill in GPU columns for any spike whose timer query has since resolved. */
+function resolveSpikes() {
+  GT.poll();
   for (const s of spikeLog) {
     if (s.gpuMs === null && s._frame >= 0) {
       const g = GT.gpuForFrame(s._frame);
       if (g !== null) s.gpuMs = +g.toFixed(2);
     }
   }
-  if (!spikeLog.length) { console.log("no spikes recorded yet — nothing exceeded the budget"); return; }
+}
+/* ON SCREEN, not in the console.
+ *
+ * The first version of this printed a console.table, which is unreachable: tauri is built
+ * without the devtools feature, so a release build has no console at all and Ctrl+Shift+I
+ * does nothing. An instrument the person holding the machine cannot open is not an
+ * instrument. Toggle with P; it is also screenshottable, which is how this one actually
+ * gets read. */
+const spikePanel = document.getElementById("spikepanel");
+let SPIKES_SHOWN = false;
+function renderSpikePanel() {
+  if (!SPIKES_SHOWN || !spikePanel) return;
+  resolveSpikes();
   const bud = frameBudgetMs();
-  console.log(`panel ${displayHz || "?"} Hz · budget ${bud ? bud.toFixed(2) : "?"} ms · ` +
-              `recording frames over ${bud ? (SPIKE_FACTOR * bud).toFixed(2) : "?"} ms`);
-  const gpuTypical = spikeLog.map(s => s.gpuMs).filter(v => v !== null).sort((a, b) => a - b);
-  const med = gpuTypical.length ? gpuTypical[Math.floor(gpuTypical.length / 2)] : null;
-  console.table(spikeLog.map(s => ({
-    at: s.at, frameMs: s.frameMs, cpuMs: s.cpuMs, gpuMs: s.gpuMs,
-    baked: s.bakedThisFrame, chunks: s.chunks, trees: s.trees,
-    smoke: s.smoke, air: s.air, cars: s.cars, heapMB: s.heapMB,
-    verdict: s.gpuMs === null ? "gpu timing unavailable"
-           : (s.gpuMs > s.frameMs * 0.5 ? "GPU did the work"
-           : (s.cpuMs > s.frameMs * 0.5 ? "our JS ran long" : "CPU STALLED (not our code)")),
-  })));
-  if (med !== null) console.log(`median GPU across these spikes: ${med.toFixed(2)} ms — ` +
-    `compare against frameMs to see whether the card or the CPU is responsible`);
-};
+  const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;");
+  let out = `<span class="hdr">panel ${displayHz || "?"}Hz · budget ${bud ? bud.toFixed(2) : "?"}ms · ` +
+            `recording over ${bud ? (SPIKE_FACTOR * bud).toFixed(2) : "?"}ms · ${spikeLog.length} spikes</span>\n`;
+  if (!spikeLog.length) {
+    spikePanel.innerHTML = out + "\nnothing has exceeded the budget yet";
+    return;
+  }
+  out += `<span class="hdr">${"at".padStart(7)}${"frame".padStart(8)}${"cpu".padStart(7)}` +
+         `${"gpu".padStart(7)}  ${"bake".padStart(4)} ${"chunks".padStart(9)} ${"trees".padStart(5)} ` +
+         `${"smk".padStart(4)} ${"heapMB".padStart(7)}  verdict</span>\n`;
+  for (const s of spikeLog.slice().reverse()) {
+    const v = spikeVerdict(s);
+    const cls = v.startsWith("CPU STALLED") ? "hot" : (v.startsWith("GPU") ? "cool" : "");
+    out += `${String(s.at).padStart(7)}${s.frameMs.toFixed(2).padStart(8)}` +
+           `${s.cpuMs.toFixed(2).padStart(7)}${(s.gpuMs === null ? "—" : s.gpuMs.toFixed(2)).padStart(7)}` +
+           `  ${(s.bakedThisFrame ? "YES" : "-").padStart(4)} ${esc(s.chunks).padStart(9)} ` +
+           `${String(s.trees).padStart(5)} ${String(s.smoke).padStart(4)} ` +
+           `${(s.heapMB === null ? "—" : s.heapMB.toFixed(0)).padStart(7)}  <span class="${cls}">${v}</span>\n`;
+  }
+  spikePanel.innerHTML = out;
+}
+addEventListener("keydown", (e) => {
+  if (e.key !== "p" && e.key !== "P") return;
+  if (e.target && /input|textarea/i.test(e.target.tagName)) return;   // not while typing
+  SPIKES_SHOWN = !SPIKES_SHOWN;
+  if (spikePanel) spikePanel.style.display = SPIKES_SHOWN ? "block" : "none";
+  renderSpikePanel();
+});
+// still available from a dev build's console, where one exists
+window.spikes = function () { resolveSpikes(); console.table(spikeLog.map(s => ({ ...s, verdict: spikeVerdict(s) }))); };
 
 function loop(ts) {
   const _cpu0 = performance.now();
@@ -6286,6 +6347,16 @@ function loop(ts) {
        * a 60 Hz display, which is exactly the pair of monitors this is being watched on. */
       const bud = frameBudgetMs() || (frameMsEMA * 1.0);
       if (bud > 0 && dtMs > bud * SPIKE_FACTOR) recordSpike(ts, dtMs);
+      /* Count LOST REFRESH PERIODS, not slow frames. A frame of 2.9 ms on a 2.78 ms panel
+       * lost nothing — that is measurement jitter around a frame that arrived on time. A
+       * frame of 5.6 ms lost one period, 8.4 lost two. Round to the NEAREST number of
+       * periods and subtract the one the frame was entitled to — so jitter either side of
+       * a clean frame never counts, which a floor or a naive threshold would get wrong. */
+      if (frameBudgetMs() > 0) {
+        const lost = Math.max(0, Math.round(dtMs / frameBudgetMs()) - 1);
+        if (lost > 0) vsyncMissed += lost;
+        if (ts - vsyncWindowAt > 1000) { vsyncMissedShown = vsyncMissed; vsyncMissed = 0; vsyncWindowAt = ts; }
+      }
     }
   }
   fpsPrev = ts;
@@ -6381,15 +6452,20 @@ function loop(ts) {
      * reading was always missing. "240 fps" means nothing on its own; "240 of 360" says
      * the frame is 1.5x its budget, and on a 60 Hz panel the same 240 would mean the
      * scene has headroom to spare. Shown as "—" when unknown rather than defaulted. */
+    /* MISSED, not a percentage. Under vsync the frame time is quantised to the refresh
+     * period, so "104% of budget" describes an average that no individual frame ever had
+     * and implies 4% of work to remove that does not exist. Dropped periods per second is
+     * the event count: 0 is clean, and every unit is one hitch you can actually see. */
     const _bud = frameBudgetMs();
     const _hud = displayHz
-      ? ` · panel ${displayHz}Hz ${_bud.toFixed(2)}ms budget ${frameMsEMA ? (100 * frameMsEMA / _bud).toFixed(0) : "0"}%`
+      ? ` · panel ${displayHz}Hz ${_bud.toFixed(2)}ms · missed ${vsyncMissedShown}/s`
       : (TAURI ? " · panel —" : "");
     // spike count is on the HUD so a stutter is visible as a NUMBER while it happens,
     // without needing the console open — `spikes()` there gives the attribution
     const _spk = spikeLog.length ? ` · spikes ${spikeLog.length}` : "";
     timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)})${_hud}${_spk} · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
     drawScrub();
+    renderSpikePanel();      // only does work while the panel is open
   }
   render();
   /* Wall time spent INSIDE this function. Note what it does and does not include: our own
