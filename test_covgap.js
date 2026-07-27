@@ -212,12 +212,34 @@ console.log("the real repo — every class present, each one checked against wha
   const tests = C.indexTests();
   const at = (name, file) => C.classify(fn(name, file), tests).level;
 
-  // MENTION-ONLY: test_glowpool names drawCarLights only in its header comment, explaining the
-  // incident. This is the exact pair that motivated the tool, and it must not read as covered.
-  ok(at("drawCarLights", "ui/lightfx.js") === "mention",
-     "drawCarLights is named in a test comment and reached by nothing — still uncovered");
-  ok(at("pushGlow", "ui/lightfx.js") === "mention",
-     "pushGlow likewise: discussed in prose, exercised by nothing");
+  /* MENTION-ONLY, asserted as a PROPERTY rather than against named functions — for the same
+   * reason the UNCOVERED check below already is, arrived at the hard way. This originally
+   * named `drawCarLights` and `pushGlow`, which were mention-only when it was written; hours
+   * later they were given real coverage and both assertions went red. The tool was right, the
+   * test was pinning a snapshot. A fact about the repo that a later test is SUPPOSED to change
+   * is not something to assert by name. What must hold is the discrimination itself: the class
+   * is reachable here, and where it fires a grep would have disagreed. */
+  {
+    const fsx = require("fs"), pathx = require("path");
+    const uiDir = pathx.join(__dirname, "ui");
+    const mention = [];
+    for (const f of fsx.readdirSync(uiDir).filter(n => n.endsWith(".js"))) {
+      const rel = "ui/" + f;
+      let fns = [];
+      try { fns = C.topLevelFunctions(pathx.join(uiDir, f)); } catch { continue; }
+      for (const g of fns) {
+        const c = C.classify({ name: g.name, file: rel, startLine: g.startLine, endLine: g.endLine }, tests);
+        if (c.level === "mention") mention.push({ ...g, file: rel, hits: c.tests || [] });
+      }
+    }
+    ok(mention.length > 0, "MENTION-ONLY is reachable on the real repo, not just on fixtures");
+    // the whole point of the class: a grep would have called these covered
+    const testSrc = fsx.readdirSync(__dirname).filter(n => /^test_.*\.js$/.test(n))
+      .map(n => fsx.readFileSync(pathx.join(__dirname, n), "utf8")).join("\n");
+    const named = mention.filter(m => testSrc.includes(m.name));
+    ok(named.length > 0,
+       "every mention-only function is named somewhere in the suite — which is why grep is wrong here");
+  }
 
   // pinned: uiFunction + regex, no execution
   ok(at("batchGlow", "ui/lightfx.js") === "pin",

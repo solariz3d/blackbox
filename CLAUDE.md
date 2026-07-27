@@ -38,14 +38,20 @@ the browser. Follow that pattern.
 Standalone node scripts at the repo root, no runner, no package.json:
 
 ```
-node test_ghosts.js  test_ghostmatrix.js  test_shadowbox.js  test_gripreach.js
-node test_steeranim.js  test_carscene.js
+node runtests.js              # everything; exit code IS the verdict
+node runtests.js glow lamp    # only tests whose filename contains one of these
 ```
 
-Those six pass. **Several older ones are broken and it is not your change**:
-`test_kn5.js`, `test_kn5scene.js`, `test_kn5tex.js`, `test_lateral.js`, `test_roadedge.js`,
-`test_twolines.js`, `test_edgecoach.js` all die with `Cannot find module './kn5.js'` — they
-sit at the root while the source lives in `ui/`. `test_parse.js` needs a file argument.
+**Use the runner, not a shell loop.** `for f in test_*.js; do node $f; done` reports the
+status of the LAST test, not the worst one — on 2026-07-27 a loop printed a failure, exited 0,
+and a commit went out on top of a red test that had been printed to screen and read past.
+
+**All 40 tests currently pass.** The note that used to sit here — `test_kn5.js`,
+`test_kn5scene.js`, `test_kn5tex.js`, `test_lateral.js`, `test_roadedge.js`, `test_twolines.js`
+and `test_edgecoach.js` are broken with `Cannot find module './kn5.js'`, `test_parse.js` needs
+an argument — was true before the module split was cleaned up and is not any more. It is
+removed rather than left as history: a standing note that says "expect these to be red" is how
+a real failure gets waved through.
 
 **Before you trust a green suite, run `node covgap.js`.** It reports which functions your
 change touched that no test reaches — green here means "you didn't break anything else", and
