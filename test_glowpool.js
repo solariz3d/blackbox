@@ -154,5 +154,119 @@ ok(/const GLOW_CAP = \d+/.test(LIGHTFX), "GLOW_CAP is a named constant");
   }
 }
 
+/* ---- 4. drawCarLights end to end, against a recording GL stub ----
+ *
+ * Added after `covgap.js` reported that this very test left `drawCarLights` MENTION-ONLY and
+ * `headLampSides` UNCOVERED — it exercised `batchGlow` and discussed the rest in prose. The
+ * function the incident was about was still not reached, and the changelog line claiming the
+ * gap was closed was an over-claim. Trust the red.
+ *
+ * The real functions are evaluated here, not mirrored, with a fake `gl` that records draw
+ * counts and the vertex data it was handed. That makes the ghost-lights property testable as
+ * a PROPERTY rather than as a proxy: stage a car with many lamps, then one with few, and
+ * assert the second frame never draws the first car's positions.
+ */
+{
+  const math = require("./ui/mathutil.js");
+  const names = ["pushGlow", "headLampSides", "drawCarLights", "batchGlow"];
+  const srcs = names.map(uiFunction);
+  names.forEach((n, i) => ok(srcs[i] !== null, `${n} is findable in the ui source`));
+
+  if (srcs.every(Boolean)) {
+    const preamble = `
+      const GLOW_CAP = 256;
+      const _glowWarm  = { a: new Float32Array(GLOW_CAP * 5), n: 0 };
+      const _glowRed   = { a: new Float32Array(GLOW_CAP * 5), n: 0 };
+      const _glowWhite = { a: new Float32Array(GLOW_CAP * 5), n: 0 };
+      const _glowFwd = [0, 0, 0];
+      const _lampL = [], _lampR = [], _lampSides = [_lampL, _lampR];
+      let _lampSrc = null, _glowOverflowed = false;
+      const progGlow = {}, glowBuf = {}, HDR_EMIT = 2.7;
+      const glowLoc = { mvp: 0, pos: 1, size: 2, bright: 3, color: 4 };
+    `;
+    const build = new Function("gl", "cv", "camEye", "carLightsRef", `
+      ${preamble}
+      const carLights = carLightsRef;
+      ${srcs.join("\n")}
+      return { drawCarLights, headLampSides, pools: { _glowWarm, _glowRed, _glowWhite } };
+    `);
+
+    // a GL stub that records what each draw was actually given
+    const draws = [];
+    let uploaded = null;
+    const gl = {
+      ARRAY_BUFFER: 1, DYNAMIC_DRAW: 2, POINTS: 3, FLOAT: 4, BLEND: 5, ONE: 6,
+      useProgram() {}, uniformMatrix4fv() {}, enable() {}, disable() {}, blendFunc() {},
+      depthMask() {}, bindBuffer() {}, enableVertexAttribArray() {}, vertexAttribPointer() {},
+      uniform3f() {}, bufferData(_t, src) { uploaded = src; },
+      drawArrays(_m, _first, count) { draws.push({ count, data: uploaded.slice(0, count * 5) }); },
+    };
+    const cv = { height: 1080 };
+    const camEye = () => [0, 2, 30];
+    const IDENT = [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1];
+    const lamps = n => Array.from({ length: n }, (_, i) => [i % 2 ? 0.6 : -0.6, 1 + i * 0.1, 2]);
+
+    // headLampSides: the split and the ordering, on the real function
+    {
+      const api = build(gl, cv, camEye, { headLamps: [], tail: [], accentR: [], accentW: [] });
+      const hl = [[0.6, 1.0, 2], [-0.6, 1.4, 2], [0.6, 1.4, 2], [-0.6, 1.0, 2]];
+      const [L, R] = api.headLampSides(hl);
+      ok(L.length === 2 && R.length === 2, "headLampSides splits lamps by sign of x");
+      ok(L[0][1] > L[1][1] && R[0][1] > R[1][1], "each side is ordered top lamp first");
+      const again = api.headLampSides(hl);
+      ok(again[0] === L, "the identity cache returns the same arrays for the same source");
+      const other = api.headLampSides([[0.6, 1.0, 2]]);
+      ok(other[0].length === 1 && other[1].length === 0, "a different source rebuilds the split");
+    }
+
+    // THE GHOST-LIGHTS PROPERTY, end to end through the real drawCarLights
+    {
+      const car = { headLamps: lamps(6), tail: [[0, 1, -2], [0.4, 1, -2]], accentR: [], accentW: [] };
+      const api = build(gl, cv, camEye, car);
+      draws.length = 0;
+      api.drawCarLights(IDENT, IDENT, Math.tan(0.5), 1, 0);
+      const big = draws.map(d => d.count);
+      const warmPositions = new Set();
+      for (let i = 0; i < draws[0].count; i++) warmPositions.add(draws[0].data[i * 5 + 1].toFixed(3));
+      ok(big[0] > 0, "a car with headlamps draws warm sprites");
+
+      // now the SAME pools, a car with fewer lamps — the exact ghost-lights setup
+      car.headLamps = lamps(2);
+      car.tail = [[0, 1, -2]];
+      draws.length = 0;
+      api.drawCarLights(IDENT, IDENT, Math.tan(0.5), 1, 0);
+      ok(draws[0].count < big[0], "a car with fewer lamps draws fewer sprites than the last one");
+      // every position drawn this frame must belong to THIS frame's lamps
+      let stale = 0;
+      for (let i = 0; i < draws[0].count; i++) {
+        const y = draws[0].data[i * 5 + 1];
+        if (!car.headLamps.some(l => Math.abs(l[1] - y) < 1e-4)) stale++;
+      }
+      ok(stale === 0, "no sprite from the previous car survives into this frame's draw");
+    }
+
+    // a car with no accents of a colour must issue no draw for it at all
+    {
+      const api = build(gl, cv, camEye,
+        { headLamps: lamps(2), tail: [[0, 1, -2]], accentR: [], accentW: [] });
+      draws.length = 0;
+      api.drawCarLights(IDENT, IDENT, Math.tan(0.5), 1, 0);
+      ok(draws.length === 2, "only the colours with staged sprites are drawn (warm + red, no white)");
+    }
+
+    // the cap holds through the real path rather than only in the mirror above
+    {
+      const api = build(gl, cv, camEye,
+        { headLamps: lamps(400), tail: [], accentR: [], accentW: [] });
+      draws.length = 0;
+      const warn = console.warn; let warned = 0; console.warn = () => { warned++; };
+      api.drawCarLights(IDENT, IDENT, Math.tan(0.5), 1, 0);
+      console.warn = warn;
+      ok(draws[0].count === 256, "the real path caps at GLOW_CAP rather than overrunning");
+      ok(warned === 1, "overflow is announced exactly once, not silently and not every frame");
+    }
+  }
+}
+
 console.log(fails ? `test_glowpool: ${fails} FAILED` : "test_glowpool: all pass");
 process.exit(fails ? 1 : 0);

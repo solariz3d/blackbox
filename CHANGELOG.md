@@ -1,5 +1,55 @@
 # Changelog
 
+## 2026-07-27 — `covgap.js`: which changed functions no test reaches
+
+The symptom is the entry below this one. `drawCarLights` and `wheelSteerModel` were rewritten,
+the suite was green from start to finish, and a real defect lived in the working tree for an
+hour — because no test in the repo touched either function. Green could only ever have meant
+"you did not break anything else," and nothing in the repo said so out loud. This does.
+
+### Added
+- **`covgap.js`** — give it a diff and it reports which changed top-level `ui/` functions no
+  test reaches. Root, beside `testenv.js`: it consumes `ui/*.js` and `test_*.js` by the same
+  convention, and the repo's other node tools already live there.
+  `node covgap.js` (working tree) · `--ref HEAD~1` · `--files a.js b.js` · `--all` · `--json` ·
+  `--strict` (exit 1 when anything in scope is uncovered, for a hook).
+
+  Four classes, kept separate because they fail differently: **UNCOVERED** (no test says the
+  name at all), **MENTION-ONLY** (named only in a comment or an inert string — the one that
+  looks covered to a grep and is not), **pinned** (a mirror anchored to the shipped source, as
+  `test_lampglare` and `test_glowpool` do), **exec** (imported and called, or rebuilt through
+  `new Function`/`vm` and called). The contract prints on every run: UNCOVERED is a sound
+  negative about *targeting*, `exec`/`pin` never claim the assertions are any good, and nothing
+  here reads call graphs — a function can still run incidentally via a tested caller.
+
+  Using vs mentioning is decided **positionally, not textually**, by a scanner that labels every
+  byte code/comment/string/template/regex. The repo has been bitten four times by regexes that
+  could not tell the two apart, but the obvious fix — strip comments and strings — is wrong here
+  in the expensive direction: `uiFunction("batchGlow")` puts the name *in a string* and is the
+  strongest coverage signal in the codebase. Stripping strings would report every mirror-anchored
+  test as no coverage at all.
+- **`test_covgap.js`** — pins both directions of that discrimination, on synthetic input and
+  against the real repo. Two assertions are regressions for defects found while building it: a
+  file-level "this test uses `new Function`" flag promoted `batchGlow` to executed when its test
+  only regexes it (the tool committing the exact error it exists to catch), and `pathRadius` /
+  `turbineGate` read as mention-only although `test_turbinegate` genuinely runs them in a `vm`
+  sandbox via a local extract helper.
+
+### Notes
+- On the change below, `covgap.js --ref HEAD~1` reported 1 uncovered, 3 mention-only, 3 reached.
+  `drawCarLights` — the function the incident was about — came back **mention-only**:
+  `test_glowpool` discussed it in prose and exercised `batchGlow`. The tool's first real use
+  was to catch an over-claim in the entry below it, which had said the gap was closed.
+
+### Fixed
+- **That gap, properly.** `test_glowpool.js` now evaluates the real `drawCarLights`,
+  `headLampSides` and `pushGlow` against a recording GL stub, so the ghost-lights failure is
+  asserted as a property rather than through a proxy: stage a car with six headlamps, then one
+  with two, and require that no sprite from the first survives into the second frame's draw.
+  Also covers the empty-colour early-out and the overflow cap through the real path. Verified
+  by reinstating the defect — it takes three of the new assertions down, not just the lexical
+  one. `covgap.js` now reports `drawCarLights` as `exec`.
+
 ## 2026-07-27 — Allocation pass on the per-frame light and wheel paths
 
 The third of the three items after the module split. `drawCarLights` runs once per car per

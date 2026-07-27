@@ -47,6 +47,12 @@ Those six pass. **Several older ones are broken and it is not your change**:
 `test_twolines.js`, `test_edgecoach.js` all die with `Cannot find module './kn5.js'` — they
 sit at the root while the source lives in `ui/`. `test_parse.js` needs a file argument.
 
+**Before you trust a green suite, run `node covgap.js`.** It reports which functions your
+change touched that no test reaches — green here means "you didn't break anything else", and
+covgap is what says whether it also means anything about what you just wrote. `--ref HEAD~1`
+for a commit, `--files ui/x.js` to audit one file, `--strict` to make it exit 1. It prints
+what its own answer does and does not claim; read that before acting on it.
+
 Code that lives in `index.html`'s inline script, or in a classic script with no exports,
 is still testable: evaluate it in a `vm` sandbox with stub globals (`test_ghostmatrix.js`
 and `test_shadowbox.js` both do this). **Trap:** `const` inside a `vm` context is a lexical
