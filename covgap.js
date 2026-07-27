@@ -5,21 +5,29 @@
  * real defect lived in that gap for an hour. Green meant "you did not break anything else",
  * and there was nothing in the repo that could say so out loud.
  *
- * WHAT IT CLAIMS, EXACTLY. This tool is sound in ONE direction only, and the asymmetry is
- * the whole design:
+ * WHAT IT CLAIMS, EXACTLY. Narrower than the first draft of this header said, and the
+ * correction is measured rather than argued:
  *
- *   UNCOVERED  is a real finding. No test file mentions the name anywhere a test could act
- *              on it — not as an identifier, not inside a source-reaching string, not in a
- *              regex. A test cannot be exercising a name it never says. This is close to
- *              proof of absence.
+ *   UNCOVERED  no test file says the name anywhere a test could act on it — not as an
+ *              identifier, not in a source-reaching string, not in a regex. So nothing in the
+ *              suite TARGETS it, and no failure will ever point here.
+ *
+ *              It does NOT mean the function never runs under the suite. A reviewer measured
+ *              this against the repo: of 178 functions reported UNCOVERED, 22 are called
+ *              directly by a function the suite executes. That is one-hop and same-file, so it
+ *              is a LOWER BOUND — roughly one in eight is exercised incidentally, through a
+ *              caller, with no test naming it. This tool reads names; it does not build a call
+ *              graph, and a name-reader cannot see through a caller.
  *
  *   exec/pin   are NOT claims of coverage. They say a test REACHES the function. Whether it
  *              asserts anything worth having about it is a question no lexical tool can
  *              answer, and this one does not pretend to. It narrows where to look; it never
  *              certifies.
  *
- * So: trust the red, verify the green. That is the only honest contract available here, and
- * saying it in the output every run is deliberate.
+ * The header used to say "close to proof of absence" and "trust the red" while the contract
+ * printed at the bottom of every run said the honest thing. When a file's headline and its own
+ * output disagree, the output is the one people act on and the header is the one people quote
+ * — so the header moved, not the contract.
  *
  * USING vs MENTIONING — the thing this repo keeps getting bitten by. Four separate times a
  * lexical check has been fooled by a name appearing in a comment that EXPLAINS the thing the
@@ -57,6 +65,16 @@
  * dismisses in a second on seeing test_covgap.js in the list. The alternative — a magic filename
  * skip — trades an honest second of a reader's time for a rule nobody can see.
  *
+ * THE LIMIT THAT LET THIS FILE SHIP WITH NINE DEFECTS. Scope is `ui/*.js`, so covgap cannot see
+ * the repo-root tools — including itself. Nobody could have run covgap on covgap, and a reviewer
+ * found that three of the nine (the diff default, the --files flag interaction, the arrow-span
+ * arithmetic) sat in code this repo's suite never executed a line of. That is precisely the gap
+ * this tool exists to name, occurring inside it, undetectable by it. The three are now split
+ * into pure functions and asserted; the structural hole is not closed. Widening scope to root
+ * `*.js` is a few lines — the tests would need to record `require("./covgap.js")` alongside the
+ * ui form — but it changes what every run reports, so it is written down here rather than done
+ * quietly.
+ *
  * LIMITS, STATED. Top-level declarations only — the same contract testenv's uiFunction has.
  * A closure inside another function is invisible to this tool (the `push` that used to live
  * inside drawCarLights would not have been listed). Name collisions across ui files are
@@ -69,7 +87,7 @@
  * else here runs — bare node, no framework, exit code carries the verdict.
  *
  * Run:
- *   node covgap.js                      working-tree diff (staged + unstaged)
+ *   node covgap.js                      everything since HEAD — staged AND unstaged
  *   node covgap.js --ref HEAD~1         everything since a ref
  *   node covgap.js --files ui/lightfx.js ui/carrender.js
  *   node covgap.js --all                every top-level function in ui/
@@ -113,7 +131,6 @@ function lex(src) {
                                   "void", "throw", "case", "do", "else", "yield", "await"]);
   const regexAllowed = () => REGEX_OK_AFTER.has(prev) || REGEX_OK_WORDS.has(prevWord);
 
-  const tmplStack = [];        // brace depth inside each open ${ }
   let i = 0;
   while (i < n) {
     const c = src[i], c2 = src[i + 1];
@@ -145,18 +162,37 @@ function lex(src) {
         if (src[j] === "\\") { chunk += src[j + 1] || ""; blank(j, j + 2); j += 2; continue; }
         if (src[j] === "`") { blank(j, j + 1); j++; break; }
         if (src[j] === "$" && src[j + 1] === "{") {
-          keep(j, j + 2);                       // the hole is code
-          tmplStack.push(1); j += 2;
-          let depth = 1;
-          // scan the hole with the main loop by falling through: simplest correct thing is a
-          // nested walk, since holes are short in this codebase
-          while (j < n && depth > 0) {
-            if (src[j] === "{") depth++;
-            else if (src[j] === "}") depth--;
-            code[j] = src[j];
-            j++;
+          /* A hole is code, so it gets LEXED as code — recursively, not copied.
+           *
+           * The first version walked the hole byte by byte tracking brace depth and wrote every
+           * byte into the code view. That put a string inside a hole into code position, so the
+           * same literal got two different classes depending on where it sat — the positional
+           * promise this whole file rests on, failing quietly. Worse, an unbalanced brace inside
+           * a string in the hole ("}"), which is legal, walked the depth counter off the end.
+           *
+           * Recursing costs a pass over a short span and gets both right. The one thing it cannot
+           * carry across the boundary is `before`: a literal inside a hole sees only the hole's
+           * own code as its call context. Holes in this codebase are short expressions, never a
+           * uiFunction() call, so nothing depends on it — stated here rather than discovered. */
+          keep(j, j + 2);
+          const holeStart = j + 2;
+          let depth = 1, k = holeStart;
+          const sub = lex(src.slice(holeStart));          // classify first, then trust the classes
+          while (k < n && depth > 0) {
+            const rel = k - holeStart;
+            const inCode = sub.code[rel] === src[k];      // a brace the sub-lexer kept is a real brace
+            if (inCode && src[k] === "{") depth++;
+            else if (inCode && src[k] === "}") { depth--; if (depth === 0) break; }
+            k++;
           }
-          tmplStack.pop();
+          const holeEnd = Math.min(k, n);
+          for (let q = holeStart; q < holeEnd; q++) code[q] = sub.code[q - holeStart];
+          for (const l of sub.literals) {
+            if (l.start >= holeEnd - holeStart) break;
+            literals.push({ ...l, start: l.start + holeStart, end: l.end + holeStart });
+          }
+          if (holeEnd < n) keep(holeEnd, holeEnd + 1);    // the closing }
+          j = holeEnd + 1;
           continue;
         }
         chunk += src[j]; blank(j, j + 1); j++;
@@ -236,15 +272,50 @@ function topLevelFunctions(file) {
   }
   // const NAME = (...) => ... / = function ... — the codebase uses both forms at top level
   const arrow = /^const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?(?:function\b|\(|[A-Za-z_$][\w$]*\s*=>)/gm;
-  while ((m = arrow.exec(code))) {
-    const eol = code.indexOf("\n", m.index);
-    const brace = code.indexOf("{", m.index);
-    // a block body starts before this line ends; anything else is an expression body
-    const end = brace >= 0 && brace < (eol < 0 ? code.length : eol) ? matchBrace(code, brace)
-                                                                   : (eol < 0 ? code.length : eol);
-    push(m[1], m.index, end);
-  }
+  while ((m = arrow.exec(code))) push(m[1], m.index, valueEnd(code, m.index));
   return out;
+}
+
+/* Where a `const NAME = …` value ends.
+ *
+ * The first version asked whether a `{` appeared before the first newline, and took end-of-line
+ * if not. A multi-line parameter list —
+ *
+ *     const f = (
+ *       a, b
+ *     ) => { … }
+ *
+ * — puts the brace on line 3, so the function collapsed to lines 1-1. A change to its body then
+ * failed `overlaps()` and the function vanished from the report entirely: not listed as covered,
+ * not listed as uncovered, silently absent. That is the false-clean this tool exists to prevent,
+ * committed by the tool's own scope arithmetic, and it is invisible because a missing row looks
+ * exactly like a row that was never in scope.
+ *
+ * So find the arrow at bracket depth zero, then take a block body by brace matching and an
+ * expression body to its terminating `;`. */
+function valueEnd(code, from) {
+  let d = 0, i = from;
+  for (; i < code.length; i++) {
+    const c = code[i];
+    if (c === "(" || c === "[" || c === "{") d++;
+    else if (c === ")" || c === "]" || c === "}") d--;
+    else if (d === 0 && c === "=" && code[i + 1] === ">") { i += 2; break; }
+    else if (d === 0 && c === ";") return i + 1;          // `= function foo() {}` ends by brace, below
+    else if (d === 0 && c === "{" ) break;
+  }
+  if (i >= code.length) return code.length;
+  while (i < code.length && /\s/.test(code[i])) i++;
+  if (code[i] === "{") return matchBrace(code, i);
+  // expression body: the first `;` outside brackets. A line break alone does not end it —
+  // `const f = a =>\n  a + 1;` is one declaration.
+  d = 0;
+  for (let j = i; j < code.length; j++) {
+    const c = code[j];
+    if (c === "(" || c === "[" || c === "{") d++;
+    else if (c === ")" || c === "]" || c === "}") { if (d === 0) return j; d--; }
+    else if (d === 0 && c === ";") return j + 1;
+  }
+  return code.length;
 }
 
 function matchBrace(code, at) {
@@ -270,8 +341,17 @@ function sourceReaching(lit, name) {
   if (t === name && /\buiFunction\s*\(\s*$/.test(lit.before)) return true;
   // "function name" inside indexOf / includes / a slice of the shipped source
   if (new RegExp("(^|[^\\w$])function\\s+" + esc(name) + "([^\\w$]|$)").test(t)) return true;
-  // /function\s+name/ as a regex literal
-  if (lit.kind === "regex" && new RegExp("function[\\\\s+]*\\s*" + esc(name) + "\\b").test(t)) return true;
+  /* /function\s+name/ as a regex literal. `t` is the regex's SOURCE TEXT, so the whitespace
+   * between the keyword and the name is spelled there as the three literal characters \, s, +
+   * — not as whitespace. The class below therefore contains a literal backslash (\\), the
+   * letters s and S, the quantifiers + * ?, braces and digits for \s{1,3}, and real whitespace.
+   *
+   * The previous version wrote [\\s+], which in a regex SOURCE is a class of backslash, s and
+   * plus — accidentally the right three characters, so it passed on every mirror in the repo
+   * and would have failed the moment one was written /function\s*name/ or /function +name/.
+   * Right answer, wrong reason, is a defect with a delay on it. */
+  if (lit.kind === "regex" &&
+      new RegExp("function[\\\\sS+*?{},0-9\\s]*" + esc(name) + "(?![\\w$])").test(t)) return true;
   return false;
 }
 const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -315,12 +395,24 @@ function indexTests() {
 
 /* exec > pin > mention. Returns { level, tests: {exec:[], pin:[], mention:[]} }. */
 function classify(fn, tests) {
-  const word = new RegExp("(^|[^\\w$.])" + esc(fn.name) + "(?![\\w$])");
+  /* What counts as the function appearing in executable position.
+   *
+   * `bare` excludes a preceding dot, because `results.cullLights = 3` is a property on the
+   * test's own object and says nothing about the ui function of that name. But a dot cannot
+   * simply be banned: `TL.cullLights([], eye, 4)` after `require("./ui/tracklights.js")` is
+   * the PRIMARY execution shape in this repo, and rejecting it would drop most real coverage.
+   *
+   * The cut is call-vs-access, not dot-vs-no-dot. A dotted CALL is a use; a dotted read or
+   * assignment is not. An earlier draft computed the no-dot guard, left it unwired, and used
+   * the permissive form for everything — so the dead variable was itself the discrimination
+   * that would have prevented the over-claim. */
+  const bare = new RegExp("(^|[^\\w$.])" + esc(fn.name) + "(?![\\w$])");
+  const dottedCall = new RegExp("\\.\\s*" + esc(fn.name) + "\\s*\\(");
   const wordAny = new RegExp("(^|[^\\w$])" + esc(fn.name) + "(?![\\w$])");
   const hit = { exec: [], pin: [], mention: [] };
 
   for (const t of tests) {
-    const inCode = wordAny.test(t.code);
+    const inCode = bare.test(t.code) || dottedCall.test(t.code);
     const reaching = t.literals.some(l => sourceReaching(l, fn.name));
     const mentioned = t.literals.some(l => wordAny.test(l.text));
 
@@ -347,18 +439,26 @@ function git(args) {
   return execFileSync("git", ["-C", ROOT, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
-/* Changed line ranges per file, from the post-image side of the diff. */
-function changedRanges(ref) {
-  const args = ["diff", "--unified=0", "--no-color"];
-  if (ref) args.push(ref);
-  let out;
-  try { out = git(args); }
-  catch (e) { throw new Error("git diff failed — is this a git repo? (" + String(e.message).trim() + ")"); }
+/* Changed line ranges per file, from the post-image side of the diff.
+ *
+ * DEFAULTS TO `HEAD`, NOT TO A BARE `git diff`. Bare `git diff` is unstaged-only, so anyone who
+ * had staged their work — which is to say anyone about to commit, the exact moment this tool is
+ * for — got "no top-level ui functions in scope" and a clean bill on an unexamined change. The
+ * docstring said staged + unstaged and the code delivered neither. Silent empty scope is the
+ * worst failure this tool has, because an empty report is indistinguishable from a good one. */
+/* Split from the git call so the default can be asserted without a repo. The three CLI defects
+ * a reviewer found all lived in code no test ran; the fix is not only to correct them but to
+ * make the parts testable, which for a shell-out means separating the argv from the parse. */
+function diffArgs(ref) { return ["diff", "--unified=0", "--no-color", ref || "HEAD"]; }
+
+/* Post-image line ranges per file, from unified-diff text. Pure. */
+function parseDiff(out) {
   const byFile = new Map();
   let cur = null;
-  for (const line of out.split(/\r?\n/)) {
+  for (const line of String(out).split(/\r?\n/)) {
     const f = /^\+\+\+ b\/(.+)$/.exec(line);
     if (f) { cur = f[1]; if (!byFile.has(cur)) byFile.set(cur, []); continue; }
+    if (/^\+\+\+ \/dev\/null$/.test(line)) { cur = null; continue; }   // file deleted
     const h = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@/.exec(line);
     if (h && cur) {
       const start = +h[1], len = h[2] === undefined ? 1 : +h[2];
@@ -366,6 +466,16 @@ function changedRanges(ref) {
     }
   }
   return byFile;
+}
+
+function changedRanges(ref) {
+  let out;
+  try { out = git(diffArgs(ref)); }
+  catch (e) {
+    throw new Error("git diff " + (ref || "HEAD") + " failed — is this a git repo with at least " +
+                    "one commit? (" + String(e.message).trim() + ")");
+  }
+  return parseDiff(out);
 }
 
 const overlaps = (fn, ranges) => ranges.some(([a, b]) => fn.startLine <= b && fn.endLine >= a);
@@ -386,12 +496,36 @@ const CONTRACT = [
   "           says the assertions are worth anything. Trust the red; verify the green.",
 ];
 
-function main(argv) {
-  const opt = { json: argv.includes("--json"), all: argv.includes("--all"), strict: argv.includes("--strict") };
+/* Argv, parsed and returned rather than consumed in place — so the flag interactions can be
+ * asserted. `--files ui/x.js --ref HEAD~1` used to exit 2 with "no such file: HEAD~1", and no
+ * test could have seen it while this lived inside main(). */
+function parseArgv(argv) {
   const refI = argv.indexOf("--ref");
-  const ref = refI >= 0 ? argv[refI + 1] : null;
+  /* --files takes every argument up to the NEXT FLAG, not every non-flag argument anywhere
+   * after it. Filtering `--`-prefixed tokens out of the whole tail left the following flag's
+   * VALUE behind, stranded where it read as a filename. */
   const filesI = argv.indexOf("--files");
-  const explicit = filesI >= 0 ? argv.slice(filesI + 1).filter(a => !a.startsWith("--")) : null;
+  let explicit = null;
+  if (filesI >= 0) {
+    explicit = [];
+    for (let i = filesI + 1; i < argv.length && !argv[i].startsWith("--"); i++) explicit.push(argv[i]);
+  }
+  return {
+    json: argv.includes("--json"),
+    all: argv.includes("--all"),
+    strict: argv.includes("--strict"),
+    ref: refI >= 0 ? argv[refI + 1] : null,
+    explicit,
+  };
+}
+
+/* The --strict gate, as a predicate: UNCOVERED only. See the note at the call site. */
+const strictFailures = rows => rows.filter(r => r.level === "none");
+
+function main(argv) {
+  const opt = parseArgv(argv);
+  const ref = opt.ref;
+  const explicit = opt.explicit;
 
   const uiFiles = fs.readdirSync(UI).filter(f => f.endsWith(".js")).map(f => path.join(UI, f));
   const tests = indexTests();
@@ -409,7 +543,7 @@ function main(argv) {
       for (const fn of topLevelFunctions(abs)) scope.push(fn);
     }
   } else {
-    scopeLabel = ref ? "changed since " + ref : "working-tree diff";
+    scopeLabel = "changed since " + (ref || "HEAD") + " (staged and unstaged)";
     const ranges = changedRanges(ref);
     for (const [rel, rr] of ranges) {
       if (!/^ui\/.+\.js$/.test(rel)) continue;
@@ -427,7 +561,12 @@ function main(argv) {
   } else {
     print(rows, scopeLabel, opt);
   }
-  const uncovered = rows.filter(r => r.level === "none" || r.level === "mention");
+  /* --strict gates on UNCOVERED only. Failing on MENTION-ONLY contradicted the contract this
+   * file prints at the end of every run — "a lead to check by hand, not a verdict" — and,
+   * combined with the deliberate self-reference in test_covgap.js, made --strict carry a
+   * permanent red that no amount of writing tests could clear. A gate nobody can ever get to
+   * green is a gate everyone learns to pass with --no-verify. */
+  const uncovered = strictFailures(rows);
   if (opt.strict && uncovered.length) process.exit(1);
   process.exit(0);
 }
@@ -478,6 +617,7 @@ function print(rows, scopeLabel, opt) {
 
 if (require.main === module) main(process.argv.slice(2));
 
-module.exports = { lex, topLevelFunctions, analyzeTest, indexTests, classify, changedRanges,
+module.exports = { lex, topLevelFunctions, valueEnd, analyzeTest, indexTests, classify,
+                   changedRanges, diffArgs, parseDiff, parseArgv, strictFailures,
                    sourceReaching, evaluated, overlaps, matchBrace };
 if (typeof window !== "undefined") window.covgap = module.exports;

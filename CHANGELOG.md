@@ -1,5 +1,61 @@
 # Changelog
 
+## 2026-07-27 — `covgap.js`: nine defects from review, four of them false-clean
+
+Reviewed independently and measured rather than read. Four failed in the direction the tool
+exists to prevent — reporting nothing wrong about a change nothing had looked at.
+
+### Fixed
+- **Default scope was `git diff` — unstaged only**, though the docstring promised staged and
+  unstaged. Staging before a commit, which is to say being about to commit, produced "no
+  top-level ui functions in scope" and a clean report on an unexamined change. An empty report
+  is indistinguishable from a good one, which made this the worst of the nine. Now `git diff
+  HEAD`, and the scope label says so.
+- **A multi-line arrow parameter list collapsed its function to lines 1-1.** The old test asked
+  whether a `{` appeared before the first newline; with the params wrapped, the brace is on
+  line 3+, so the span stopped at line 1, a change to the body failed `overlaps()`, and the
+  function vanished from the report — not covered, not uncovered, absent. Replaced with
+  `valueEnd()`, which finds the arrow at bracket depth zero and then brace-matches or runs to
+  the terminating `;`.
+- **`--files` ate the next flag's value.** It filtered `--`-prefixed tokens out of the whole
+  tail, stranding the value behind, so `--files ui/mathutil.js --ref HEAD~1` exited 2 with "no
+  such file: HEAD~1". Now stops at the first flag.
+- **The property-access guard was computed and never wired in**, so `results.cullLights = 3`
+  classified as *executed*. The dead variable was itself the discrimination that would have
+  prevented it. The fix is not to ban the dot — `TL.cullLights(...)` after a `require` is the
+  primary execution shape here — but to cut on call-vs-access.
+- **A string inside a `${}` template hole landed in code position.** The hole walker copied
+  bytes by brace depth with no sub-lexing, so the same literal took a different class depending
+  on where it sat, and a `}` inside a string in a hole walked the depth counter off the end.
+  The hole is now lexed recursively.
+- **`sourceReaching`'s regex-literal test used `[\\s+]`**, which as a regex source is a class of
+  backslash, `s` and `+` — accidentally the right three characters, so it passed on every
+  mirror in the repo and would have missed `/function *name/` or `/function\s*name/`. Right
+  answer, wrong reason.
+
+### Changed
+- **`--strict` gates on UNCOVERED only.** Failing on MENTION-ONLY contradicted the contract the
+  tool prints on every run — "a lead to check by hand, not a verdict" — and, with the
+  deliberate self-reference in `test_covgap.js`, made `--strict` permanently red. A gate that
+  can never go green is a gate people route around.
+- **The header no longer says "close to proof of absence" or "trust the red."** Measured
+  against the repo: of 178 functions reported UNCOVERED, **22 are called directly by a function
+  the suite executes** — one-hop and same-file, so a lower bound. Roughly one in eight runs
+  incidentally with no test naming it. The contract printed at the bottom of every run already
+  said this; the header was the thing that disagreed, so the header moved.
+
+### Added
+- `changedRanges` split into `diffArgs` + pure `parseDiff`; argv parsing split into `parseArgv`;
+  the strict gate into `strictFailures`. Three of the nine lived in `changedRanges`, `main()`
+  and the arrow arithmetic — **code this suite never ran a line of.** Splitting them out is
+  what makes the regressions assertable, and `test_covgap.js` now covers all nine.
+
+### Notes
+- **The structural hole is not closed.** covgap's scope is `ui/*.js`, so it cannot see the
+  repo-root tools, including itself — which is why nobody could have run covgap on covgap.
+  Widening to root `*.js` is a few lines but changes what every run reports; recorded in the
+  header rather than done quietly.
+
 ## 2026-07-27 — `covgap.js`: which changed functions no test reaches
 
 The symptom is the entry below this one. `drawCarLights` and `wheelSteerModel` were rewritten,

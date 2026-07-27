@@ -287,5 +287,141 @@ console.log("the tool does not report a function as covered by a test that merel
      "a name colliding with a test's own local is never reported as executed");
 }
 
+/* ---------- 6. the nine a reviewer found, kept as regressions ----------
+ *
+ * Findings 1, 3 and 6 below lived in changedRanges, main() and the arrow-span arithmetic — code
+ * this suite did not run a line of. That is exactly the gap covgap was built to name, occurring
+ * in covgap, and it is the reason these are asserted rather than merely fixed. Three of them
+ * (1, 2, 4) are the false-clean direction: a report that omits the thing you changed, or calls
+ * it covered, is worse than no report. */
+
+console.log("scope defaults to HEAD — a staged change is not an unexamined one");
+{
+  // Bare `git diff` is unstaged-only. Anyone who staged before committing — the moment this
+  // tool is FOR — got an empty scope and a clean bill on work nothing had looked at. An empty
+  // report is indistinguishable from a good one, which is what made this the worst of the nine.
+  ok(C.diffArgs(null).includes("HEAD"), "no --ref compares against HEAD, so staged changes are in scope");
+  ok(C.diffArgs("HEAD~3").includes("HEAD~3") && !C.diffArgs("HEAD~3").includes("HEAD"),
+     "an explicit ref is used verbatim");
+  ok(C.diffArgs(null).includes("--unified=0"), "hunks stay minimal so a range means what it says");
+}
+
+console.log("the diff parser, on shapes git actually emits");
+{
+  const d = C.parseDiff([
+    "diff --git a/ui/lightfx.js b/ui/lightfx.js",
+    "--- a/ui/lightfx.js",
+    "+++ b/ui/lightfx.js",
+    "@@ -10,0 +11,3 @@",
+    "@@ -40,2 +44 @@",
+    "diff --git a/ui/gone.js b/ui/gone.js",
+    "--- a/ui/gone.js",
+    "+++ /dev/null",
+    "@@ -1,9 +0,0 @@",
+  ].join("\n"));
+  ok(JSON.stringify(d.get("ui/lightfx.js")) === "[[11,13],[44,44]]",
+     "a multi-line hunk and a bare single-line hunk both parse to inclusive ranges");
+  ok(!d.has("ui/gone.js"), "a deleted file contributes no ranges rather than a phantom entry");
+  ok(C.parseDiff("").size === 0, "empty diff, no files");
+}
+
+console.log("--files stops at the next flag");
+{
+  const a = C.parseArgv(["--files", "ui/mathutil.js", "--ref", "HEAD~1"]);
+  ok(JSON.stringify(a.explicit) === '["ui/mathutil.js"]', "--files takes only its own arguments");
+  ok(a.ref === "HEAD~1", "and the following flag keeps its value instead of being eaten as a filename");
+
+  const b = C.parseArgv(["--files", "a.js", "b.js", "--strict"]);
+  ok(JSON.stringify(b.explicit) === '["a.js","b.js"]' && b.strict === true, "several files, then a flag");
+  ok(C.parseArgv(["--json"]).explicit === null, "no --files means no explicit list, not an empty one");
+}
+
+console.log("--strict gates on UNCOVERED, never on MENTION-ONLY");
+{
+  const rows = [{ level: "none" }, { level: "mention" }, { level: "pin" }, { level: "exec" }];
+  ok(C.strictFailures(rows).length === 1, "only the uncovered row fails the gate");
+  // MENTION-ONLY is defined by the printed contract as a lead to check by hand. Failing on it
+  // made --strict permanently red — this file's own fixtures guarantee mentions exist — and a
+  // gate that can never go green is a gate people route around.
+  ok(C.strictFailures([{ level: "mention" }]).length === 0,
+     "a corpus of nothing but mentions passes --strict");
+}
+
+console.log("a multi-line parameter list does not collapse the function to one line");
+{
+  const fsx = require("fs"), pathx = require("path"), osx = require("os");
+  const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), "covgap-arrow-"));
+  const file = pathx.join(dir, "sample.js");
+  fsx.writeFileSync(file, [
+    "const wide = (",           // 1
+    "  a,",                     // 2
+    "  b",                      // 3
+    ") => {",                   // 4
+    "  return a + b;",          // 5
+    "};",                       // 6
+    "const wrapped = (a) =>",   // 7
+    "  a + 1;",                 // 8
+    "const plain = (a) => a;",  // 9
+  ].join("\n"));
+  const f = C.topLevelFunctions(file);
+  const wide = f.find(x => x.name === "wide");
+  // Before the fix this was 1-1: the brace sits on line 4, past the first newline, so the old
+  // "is there a { before end of line" test said expression-body and stopped at line 1. A change
+  // to line 5 then failed overlaps() and the function was absent from the report entirely —
+  // not covered, not uncovered, just gone.
+  ok(wide.startLine === 1 && wide.endLine === 6, `a multi-line param list spans its whole body (got ${wide.startLine}-${wide.endLine})`);
+  ok(C.overlaps(wide, [[5, 5]]), "so a change to its body puts it in scope");
+
+  const wrapped = f.find(x => x.name === "wrapped");
+  ok(wrapped.startLine === 7 && wrapped.endLine === 8, "an expression body wrapped onto the next line is not truncated");
+  const plain = f.find(x => x.name === "plain");
+  ok(plain.startLine === 9 && plain.endLine === 9, "and a one-liner is still one line");
+  fsx.rmSync(dir, { recursive: true, force: true });
+}
+
+console.log("a dotted property is not a call — call-vs-access, not dot-vs-no-dot");
+{
+  // `results.cullLights = 3` said `exec`, because the no-dot guard was computed and never
+  // wired in. But banning the dot outright would break the PRIMARY execution shape in this
+  // repo — TL.cullLights(...) after requiring the module — so the cut has to be on the call.
+  ok(level("cullLights", `const TL = require("./ui/fake.js");\nresults.cullLights = 3;`)
+     !== "exec", "assigning a same-named property of a test's own object is not execution");
+  ok(level("cullLights", `const TL = require("./ui/fake.js");\nTL.cullLights([], eye, 4);`)
+     === "exec", "but calling it through the required module still is");
+  ok(level("cullLights", `const { cullLights } = require("./ui/fake.js");\ncullLights([]);`)
+     === "exec", "and so does a destructured import called bare");
+}
+
+console.log("a regex literal spelling the declaration is matched by what it SAYS");
+{
+  // `t` is the regex's source text, so the gap is the literal characters \ s + — not whitespace.
+  // The old class [\\s+] happened to contain exactly those three and so passed on every mirror
+  // in the repo, while /function +name/ or /function\s*name/ would have silently missed.
+  for (const spelling of ["function\\s+drawThruster", "function\\s*drawThruster",
+                          "function +drawThruster", "function\\s{1,3}drawThruster"]) {
+    ok(C.sourceReaching({ kind: "regex", text: spelling, before: "" }, "drawThruster"),
+       "regex source /" + spelling + "/ anchors the declaration");
+  }
+  ok(!C.sourceReaching({ kind: "regex", text: "functional\\s+drawThrusterX", before: "" }, "drawThruster"),
+     "and a longer name is not matched by a prefix of it");
+}
+
+console.log("a string inside a template hole is a string, not code");
+{
+  // The hole walker copied bytes by brace depth with no sub-lexing, so the same literal got a
+  // different class depending on where it sat — the positional promise the whole file rests on,
+  // failing quietly.
+  const t = C.lex("const s = `x ${f(\"drawCarLights\")} y`;");
+  ok(!/drawCarLights/.test(t.code), "the name is not in code position just because it sits in a hole");
+  ok(t.literals.some(l => l.kind === "string" && l.text === "drawCarLights"),
+     "it is classified as the string it is");
+  ok(/f\(/.test(t.code), "while the surrounding call in the hole stays code");
+  // an unbalanced brace inside a string in a hole used to walk the depth counter off the end
+  const u = C.lex("const s = `${ g(\"}\") } tail`;");
+  ok(/tail/.test(u.code) === false, "a } inside a string does not close the hole early");
+  ok(C.lex("const s = `${a}${b}`;").literals.filter(l => l.kind === "template").length === 1,
+     "two holes in one template still yield one template literal");
+}
+
 console.log(fails ? `test_covgap: ${fails} FAILED` : "test_covgap: all pass");
 process.exit(fails ? 1 : 0);
