@@ -35,6 +35,15 @@ function mMul(a, b) {
   }
   return o;
 }
+/* Same product, into a caller-owned matrix — the column-major twin of rvMulInto below.
+ * Same aliasing rule: `o` may alias neither `a` nor `b`, because every output element is
+ * read from both inputs and writing into an input corrupts the columns still to come. */
+function mMulInto(o, a, b) {
+  for (let c = 0; c < 4; c++) for (let r = 0; r < 4; r++) {
+    o[c * 4 + r] = a[r] * b[c * 4] + a[4 + r] * b[c * 4 + 1] + a[8 + r] * b[c * 4 + 2] + a[12 + r] * b[c * 4 + 3];
+  }
+  return o;
+}
 // column-major rotation of `ang` about axis (0=X,1=Y,2=Z) through a pivot
 function rotP(axis, ang, px, py, pz) {
   const c = Math.cos(ang), s = Math.sin(ang);
@@ -163,7 +172,7 @@ function sphereInFrustum(planes, c, r) {
 function easeK(rate, dt) { return 1 - Math.exp(-rate * Math.max(0, Math.min(0.1, dt))); }
 
 if (typeof module !== "undefined") module.exports = {
-  IDENT4, mPerspective, mLookAt, mMul, rotP, scaleMat, mOrtho,
+  IDENT4, mPerspective, mLookAt, mMul, mMulInto, rotP, scaleMat, mOrtho,
   v3sub, v3add, v3sc, v3dot, v3len, v3nrm, v3cross, mXfPt, mRot, mT,
   rvMul, rvMulInto, rvRotAbout, rvFromTo, rvInv, rvTRS, ik2bone, easeK,
   frustumPlanes, sphereInFrustum,

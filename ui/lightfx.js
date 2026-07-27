@@ -138,6 +138,11 @@ function turbineIntensity(i, src) {
 // JET AFTERBURNER — a continuous blue flame cone out the turbine nozzle: a thin white-hot core with
 // shock diamonds (the periodic bright spots real afterburners show), wrapped in a soft blue glow, with
 // turbulent wobble that grows toward the tip and a plume that stretches under boost. Additive, blue.
+/* Plume staging. The particle count is a compile-time constant (KC + KG) and every slot is
+ * rewritten on every call, so a pool is exactly equivalent to the per-call allocation it
+ * replaces — and the draw count is that same constant, never the buffer's capacity. */
+const THR_KC = 32, THR_KG = 22;                              // core / outer-glow particle counts
+const _thrArr = new Float32Array((THR_KC + THR_KG) * 5);     // sized FROM them, never a repeated literal
 function drawThruster(m, inten, mvp, lum) {
   lum = lum || 1;
   const eye = camEye();
@@ -158,7 +163,7 @@ function drawThruster(m, inten, mvp, lum) {
   // bloom, none of which need reach. ~1.1 m at full now, and the idle length is barely
   // changed so the plume still shows when the gate holds it low.
   const len = 0.32 + inten * 0.78;
-  const KC = 32, KG = 22, K = KC + KG, arr = new Float32Array(K * 5);
+  const KC = THR_KC, KG = THR_KG, K = KC + KG, arr = _thrArr;   // fixed-size pool, fully rewritten below
   let idx = 0;
   const push = (t, r, b, jitAmp, seed) => {
     const ang = t0 * 0.011 + seed * 2.3;                     // swirl direction in the lateral plane
@@ -545,57 +550,129 @@ function drawTrackLampGlare(mvp, nightF, th) {
   gl.depthMask(true);
 }
 
+/* ---- glow staging ----
+ * drawCarLights runs once per car per frame, and every one of these used to be built fresh:
+ * three growing Arrays, a `push` closure, a per-side .slice().sort(), an mXfPt result per
+ * lamp, and a Float32Array copy per batch. With the field on track that is the heaviest
+ * remaining allocator in the light path. The pools below are module-scope and reused; only
+ * the fill changes per car. */
+const GLOW_CAP = 256;                                        // sprites per colour per car
+const _glowWarm  = { a: new Float32Array(GLOW_CAP * 5), n: 0 };
+const _glowRed   = { a: new Float32Array(GLOW_CAP * 5), n: 0 };
+const _glowWhite = { a: new Float32Array(GLOW_CAP * 5), n: 0 };
+const _glowFwd = [0, 0, 0];                                  // scratch: the beam/forward axis
+
+/* Append one sprite. Hoisted out of drawCarLights so the closure that captured eye/Hpx/th is
+ * gone — they ride in as arguments instead. */
+let _glowOverflowed = false;
+function pushGlow(S, px, py, pz, r, b, eye, Hpx, th) {
+  if (S.n >= GLOW_CAP) {                                     // pool size is the ceiling
+    // The arrays this replaced were unbounded, so a lamp-heavy model that would once have
+    // drawn every sprite now silently loses the tail. Silence is the bad part, not the cap —
+    // say it once so a missing light is diagnosable instead of mysterious.
+    if (!_glowOverflowed) { _glowOverflowed = true; console.warn(`glow pool full at ${GLOW_CAP} sprites — some lamps not drawn`); }
+    return;
+  }
+  const dist = Math.hypot(px - eye[0], py - eye[1], pz - eye[2]) || 1;
+  const o = S.n * 5;
+  S.a[o] = px; S.a[o + 1] = py; S.a[o + 2] = pz;
+  S.a[o + 3] = Math.min(500, r * Hpx / (dist * th));
+  S.a[o + 4] = b;
+  S.n++;
+}
+
+/* The left/right split and the top-lamp-first ordering depend only on the car's lamp
+ * geometry in model space, which does not change from frame to frame — this was a
+ * .slice().sort() per side per car per frame for an answer that is always the same.
+ * Keyed on array identity, so loading a different car rebuilds it. */
+const _lampL = [], _lampR = [], _lampSides = [_lampL, _lampR];
+let _lampSrc = null;
+function headLampSides(hl) {
+  if (hl === _lampSrc) return _lampSides;
+  _lampSrc = hl; _lampL.length = 0; _lampR.length = 0;
+  for (const a of hl) (a[0] > 0 ? _lampL : _lampR).push(a);
+  const byHeight = (p, q) => q[1] - p[1];                    // top lamp first — index 0 keeps the wide bloom
+  _lampL.sort(byHeight); _lampR.sort(byHeight);
+  return _lampSides;
+}
+
 // glow layer: red tail lights (flare on braking) + the body's white & red LED accent
 // arrays. Headlights are the shader cone spotlight, not here. All fade in at night.
 function drawCarLights(cm, mvp, th, nightF, brakeF) {
   if (!carLights) return;
   const eye = camEye(), Hpx = cv.height;
-  const push = (arr, p, r, b) => { const dist = Math.hypot(p[0]-eye[0], p[1]-eye[1], p[2]-eye[2]) || 1;
-    arr.push(p[0], p[1], p[2], Math.min(500, r * Hpx / (dist * th)), b); };
+  const warm = _glowWarm, red = _glowRed, white = _glowWhite;
+  warm.n = 0; red.n = 0; white.n = 0;
   // warm headlamp glow — each of the 3 lamps per side gets a CRISP bulb; only the top
   // lamp keeps a soft halo, so the lower two don't leak light onto the body.
-  const warm = [];
-  { const hl = carLights.headLamps || [], sL = [], sR = [];
-    const fl = Math.hypot(cm[8], cm[9], cm[10]) || 1, fwd = [cm[8] / fl, cm[9] / fl, cm[10] / fl];  // beam/forward axis
-    for (const a of hl) (a[0] > 0 ? sL : sR).push(a);
-    for (const arr of [sL, sR]) arr.slice().sort((p, q) => q[1] - p[1]).forEach((a, idx) => {
-      const P = mXfPt(a, cm);
+  { const sides = headLampSides(carLights.headLamps || []);
+    const fl = Math.hypot(cm[8], cm[9], cm[10]) || 1, fwd = _glowFwd;   // beam/forward axis
+    fwd[0] = cm[8] / fl; fwd[1] = cm[9] / fl; fwd[2] = cm[10] / fl;
+    for (const side of sides) for (let idx = 0; idx < side.length; idx++) {
+      const a = side[idx];
+      const Px = a[0]*cm[0] + a[1]*cm[4] + a[2]*cm[8]  + cm[12];        // mXfPt, inlined to scalars
+      const Py = a[0]*cm[1] + a[1]*cm[5] + a[2]*cm[9]  + cm[13];
+      const Pz = a[0]*cm[2] + a[1]*cm[6] + a[2]*cm[10] + cm[14];
       // how head-on the beam is to the camera — real headlights GLARE far brighter when you look into
       // them, so the luminous halo swells when the beams point your way (bloom's gone, so draw the glow).
-      let dx = eye[0] - P[0], dy = eye[1] - P[1], dz = eye[2] - P[2]; const dl = Math.hypot(dx, dy, dz) || 1;
+      const dx = eye[0] - Px, dy = eye[1] - Py, dz = eye[2] - Pz; const dl = Math.hypot(dx, dy, dz) || 1;
       const facing = Math.max(0, (dx * fwd[0] + dy * fwd[1] + dz * fwd[2]) / dl);
       // fade the soft halos OUT with distance: far off, the sprites converge and stack additively into a
       // blown-out ball, so keep only the tight bulb at range (still reads as a distant headlight point).
       const near = Math.max(0, Math.min(1, (42 - dl) / 30));                 // 1 within ~12m → 0 by ~42m
-      push(warm, P, 0.05, (0.6 + 0.5 * facing) * nightF * (0.4 + 0.6 * near));       // crisp bulb (dimmer at range so the 3-lamp cluster doesn't stack hot)
-      push(warm, P, 0.13, (0.10 + 0.30 * facing) * nightF * near);                   // soft luminous halo — near only
-      if (idx === 0) push(warm, P, 0.26, (0.03 + 0.18 * facing * facing) * nightF * near);  // wide bloom — near + head-on only
-    });
+      pushGlow(warm, Px, Py, Pz, 0.05, (0.6 + 0.5 * facing) * nightF * (0.4 + 0.6 * near), eye, Hpx, th);   // crisp bulb (dimmer at range so the 3-lamp cluster doesn't stack hot)
+      pushGlow(warm, Px, Py, Pz, 0.13, (0.10 + 0.30 * facing) * nightF * near, eye, Hpx, th);               // soft luminous halo — near only
+      if (idx === 0) pushGlow(warm, Px, Py, Pz, 0.26, (0.03 + 0.18 * facing * facing) * nightF * near, eye, Hpx, th);  // wide bloom — near + head-on only
+    }
   }
   // tail lights: red running glow → wider/hotter flare under braking (3 lamps/side).
   // Keep the silhouette (sizes) but toned-down luminosity.
-  const red = [], base = 0.4 + 0.85 * brakeF, spread = 1.0 + 0.25 * brakeF;   // MUCH brighter on braking, barely bigger
-  for (const t of (carLights.tail || [])) { const T = mXfPt(t, cm);
-    push(red, T, 0.08 * spread, base * nightF); push(red, T, 0.11 * spread, 0.42 * base * nightF); }
+  const base = 0.4 + 0.85 * brakeF, spread = 1.0 + 0.25 * brakeF;   // MUCH brighter on braking, barely bigger
+  for (const t of (carLights.tail || [])) {
+    const Tx = t[0]*cm[0] + t[1]*cm[4] + t[2]*cm[8]  + cm[12];
+    const Ty = t[0]*cm[1] + t[1]*cm[5] + t[2]*cm[9]  + cm[13];
+    const Tz = t[0]*cm[2] + t[1]*cm[6] + t[2]*cm[10] + cm[14];
+    pushGlow(red, Tx, Ty, Tz, 0.08 * spread, base * nightF, eye, Hpx, th);
+    pushGlow(red, Tx, Ty, Tz, 0.11 * spread, 0.42 * base * nightF, eye, Hpx, th);
+  }
   // red LED accents on the body — small crisp glows + a tight halo (bloom spreads them)
-  for (const a of (carLights.accentR || [])) { const P = mXfPt(a, cm); push(red, P, 0.055, 0.9 * nightF); push(red, P, 0.09, 0.30 * nightF); }
+  for (const a of (carLights.accentR || [])) {
+    const Px = a[0]*cm[0] + a[1]*cm[4] + a[2]*cm[8]  + cm[12];
+    const Py = a[0]*cm[1] + a[1]*cm[5] + a[2]*cm[9]  + cm[13];
+    const Pz = a[0]*cm[2] + a[1]*cm[6] + a[2]*cm[10] + cm[14];
+    pushGlow(red, Px, Py, Pz, 0.055, 0.9 * nightF, eye, Hpx, th);
+    pushGlow(red, Px, Py, Pz, 0.09, 0.30 * nightF, eye, Hpx, th);
+  }
   // white LED accents
-  const white = [];
-  for (const a of (carLights.accentW || [])) { const P = mXfPt(a, cm); push(white, P, 0.055, 0.9 * nightF); push(white, P, 0.09, 0.30 * nightF); }
+  for (const a of (carLights.accentW || [])) {
+    const Px = a[0]*cm[0] + a[1]*cm[4] + a[2]*cm[8]  + cm[12];
+    const Py = a[0]*cm[1] + a[1]*cm[5] + a[2]*cm[9]  + cm[13];
+    const Pz = a[0]*cm[2] + a[1]*cm[6] + a[2]*cm[10] + cm[14];
+    pushGlow(white, Px, Py, Pz, 0.055, 0.9 * nightF, eye, Hpx, th);
+    pushGlow(white, Px, Py, Pz, 0.09, 0.30 * nightF, eye, Hpx, th);
+  }
 
   gl.useProgram(progGlow); gl.uniformMatrix4fv(glowLoc.mvp, false, mvp);
   gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE); gl.depthMask(false);
-  const batch = (arr, col) => { const n = arr.length / 5; if (!n) return;
-    gl.bindBuffer(gl.ARRAY_BUFFER, glowBuf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(arr), gl.DYNAMIC_DRAW);
-    gl.enableVertexAttribArray(glowLoc.pos); gl.vertexAttribPointer(glowLoc.pos, 3, gl.FLOAT, false, 20, 0);
-    gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
-    gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
-    gl.uniform3f(glowLoc.color, col[0], col[1], col[2]); gl.drawArrays(gl.POINTS, 0, n); };
   const E = HDR_EMIT;
-  batch(warm, [1.0*E, 0.92*E, 0.72*E]);                        // warm headlamp glow (3 lamps/side)
-  batch(red, [1.0*E, (0.06 + 0.13 * brakeF)*E, 0.03*E]);       // tail + red accents (hotter when braking)
-  batch(white, [0.85*E, 0.93*E, 1.0*E]);                       // cool-white LED accents
+  batchGlow(_glowWarm, 1.0*E, 0.92*E, 0.72*E);                        // warm headlamp glow (3 lamps/side)
+  batchGlow(_glowRed, 1.0*E, (0.06 + 0.13 * brakeF)*E, 0.03*E);       // tail + red accents (hotter when braking)
+  batchGlow(_glowWhite, 0.85*E, 0.93*E, 1.0*E);                       // cool-white LED accents
   gl.depthMask(true); gl.disable(gl.BLEND);
+}
+/* Upload one staging pool and draw it. Colour arrives as three scalars rather than an array
+ * literal, which is three fewer throwaway objects per car per frame. */
+function batchGlow(S, cr, cg, cb) {
+  // the cursor, not the buffer's capacity — S.a.length is a constant now that this is a pool,
+  // so reading the fill off it draws the whole pool and resurrects the previous car's tail.
+  const n = S.n; if (!n) return;
+  // Upload stays full-capacity on purpose: a constant-size bufferData avoids GL buffer
+  // reallocation, and a subarray view would allocate the very object this pass removes.
+  gl.bindBuffer(gl.ARRAY_BUFFER, glowBuf); gl.bufferData(gl.ARRAY_BUFFER, S.a, gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(glowLoc.pos); gl.vertexAttribPointer(glowLoc.pos, 3, gl.FLOAT, false, 20, 0);
+  gl.enableVertexAttribArray(glowLoc.size); gl.vertexAttribPointer(glowLoc.size, 1, gl.FLOAT, false, 20, 12);
+  gl.enableVertexAttribArray(glowLoc.bright); gl.vertexAttribPointer(glowLoc.bright, 1, gl.FLOAT, false, 20, 16);
+  gl.uniform3f(glowLoc.color, cr, cg, cb); gl.drawArrays(gl.POINTS, 0, n);
 }
 
 // ELEGANT LENS FLARE — a screen-space additive glare for the headlamps at night: a tight core, a

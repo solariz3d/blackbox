@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-07-27 — Allocation pass on the per-frame light and wheel paths
+
+The third of the three items after the module split. `drawCarLights` runs once per car per
+frame and was rebuilding everything it needed each time; `wheelSteerModel` runs four times
+per car on top of that. Reviewed by two independent readers before it went in.
+
+### Changed
+- **`drawCarLights` staging is pooled.** Three growing Arrays, a `push` closure, a per-side
+  `.slice().sort()`, an `mXfPt` result per lamp, three colour array literals and a
+  `new Float32Array(arr)` per draw batch — all per car per frame — become module-scope pools,
+  a hoisted `pushGlow`/`batchGlow`, an identity-cached left/right lamp split, and inlined
+  point transforms. The sort was recomputing a fixed answer: the split and the top-lamp-first
+  order depend only on model-space geometry, which does not change between frames.
+- **`wheelSteerModel` allocates once, not five times.** `Ry`/`Rx`/`R` never escape and now use
+  module scratch via the new `mMulInto`. The returned matrix is still allocated fresh, and has
+  to be: `tyre` and `cage` are alive simultaneously at the `render.js` and `laps.js` call
+  sites, so pooling the return value would silently make the second call clobber the first.
+- **`drawThruster`'s particle buffer is pooled**, sized from `THR_KC`/`THR_KG` rather than a
+  repeated `(32 + 22)` literal — a duplicated count is a silent truncation waiting for someone
+  to raise it, since out-of-range `Float32Array` writes are dropped without a throw.
+
+### Added
+- **`mMulInto(o, a, b)`** in mathutil — the column-major twin of `rvMulInto`, same aliasing
+  rule, and exported alongside it.
+- **`test_glowpool.js`** — the contract pooled buffers have to keep. The whole suite passed
+  throughout this change because nothing in it touches either function; green said "you didn't
+  break anything else," not "this is right." Asserts that a frame staging fewer sprites than
+  the last never draws the leftovers, that the empty-frame early-out stays reachable, that
+  overflow caps rather than corrupts, and that two `wheelSteerModel` results stay independent.
+  Verified to fail when the defect is reinstated, not just to pass.
+- **One-shot warning when the glow pool overflows.** The arrays this replaced were unbounded,
+  so a lamp-heavy model now loses sprites; the cap is fine, the silence was not.
+
+### Fixed
+- **`batchGlow` drew the pool's capacity instead of the fill count.** `S.a.length / 5` was
+  correct while the staging array was a growing Array — length *was* the fill — and became a
+  constant 256 the moment it became a pool. Consequences: an 18× over-draw in the pass meant
+  to reduce work, a dead empty-batch early-out, and a latent ghost-lights bug where a car
+  loaded with fewer lamps than the previous one redraws the previous car's world positions
+  every frame thereafter. Both reviewers caught it independently and both quoted the comment
+  twelve lines above it — "the cursor, not the buffer's capacity."
+
 ## 2026-07-26 — Buttery pass: the tree depth prepass, night-tap cuts, and the magic-trees root cause
 
 The keeper's bar: 240 solid at max night. Three look-preserving cuts plus the find of the session.

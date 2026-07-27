@@ -114,17 +114,26 @@ function drawCarGroups(groups, modelMat) {
 }
 // carMat ⊗ (rotate about model-up through the wheel centre by `steer`) — steers a
 // front wheel to point down the line. X=right, Z=nose in the car's local frame.
+/* Scratch for the three matrices that never leave this function. Four wheels x every car x
+ * every frame put three throwaway 16-element Arrays plus the mMul result on the heap per
+ * call; only the returned matrix is retained by the caller, so only it is allocated. */
+const _wsRy = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+const _wsRx = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+const _wsR  = new Float32Array(16);
 function wheelSteerModel(carMat, pivot, steer, roll, lift) {
   const cy = Math.cos(steer), sy = Math.sin(steer);
   const cx = Math.cos(roll || 0), sx = Math.sin(roll || 0);
-  const Ry = [cy, 0, -sy, 0,  0, 1, 0, 0,  sy, 0, cy, 0,  0, 0, 0, 1];   // steer about up (model Y)
-  const Rx = [1, 0, 0, 0,  0, cx, sx, 0,  0, -sx, cx, 0,  0, 0, 0, 1];   // roll about the axle (model X)
-  const R = mMul(Ry, Rx);   // roll in the wheel's own frame, then steer that frame
+  const Ry = _wsRy, Rx = _wsRx;
+  Ry[0] = cy; Ry[2] = -sy; Ry[8] = sy; Ry[10] = cy;     // steer about up (model Y)
+  Rx[5] = cx; Rx[6] = sx; Rx[9] = -sx; Rx[10] = cx;     // roll about the axle (model X)
+  const R = mMulInto(_wsR, Ry, Rx);   // roll in the wheel's own frame, then steer that frame
   const px = pivot[0], py = pivot[1], pz = pivot[2];   // rotate about the wheel-centre pivot
   R[12] = px - (R[0]*px + R[4]*py + R[8]*pz);
   R[13] = py - (R[1]*px + R[5]*py + R[9]*pz) + (lift || 0);   // suspension travel along body up (model Y)
   R[14] = pz - (R[2]*px + R[6]*py + R[10]*pz);
-  return new Float32Array(mMul(carMat, R));
+  // the one retained allocation: two of these are alive at once at some call sites (tyre and
+  // cage), so this result cannot come from shared scratch.
+  return mMulInto(new Float32Array(16), carMat, R);
 }
 // lateral / longitudinal / vertical g at fractional frame `fp`, from the path's local
 // acceleration — deterministic (scrub-safe) and windowed so it's smooth. Feeds the
