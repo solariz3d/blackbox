@@ -16,7 +16,19 @@
  * TYRE_MODE: 0 = off, 1 = reset each lap (default), 2 = accumulate + slow fade. */
 let TYRE_MODE = 1;
 let markVBO = null, markCount = 0;                    // prebuilt skid-mark ribbon (per loaded car)
-const MARK_COLOR = [0.02, 0.02, 0.025], MARK_ALPHA = 0.55, MARK_FADE_FRAMES = 900;  // ~fade over 900 frames in mode 2
+const MARK_COLOR = [0.02, 0.02, 0.025], MARK_ALPHA = 0.55;
+/* How long accumulated rubber takes to fade in mode 2, in SECONDS of replay time.
+ *
+ * This was 900 *frames*, and the frames in question are the REPLAY's, not the display's —
+ * `curFrame` arrives as `tCur / ex.dt`, so refresh rate never entered into it and the
+ * display-Hz bug this looked like it belonged to was never here. What is real is narrower:
+ * `ex.dt` comes from the replay file's own `intervalMs`, so it varies between recordings, and
+ * a frame count means a different duration in each. Two cars from replays recorded at
+ * different rates faded at different speeds in the same scene.
+ *
+ * 13.5 s is 900 frames at the 15 ms interval both sample replays carry (66.67 Hz), so the
+ * tuned look is preserved exactly for those and only mixed-rate scenes change. */
+const MARK_FADE_SECONDS = 13.5;
 const smoke = { pool: [], cap: 420, vbo: null, arr: null,
   noiseTex: null, curl: null, accum: new Float32Array(4) };   // baked noise, curl field, per-wheel slide build-up
 const SMOKE_MERGE_LO = 0.10, SMOKE_MERGE_HI = 0.65;    // summed-density ramp: fuses overlapping puffs into one field
@@ -172,7 +184,7 @@ function airStep(dt, i, fp) {
 
 // draw the prebuilt skid-mark ribbon, revealed up to curFrame (fractional). Blends
 // dark onto the track; doesn't write depth (it's a decal sitting just off the surface).
-function drawTireMarks(mvp, L, fogD, curFrame, curLap, vbo, count) {
+function drawTireMarks(mvp, L, fogD, curFrame, curLap, vbo, count, dt) {
   // vbo/count default to the reference car's ribbon; each ghost passes its own, built from
   // its own recorded slip. The fade is relative to THAT car's current frame — a ghost's
   // rubber on the reference car's timeline would put skid marks in corners nobody had
@@ -185,7 +197,9 @@ function drawTireMarks(mvp, L, fogD, curFrame, curLap, vbo, count) {
   gl.uniform1f(markLoc.curFrame, curFrame);
   gl.uniform1f(markLoc.curLap, curLap);
   gl.uniform1f(markLoc.mode, TYRE_MODE === 2 ? 1 : 0);   // 0 = reset each lap, 1 = accumulate + fade
-  gl.uniform1f(markLoc.fade, MARK_FADE_FRAMES);
+  // in THIS car's frames — curFrame is its own timeline, so the fade window has to be too
+  const carDt = (dt === undefined ? (typeof ex !== "undefined" && ex ? ex.dt : 0.015) : dt) || 0.015;
+  gl.uniform1f(markLoc.fade, MARK_FADE_SECONDS / carDt);
   gl.uniform1f(markLoc.markAlpha, MARK_ALPHA);
   gl.uniform3fv(markLoc.markColor, MARK_COLOR);
   gl.uniform3f(markLoc.fogC, L.fog[0], L.fog[1], L.fog[2]);

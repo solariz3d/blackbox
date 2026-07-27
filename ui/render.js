@@ -343,13 +343,15 @@ function render() {
   {
     GT.begin("marks");
     let curLap = 0; if (ex.laps) for (const l of ex.laps) if (l.frame <= i) curLap++;
-    drawTireMarks(mvp, L, fogD, tCur / ex.dt, curLap, markVBO, markCount);
+    drawTireMarks(mvp, L, fogD, tCur / ex.dt, curLap, markVBO, markCount, ex.dt);
     // every ghost's rubber, each revealed up to ITS own frame — so a car that locked up
     // into turn one has left its marks there and nowhere the others have not been yet
     for (const g of ghostDraws) {
       if (!g.run.markCount) continue;
       let gl2 = 0; if (g.run.ex.laps) for (const l of g.run.ex.laps) if (l.frame <= g.f) gl2++;
-      drawTireMarks(mvp, L, fogD, g.f, gl2, g.run.markVBO, g.run.markCount);
+      // a ghost's own dt: g.f is its frame index, and a replay recorded at a different
+      // interval must still fade its rubber over the same number of SECONDS
+      drawTireMarks(mvp, L, fogD, g.f, gl2, g.run.markVBO, g.run.markCount, g.run.ex.dt);
     }
     GT.end();   // "marks"
   }
