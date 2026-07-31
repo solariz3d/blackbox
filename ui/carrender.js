@@ -309,10 +309,23 @@ function buildTireMarkMesh(ex) {
     for (let f = 0; f < N; f++) { while (li < L.length && L[li].frame <= f) li++; lapOf[f] = li; } }
   const out = [];
   const push = (p, fr, lp, it, cr, rn) => { out.push(p[0], p[1], p[2], fr, lp, it, cr, rn); };
-  // surface normal forced toward the sky (ex.nrm sign is unreliable), normalised
+  // Surface normal AS RECORDED, normalised — deliberately NOT forced toward the sky. extractCar
+  // builds nrm from the wheel quad and resolves its winding once for the whole run (the
+  // median-tilt flip), so the sign already points out of the road toward the car's roof, and it
+  // keeps doing that when the car is past vertical. Forcing uy >= 0 there inverts it, and since
+  // `contact` is W - up*r that lands the patch a tyre DIAMETER on the far side of the tarmac —
+  // taking the LIFT into the surface with it and reversing `right` = up × travel, so the ribbon
+  // also faces backwards. Centrifuge runs 1,313 frames of 16,577 past vertical (7.92%) and t180,
+  // the reference replay, has 57 of 7,728 — this was never confined to the one stunt sample.
+  // The old comment here called the recorded sign unreliable. What is unreliable is WORLD UP as a
+  // stand-in for it, and the measurement that separates them is continuity: as recorded this
+  // vector turns at most 12.5° between adjacent 15 ms frames, while forced skyward it swings up
+  // to 180° at the crossing — a surface normal that reverses inside 15 ms is not a surface.
+  // carModelMatrix already poses the car BODY from this same normal unflipped, so the marks and
+  // the car laying them now agree. All of the above is measured in test_skidnormal.js.
   const upAt = (f) => {
-    let ux = NM[f*3], uy = NM[f*3+1], uz = NM[f*3+2]; const l = Math.hypot(ux, uy, uz) || 1; ux/=l; uy/=l; uz/=l;
-    if (uy < 0) { ux = -ux; uy = -uy; uz = -uz; } return [ux, uy, uz];
+    const ux = NM[f*3], uy = NM[f*3+1], uz = NM[f*3+2]; const l = Math.hypot(ux, uy, uz) || 1;
+    return [ux/l, uy/l, uz/l];
   };
   const contact = (f, k, up) => { const a = f*12+k*3, r = R[k]; return [W[a]-up[0]*r, W[a+1]-up[1]*r, W[a+2]-up[2]*r]; };
   // ribbon edge: width across travel (right = up × travel), lifted just off the surface
@@ -932,4 +945,7 @@ function driverSeatedSkin(spin, key) {
 function driverPoseReset() { _dpose.clear(); }
 
 if (typeof module !== "undefined") module.exports = { gripSat, armSolve, gripLockCalib, driverSeatedPose, snapToMesh, palmGrip,
-  ksanimLocal, driverAnimWorlds, driverAnimInit, animT, steerOfFrame, steerRefCalib };
+  ksanimLocal, driverAnimWorlds, driverAnimInit, animT, steerOfFrame, steerRefCalib,
+  // exported so the mark geometry can be measured on a real replay under node — the two are a
+  // pair, since the mesh only exists where computeWheelSlip says the tyre was sliding
+  buildTireMarkMesh, computeWheelSlip };

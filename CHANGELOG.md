@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-07-31 — skid marks stop punching through the tarmac where the road banks past vertical
+
+The symptom: on centrifuge, wherever the car goes past vertical, the tyre marks are laid a full
+tyre diameter on the far side of the road — through it, not on it. `buildTireMarkMesh`'s `upAt()`
+forced the surface normal toward the sky on the stated grounds that the recorded sign was
+unreliable, and since a contact patch is `wheelCentre - up * radius`, inverting `up` puts the
+patch 0.66 m the wrong way. The sign was never unreliable: `extractCar` resolves the wheel quad's
+winding once for the whole run, so `nrm` points out of the road toward the roof and goes on doing
+that when the car is upside down. What is unreliable is world up as a stand-in for it.
+`carModelMatrix` has always posed the car BODY from the same normal unflipped — so on those
+frames the marks and the car laying them disagreed about which way was down.
+
+### Fixed
+- **`upAt()` in `ui/carrender.js` uses the normal as recorded.** Three consequences went with the
+  flip, not one: the contact patch moved a diameter, the 0.03 m lift pushed the ribbon *into* the
+  surface instead of off it, and `right = up × travel` reversed, so the mark's width was laid on
+  the wrong side and the strip faced backwards.
+- **It was never confined to the stunt sample.** centrifuge runs 1,313 frames of 16,577 past
+  vertical (7.92%), and **t180 — the reference replay this repo tunes everything else against —
+  has 57 of 7,728**. Marks were laid on 5 of those.
+- **The grain coordinate downstream is corrected too.** `run` is metres along the wheel's path,
+  accumulated contact-to-contact across the whole stint, so every 0.66 m teleport at a crossing
+  was added to the tally and every later mark on that wheel inherited it: up to 1.0 m of phantom
+  travel on t180 and 9.9 m on centrifuge. Mark *positions* on normal-up frames are bit-identical;
+  this field is the one thing that changes, and it changes because it was wrong.
+
+### Added
+- **`test_skidnormal.js`** — 44 tests pass. The old behaviour is reproduced by pre-flipping the
+  run's normals and calling the *shipped* function, rather than by keeping a copy of the old
+  `upAt` that could drift from it and pass anyway. Mutation-checked both ways: reinstating the
+  flip turns 7 assertions red, and a form the source-text check cannot see (`s = uy >= 0 ? 1 : -1`)
+  still turns 6 red on the measurements alone.
+- `buildTireMarkMesh` and `computeWheelSlip` are exported from `carrender.js` so the mark geometry
+  can be measured on a real replay under node.
+
+### Measured — how "on the surface" is established with no track model in the repo
+- **Continuity.** A surface normal cannot reverse inside one 15 ms frame. As recorded it turns at
+  most 6.6° (t180) / 12.5° (centrifuge) between adjacent frames; forced skyward it swings to
+  177.8° / 180.0°, on 2 and 65 frames. That is the measurement that says which sign is physical.
+- **Rigidity.** The contact patch is bolted to the wheel a radius away, so its path length must
+  track the wheel centre's — which is what the `run` figures above show the old code violating.
+- **Not used, and recorded because it looked convincing:** `dot(carPos - wheelCentroid, nrm)`,
+  i.e. "the body is above the wheels, so that resolves the sign". AC's car origin sits *in* the
+  wheel-centre plane — median -0.035 m on t180, 5,323 of 7,728 frames negative — so the quantity
+  is noise around zero and a test built on it would have passed for the wrong reason.
+
 ## 2026-07-31 — a stand-in track from the replay's own wheels, and three things the spec got wrong
 
 The symptom: on a machine with no Assetto Corsa install, a sample replay renders the car and
