@@ -1,5 +1,62 @@
 # Changelog
 
+## 2026-07-31 — a stand-in track from the replay's own wheels, and three things the spec got wrong
+
+The symptom: on a machine with no Assetto Corsa install, a sample replay renders the car and
+the line over empty space. The real track is a 111.7 MB `.kn5` that cannot live in this repo,
+and `samples/TRACK_FROM_REPLAY.md` has specced the way out since 2026-07-24 — the four
+wheel-centre world positions in every frame are contact patches on the actual tarmac, so
+dropping them by the tyre radius along `-nrm` gives points *on the road*, banking included.
+Built now. The spec was right about the approach and wrong about three of its own
+expectations; the measurements are below and the spec carries a dated correction.
+
+### Added
+- **`ui/trackgen.js`** — pure geometry, no GL, so it runs under node. `buildTrackMesh(runs)`
+  ribbons the driven corridor into `pos/nrm/uv/idx` in exactly the shape `makeGroup` takes, so
+  the stand-in uploads through the same factory the kn5 path uses and the shadow passes, the
+  road shader, the edge index and the contact queries all work on it unchanged. Takes an array
+  of runs, so every loaded replay unions into one surface.
+- **`buildStandInTrack()` / `freeStandInTrack()` in `loaders.js`**, and a **stand-in track**
+  button. It refuses when a real track is loaded, and a real kn5 arriving afterwards frees
+  exactly the stand-in group rather than going through `resetTrackScene()`, which would take
+  the car model with it.
+- **`test_trackgen.js`, `test_standin.js`** — 43 tests pass. Both were mutation-checked rather
+  than trusted green: reverting the tyre-radius drop, forcing the normal skyward, inverting the
+  winding, bridging teleports, dropping the distance resampling, removing either free, removing
+  the real-track guard, and dropping the comparison runs each turn the suite red.
+
+### Measured — where the spec's own expectations did not survive
+- **The union-of-laps lever is nearly absent from the shipped samples.** The spec calls using
+  every lap "the single biggest quality lever here, and it's free", on the belief that the
+  test-track replay holds several laps on different lines. It holds **two line crossings — one
+  complete lap**, and so does centrifuge; `samples/README.md` already corrected this on
+  2026-07-25 and the spec was never updated. Only 10.6% of the 4 m cells the car visits are
+  revisited on a later pass. The union support is still there and still free, it is just worth
+  much less than advertised until a second replay is loaded.
+- **Resampling by distance cannot do what the spec asks of it.** It expects the step to stop
+  "slow corners getting dense strips and straights sparse ones". At 15 ms frames both samples
+  step 1.06–2.38 m (t180) and 1.72–3.96 m (centrifuge) between frames — already coarser than
+  any sane step, varying only about 2:1, and nothing interpolates, so a strip can never be
+  *finer* than its frames. What the step actually earns: t180 holds 105 frames stepping under
+  5 mm, the car sitting still before the run, which without it become zero-area triangles.
+- **Widening is less of a guess than the spec says.** It calls a plausible road width "a
+  guess", and the tarmac's real ~12 m would be. But where two passes cross the same ground on
+  different lines with matching heading, their lateral separation is measurable: median 1.98 m
+  (t180) and 2.72 m (centrifuge), with an along-travel offset five times smaller, which is the
+  check that these are the same place and not two points nose to tail. Two 1.8 m corridors 2 m
+  apart span 3.8 m of used tarmac, so `STANDIN_WIDEN_M = 1.0` reproduces the width the driving
+  demonstrably used and no more. The tail of that distribution reaches 9 m and is **not** spent,
+  because nothing here can tell a wide line from a pit lane running parallel.
+
+### Found, not fixed — `buildTireMarkMesh` on inverted surfaces
+`upAt()` in `carrender.js` forces the road normal skyward, commented "ex.nrm sign is
+unreliable". On centrifuge **1,313 frames of 16,577 (7.92%) legitimately have `nrm.y < 0`** —
+the car is past vertical, which is the case that replay exists to exercise. Since
+`contact = W - up * r`, a flipped `up` puts the skid-mark contact patch a full tyre *diameter*
+(0.66 m) on the wrong side of the tarmac there. Measured in the data, not seen on screen, and
+left alone as outside this change. `trackgen.js` deliberately does not copy the shortcut, and
+`test_trackgen.js` fails with 1,313 wrong sections if it is ever reinstated.
+
 ## 2026-07-27 — `covgap.js`: nine defects from review, four of them false-clean
 
 Reviewed independently and measured rather than read. Four failed in the direction the tool

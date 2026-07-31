@@ -209,6 +209,10 @@ async function loadTrackBuffers(items) { // items: [{name, ab}]
       } catch (e) { console.warn("track lights unavailable:", e); }
     }
 
+    // a real track supersedes a stand-in built from wheel data — free exactly that group, or
+    // its buffers leak and it keeps drawing under the real road
+    if (allGroups.length || roadChunks.length) freeStandInTrack();
+
     if (allGroups.length) {
       allGroups.sort((a, b) => (a.translucent ? 1 : 0) - (b.translucent ? 1 : 0));
       // whole-scene bounds, before the bake releases anything — the shadow reach needs them
@@ -292,6 +296,87 @@ function loadTrack(file) {
   file.arrayBuffer().then(ab => loadTrackBuffers([{ name: file.name, ab }]));
 }
 
+/* ── the stand-in track ────────────────────────────────────────────────────────────
+ *
+ * A surface built from the replay's own wheel data, for a machine with no Assetto Corsa
+ * install: the real track is a 111.7 MB kn5 that cannot live in this repo, so without it a
+ * sample replay renders the car and the line over empty space. TrackGen turns the recorded
+ * wheel contact patches into a ribbon; this uploads it through the same makeGroup factory the
+ * kn5 path uses, so the shadow passes, the road shader, the edge index and the contact
+ * queries all work on it unchanged. See samples/TRACK_FROM_REPLAY.md for what it cannot do —
+ * chiefly that there is no scenery in telemetry and there never will be.
+ */
+
+/* Metres added to EACH side of the 1.80 m driven corridor.
+ *
+ * The spec calls widening to a plausible road width a guess, and widening to the tarmac's
+ * real ~12 m would be. This is not that number: it is derived from the one thing the replay
+ * can actually measure about width. Where two passes cross the same ground on different
+ * lines with matching heading, their lateral separation has a median of 1.98 m (t180) and
+ * 2.72 m (centrifuge) — see TrackGen.measureLineSpread. Two 1.8 m corridors whose centres
+ * are 2 m apart span 3.8 m of used tarmac, so 1 m a side reproduces the width the driving
+ * demonstrably used and no more. The slack is left on the unmeasured side, which is the real
+ * road: the tail of that distribution reaches 9 m, but nothing here can tell a wide line from
+ * a pit lane running parallel, so the tail is not evidence and is not spent. */
+const STANDIN_WIDEN_M = 1.0;
+const STANDIN_RGB = [96, 98, 104];   // unlit asphalt grey; there is no diffuse texture to sample
+
+let standInGroup = null;   // the stand-in's own group, so a real track can free exactly it
+
+/* Free only the stand-in, leaving the car model alone — resetTrackScene() is the full
+ * teardown and takes the car with it, which is wrong when a real kn5 arrives afterwards. */
+function freeStandInTrack() {
+  if (!standInGroup) return;
+  gl.deleteBuffer(standInGroup.posBuf); gl.deleteBuffer(standInGroup.nrmBuf);
+  gl.deleteBuffer(standInGroup.uvBuf); gl.deleteBuffer(standInGroup.idxBuf);
+  if (standInGroup.tex) gl.deleteTexture(standInGroup.tex);
+  if (sceneGroups) sceneGroups = sceneGroups.filter(g => g !== standInGroup);
+  if (sceneGroups && !sceneGroups.length) sceneGroups = null;
+  standInGroup = null;
+}
+
+async function buildStandInTrack(opts) {
+  const fi = document.getElementById("fileinfo");
+  if (!ex) { chipTrack().textContent = "open a replay first — the stand-in surface is built from its wheel data"; return; }
+  if (sceneGroups && !standInGroup) { chipTrack().textContent = "a real track is loaded — the stand-in is only for machines without one"; return; }
+  if (bufs.trackIdxN) { chipTrack().textContent = "a road mesh is already loaded"; return; }
+  const prev = fi.textContent;
+  try {
+    freeStandInTrack();
+    const t0 = performance.now();
+    // every loaded run, not just the reference car: separate passes union into one surface,
+    // which is the only free coverage lever this approach has
+    const runs = [ex].concat(typeof compareRuns !== "undefined" ? compareRuns.map(r => r.ex) : []);
+    const mesh = TrackGen.buildTrackMesh(runs, Object.assign({ widen: STANDIN_WIDEN_M }, opts || {}));
+    if (!mesh.triCount) throw new Error("this replay has no usable wheel quads to build from");
+
+    standInGroup = await makeGroup(
+      { pos: mesh.pos, nrm: mesh.nrm, uv: mesh.uv, idx: mesh.idx, centre: mesh.centre, radius: mesh.radius, triCount: mesh.triCount },
+      { name: "stand-in road" }, {}, STANDIN_RGB, {});
+    sceneGroups = [standInGroup];
+    sceneAABB = mesh.aabb;
+    trackAABB = { cx: mesh.centre[0], cy: mesh.centre[1], cz: mesh.centre[2], radius: mesh.radius };
+    staticBakeTime = null;   // the whole-track shadow bake was sized for a different world
+
+    try {
+      edgeIndex = RoadEdge.buildEdgeIndex(mesh.pos, mesh.idx);
+      // the ribbon IS the road surface here, so the camera collider and the smoke collider
+      // read the same mesh — there is no environment geometry to separate them
+      worldColl = buildWorldCollider(mesh.pos, mesh.idx);
+      smokeColl = buildWorldCollider(mesh.pos, mesh.idx, 3, 4096);
+    } catch (e) { edgeIndex = null; worldColl = null; smokeColl = null; console.warn("stand-in index/collider failed:", e); }
+
+    buildGeometry();   // the line ribbon shrinks to car width now that there is a surface
+    const secs = ((performance.now() - t0) / 1000).toFixed(1);
+    fi.textContent = prev + ` · stand-in track: ${mesh.triCount.toLocaleString()} tris from ${runs.length} run(s), ${mesh.strips} strip(s) (${secs}s)`;
+    chipTrack().textContent =
+      `STAND-IN TRACK — the ${(1.8 + 2 * STANDIN_WIDEN_M).toFixed(1)} m corridor these wheels drove, not the road. No kerbs, barriers or grandstands: none of that is in telemetry.`;
+  } catch (err) {
+    fi.textContent = prev;
+    chipTrack().textContent = "stand-in track failed: " + err.message;
+  }
+}
+
 // clear the prior track's scene + GPU buffers before loading another, or they
 // stack (bug: open track A, then B → both rendered at once)
 function resetTrackScene() {
@@ -307,6 +392,7 @@ function resetTrackScene() {
     }
     sceneGroups = null;
   }
+  standInGroup = null;   // its buffers went with the loop above; drop the dangling reference
   teardownTreeSys();   // VAOs, mesh + instance buffers, atlases — one site, complete
   sceneAABB = null;   // bounds belong to the track that was unloaded, not the next one
   trackLights = [];   // lamps belong to the track that was unloaded, not the next one

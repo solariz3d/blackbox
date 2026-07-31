@@ -4,13 +4,15 @@
 a static web frontend. See `README.md` for what it does; this file is the things that will
 otherwise cost you an hour.
 
-## Available work — pick this up if you're looking for it
+## The stand-in track
 
-**`samples/TRACK_FROM_REPLAY.md`** — build a stand-in track surface from a replay's own
-wheel data, so the app is usable on a machine with no Assetto Corsa install. Specced, not
-built. The data (four wheel-centre world positions per frame + road normal) is already in
-`extractCar()`. Read that file before starting; it records which decisions are the
-interesting ones and what the approach genuinely cannot do.
+No Assetto Corsa install, or no track for this replay? **stand-in track** builds a surface
+from the replay's own wheel data — `ui/trackgen.js` (pure, node-testable) ribbons the driven
+corridor, `buildStandInTrack()` in `loaders.js` uploads it through the same `makeGroup` the
+kn5 path uses. It is the driven corridor, not the road, and there is no scenery in telemetry
+and never will be — so **nothing shadow-related can be reproduced on it**, which rules out a
+whole category of use. `samples/TRACK_FROM_REPLAY.md` is the spec plus what the build measured
+against it; read the bottom section before trusting any number in the top one.
 
 ## Architecture
 
@@ -46,7 +48,7 @@ node runtests.js glow lamp    # only tests whose filename contains one of these
 status of the LAST test, not the worst one — on 2026-07-27 a loop printed a failure, exited 0,
 and a commit went out on top of a red test that had been printed to screen and read past.
 
-**All 40 tests currently pass.** The note that used to sit here — `test_kn5.js`,
+**All 43 tests currently pass.** The note that used to sit here — `test_kn5.js`,
 `test_kn5scene.js`, `test_kn5tex.js`, `test_lateral.js`, `test_roadedge.js`, `test_twolines.js`
 and `test_edgecoach.js` are broken with `Cannot find module './kn5.js'`, `test_parse.js` needs
 an argument — was true before the module split was cleaned up and is not any more. It is

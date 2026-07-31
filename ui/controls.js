@@ -472,4 +472,5 @@ document.getElementById("btnTracksDir").addEventListener("click", async () => {
     else chipTrack().textContent = "tracks folder saved — future replays auto-load their track";
   } catch (e) { /* user cancelled */ }
 });
+document.getElementById("btnStandIn").addEventListener("click", () => buildStandInTrack());
 
