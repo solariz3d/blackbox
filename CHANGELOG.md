@@ -1,5 +1,51 @@
 # Changelog
 
+## 2026-08-01 — two assertions in the suite could never have failed, and now something says so
+
+The symptom: nothing failed. That is the problem. `test_markfade.js:64` asserts
+`Math.abs(oldFrames * (1/30) - oldFrames * (1/90)) > 1` where `oldFrames` is a local
+`const 900` — a constant expression. It was true before the change it documents, it is true
+now, and no edit to any shipped file can make it fail. Its neighbour at `:59` is the same shape.
+Both were written to make a real regression visible, both sit under a comment that describes
+that regression accurately, and both count toward "the suite passes". Nothing in the repo could
+say out loud that they constrain nothing — the same gap covgap was built for, one level up:
+covgap says whether a test REACHES your code, and nothing said whether the assertion inside it
+would notice if your code changed.
+
+### Added
+- **`demogap.js`** — which assertions have ever been observed discriminating anything. It copies
+  the repo to a temp dir (the working tree is never written to), hooks each test's own
+  `ok()`/`check()` helper so every call site is recorded pass or fail with its line, and runs the
+  test three ways: as-is, with the files it reads emptied, with those files saturated, and then
+  under one-point mutants — a number, a comparison, an identifier, a deleted statement, a deleted
+  function — placed inside the functions covgap says that test reaches.
+- **Two referent legs, not one, and that is the load-bearing part.** Emptying a file makes every
+  assertion of *absence* pass for free: the first version indicted `test_markfade.js:39`,
+  `ok(!/MARK_FADE_FRAMES/.test(SMOKE))`, which is a sound guard that fires the moment the banned
+  constant returns. A probe that only pushes one way clears every guard pointing that way while
+  looking like it tested them. So the second leg pushes the other: the source plus every string
+  literal the test itself contains. An INERT verdict now needs a guard to sit still through both
+  extremes, and needs both legs to have actually reached it — a leg that crashed first does not
+  get a vote.
+- **`test_demogap.js`** — a fixture repo with one assertion of each kind whose right answer is
+  known in advance, including the negative control: a sound negative assertion must NOT be
+  indicted. Delete the saturated leg from `demogap.js` and that assertion goes red.
+
+### Changed
+- **`CLAUDE.md`** — `demogap.js` named beside `covgap.js` in Tests, with the distinction stated
+  (reached vs demonstrated) and the honest bound on UNDEMONSTRATED, which is a lead and not a
+  verdict. Test count 44 → 45.
+
+### Known limits, stated rather than discovered later
+- 14 of the 45 test files have no hookable helper and are reported UNREADABLE, in their own count,
+  never folded into the totals. Their guards are not measured at all.
+- Data under `samples/` is not perturbed — a replay file is input, not the code under test — so a
+  guard about recording content reads UNDEMONSTRATED and should.
+- A mutant that makes a test throw fires no assertion and is counted as a crash, never as a
+  demonstration. The crashed count is printed so you can see how much of the budget bought nothing.
+- `--all` over this suite is minutes, not seconds, and `test_demogap.js` dominates it because its
+  own fixture spawns processes. Default scope is the diff, like covgap.
+
 ## 2026-07-31 — skid marks stop punching through the tarmac where the road banks past vertical
 
 The symptom: on centrifuge, wherever the car goes past vertical, the tyre marks are laid a full

@@ -48,7 +48,7 @@ node runtests.js glow lamp    # only tests whose filename contains one of these
 status of the LAST test, not the worst one — on 2026-07-27 a loop printed a failure, exited 0,
 and a commit went out on top of a red test that had been printed to screen and read past.
 
-**All 44 tests currently pass.** The note that used to sit here — `test_kn5.js`,
+**All 45 tests currently pass.** The note that used to sit here — `test_kn5.js`,
 `test_kn5scene.js`, `test_kn5tex.js`, `test_lateral.js`, `test_roadedge.js`, `test_twolines.js`
 and `test_edgecoach.js` are broken with `Cannot find module './kn5.js'`, `test_parse.js` needs
 an argument — was true before the module split was cleaned up and is not any more. It is
@@ -60,6 +60,16 @@ change touched that no test reaches — green here means "you didn't break anyth
 covgap is what says whether it also means anything about what you just wrote. `--ref HEAD~1`
 for a commit, `--files ui/x.js` to audit one file, `--strict` to make it exit 1. It prints
 what its own answer does and does not claim; read that before acting on it.
+
+**And when you ADD a test, run `node demogap.js`.** covgap answers *reached* — which changed
+functions no test touches. demogap answers *demonstrated* — which assertions have ever been seen
+going red when the code they read was perturbed. It scopes to the guards your diff touched, so
+it is seconds; `--all` is an audit and takes minutes. The class to act on is INERT: an assertion
+that stayed green with its referent both emptied and saturated is not about the shipped source
+at all. Two such assertions were sitting in `test_markfade.js`, written to make a real regression
+visible and computing their answer entirely from the test's own locals. UNDEMONSTRATED is a lead,
+not a verdict — it means this mutant set did not move the guard, which is also true of sound
+guards nobody can perturb. It prints that distinction at the end of every run.
 
 Code that lives in `index.html`'s inline script, or in a classic script with no exports,
 is still testable: evaluate it in a `vm` sandbox with stub globals (`test_ghostmatrix.js`
