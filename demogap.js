@@ -83,7 +83,11 @@
  * LIMITS, STATED.
  *   - It hooks a test's own `ok`/`check` helper by name and keys on that helper raising the
  *     file's `fails` counter. A test that asserts some other way is UNREADABLE, not covered.
- *     14 of this repo's 45 test files are UNREADABLE today for that reason.
+ *     16 of this repo's 45 test files are UNREADABLE today for that reason — 9 with no hookable
+ *     helper, 7 where hooking changes the test's own output. That figure is what `--all` prints;
+ *     an earlier draft of this line said 14, carried over from a throwaway script that only
+ *     checked whether a helper existed and never ran the behaviour-preservation check. A number
+ *     in a comment that the tool itself did not print is the defect this file is about.
  *   - The referent of a test is inferred: every local file it requires, plus the whole ui tree
  *     if it uses testenv's uiSource/uiFunction. Data it reads from samples/ is NOT perturbed,
  *     so a guard about replay content will read UNDEMONSTRATED and should.
@@ -248,6 +252,67 @@ function referentOf(dir, testFile) {
  * and pass; negative ones now find the pattern they forbid and fire. A guard that sits still
  * through both the source vanishing and the source acquiring every string its own test knows
  * about is a much better candidate for inert than one that survived only the empty leg. */
+/* A string the given regex SOURCE actually matches, or null.
+ *
+ * The saturated leg exists to fire assertions of absence, and most of those are regexes. Putting
+ * the regex's own source text into the file does not do it: `/budget \$\{frameMsEMA/` matches
+ * `budget ${frameMsEMA`, and the source spells that with backslashes, which the pattern will
+ * never match. `test_vsync.js:93` is a sound negative assertion on the raw ui source and it came
+ * out INERT for exactly this reason — an over-claim in the one class that is supposed to be the
+ * strong one.
+ *
+ * So synthesise a sample, then CHECK IT. The rewrite below is a crude approximation of a regex
+ * inverse and it is wrong on plenty of patterns — but nothing is used unless the pattern really
+ * matches it, so being wrong costs a rescued guard, never a false demonstration. That check is
+ * the whole reason this is allowed to be approximate. */
+function sampleMatching(source) {
+  /* Scanned, not a chain of replaces. The chain stripped metacharacters BEFORE unescaping, so
+   * it also stripped the escaped ones — `\|\| 48;` lost the pipes it was trying to keep, and
+   * `\(100 \* ` lost its parenthesis. A single left-to-right pass is the only way to tell a
+   * structural `(` from a literal `\(`, because that distinction is positional. */
+  let out = "";
+  try {
+    for (let i = 0; i < source.length; i++) {
+      const c = source[i];
+      const q = source[i + 2] === "*" || source[i + 2] === "?";
+      if (c === "\\") {
+        const n = source[++i];
+        if (n === "s") { out += q ? "" : " "; }
+        else if (n === "d") { out += q ? "" : "0"; }
+        else if (n === "w") { out += q ? "" : "x"; }
+        else if (n === "b" || n === "B") { /* zero-width */ }
+        else if (n === "S") { out += q ? "" : "x"; }
+        else if (n === "W" || n === "D") { out += q ? "" : "-"; }
+        else out += n;                                     // an escaped literal is that literal
+        if ("*+?".includes(source[i + 1])) i++;
+        continue;
+      }
+      if (c === "[") {
+        let j = i + 1, neg = source[j] === "^";
+        if (neg) j++;
+        let first = null;
+        for (; j < source.length && source[j] !== "]"; j++) {
+          if (source[j] === "\\") { if (first === null) first = source[j + 1]; j++; continue; }
+          if (first === null) first = source[j];
+        }
+        const quant = source[j + 1];
+        if (quant !== "*" && quant !== "?") out += neg ? "x" : (first === null ? "" : first);
+        i = j + ("*+?".includes(quant) ? 1 : 0);
+        continue;
+      }
+      if (c === "{") { while (i < source.length && source[i] !== "}") i++; continue; }
+      if (c === "(" || c === ")" || c === "|" || c === "^" || c === "$") {
+        if (c === "(" && source[i + 1] === "?") i += 2;     // (?: (?= (?!
+        continue;
+      }
+      if (c === ".") { out += ("*?".includes(source[i + 1]) ? "" : "x"); if ("*+?".includes(source[i + 1])) i++; continue; }
+      if ("*+?".includes(c)) continue;                      // a quantifier on the char just emitted
+      out += c;
+    }
+    return new RegExp(source).test(out) ? out : null;
+  } catch { return null; }
+}
+
 function noiseFor(src, testSrc) {
   const { literals } = cov.lex(testSrc);
   const bits = [];
@@ -255,18 +320,38 @@ function noiseFor(src, testSrc) {
     if (lit.kind === "comment") continue;
     const t = String(lit.text);
     if (t.length && t.length < 200) bits.push(t);
+    if (lit.kind === "regex" && t.length < 200) {
+      const sample = sampleMatching(t);
+      if (sample && sample.trim()) bits.push(sample);
+    }
   }
-  /* Appended as a STRING LITERAL, not as raw text, and the reason is measured. Raw text turns
-   * the file into a syntax error, so any test that `require`s its referent throws on load, no
-   * assertion runs, and the leg votes on nothing — which silently withdraws the whole INERT
-   * class from every test that imports rather than greps. A string literal keeps the file
-   * loadable AND leaves the tokens where a lexical guard reading the shipped text will find
-   * them; `decomment()` strips comments, not strings, so the tokens survive that too.
+  /* Appended TWICE, in two forms, because either one alone is blind to half the guards.
    *
-   * The cost, stated: JSON escaping doubles backslashes, so a guard whose pattern is spelled
-   * with them (`/markLoc\.fade,\s*\d/`) will not be matched by this leg and stays
-   * UNDEMONSTRATED. Under-claiming, which is the direction to fail in. */
-  return src + "\n/* demogap: saturated leg */\nvar __dg_saturate = " + JSON.stringify(bits.join("\n")) + ";\n";
+   * As a STRING LITERAL: raw text turns the file into a syntax error, so any test that
+   * `require`s its referent throws on load, no assertion runs, and the leg votes on nothing —
+   * silently withdrawing the whole INERT class from every test that imports rather than greps.
+   * A string literal keeps the file loadable, and `decomment()` strips comments and not strings,
+   * so the tokens survive a decommented read too.
+   *
+   * As a raw COMMENT BLOCK: JSON escaping doubles backslashes, so a pattern spelled with them —
+   * `/budget \$\{frameMsEMA/`, and most regexes are — is NOT matched by the string form. That
+   * was first written down here as under-claiming, and checking it against the suite showed the
+   * opposite: `test_vsync.js:93` is a sound negative assertion on the raw ui source that came
+   * out INERT, which is an over-claim in the one class that is supposed to be the strong one.
+   * The comment block carries those bytes literally, for the guards that grep raw source.
+   *
+   * `*​/` inside a literal would close the block early, so it is broken up rather than dropped —
+   * removing it would quietly change the pattern the leg is testing. */
+  const raw = bits.join("\n").split("*/").join("*\\/");
+  /* ONE DECLARATION PER LITERAL, not one big joined string. Several tests strip comments before
+   * searching, with the repo's usual `decomment` — which also strips `//` to end of LINE. With
+   * every literal joined into a single physical line, one bit containing `//` silently deleted
+   * every bit after it, and `test_markfade.js:39` went back to being called INERT. The token was
+   * in the file and gone by the time the assertion looked. */
+  const decls = bits.map((b, i) => "var __dg_s" + i + " = " + JSON.stringify(b) + ";").join("\n");
+  return src +
+         "\n/* demogap: saturated leg (raw)\n" + raw + "\n*/\n" +
+         decls + "\n";
 }
 
 /* ------------------------------------------------------------------ *
@@ -425,6 +510,17 @@ function prepare(dir, file) {
   const plain = runOnce(dir, file, false);
   const hooked = runOnce(dir, file, true);
   if (plain.code !== hooked.code || plain.out !== hooked.out) {
+    /* Before blaming the hook, check that the test says the same thing twice unhooked.
+     * Comparing one run against one run cannot tell a perturbed test from a nondeterministic
+     * one, and reporting the wrong cause sends someone to read a hook that is fine. No file in
+     * this suite currently takes this branch — all sixteen UNREADABLE files are reproducibly
+     * so — which is worth stating rather than leaving the branch looking load-bearing. Both
+     * outcomes are UNREADABLE and excluded either way; only the stated reason differs, and the
+     * reason is the part a reader acts on. */
+    const again = runOnce(dir, file, false);
+    if (again.code !== plain.code || again.out !== plain.out) {
+      return { unreadable: "the test does not produce the same output twice — not measurable, and not the hook's doing" };
+    }
     return { unreadable: `hooking changed the test's own behaviour (exit ${plain.code} -> ${hooked.code})` };
   }
   if (plain.code !== 0) return { unreadable: `baseline is not green (exit ${plain.code})` };
@@ -621,16 +717,23 @@ const inRanges = (line, ranges) => !ranges || ranges.some(([a, b]) => line >= a 
  * 8. report
  * ------------------------------------------------------------------ */
 
+/* Printed every run, on purpose, and kept in step with the header at the top of this file. A
+ * tool that grades other people's checks and lets its own stated meaning drift is the defect it
+ * is looking for, one level up — and this block was stale for one build after the second leg
+ * landed, which is how the mistake gets made. */
 const CONTRACT = [
   "DEMONSTRATED   seen going red under a one-point change to code it reads. It discriminates",
   "               SOMETHING; whether it discriminates the RIGHT thing is not measured here —",
   "               the mutant that fired it is printed so you can judge that yourself.",
-  "COARSE         only fired when its referent was emptied entirely. It reads the source; no",
-  "               realistic change we tried moved it.",
-  "INERT          ran with its referent emptied and passed. Its value does not depend on the",
-  "               shipped source at all. This is the one close to a proof.",
-  "UNDEMONSTRATED ran green throughout and the blank leg could not reach it. A fact about THIS",
-  "               mutant set, not a verdict: a sound guard we cannot perturb lands here too.",
+  "COARSE         no point mutant moved it, but it did fire in one of the two referent legs.",
+  "               It reads the source; nothing realistic we tried moved it.",
+  "INERT          ran in BOTH referent legs — the code it reads emptied, then saturated with",
+  "               every literal its own test contains — and passed both times. The strongest",
+  "               class here, and still two samples at the extremes rather than a proof.",
+  "INERT*         the same, in a file whose OTHER assertions do read the source. The mirror-test",
+  "               shape: inert alone, anchored by a sibling. Marked, not cleared.",
+  "UNDEMONSTRATED ran green throughout and the legs could not reach it. A fact about THIS mutant",
+  "               set, not a verdict: a sound guard we cannot perturb lands here too.",
   "NOT-RUN        never executed in the baseline. Not counted as passing.",
   "UNREADABLE     helper not hookable, or hooking changed the test's output. Not in the numbers.",
 ];
@@ -720,12 +823,31 @@ function print(results, scopeLabel, opt) {
     console.log("  " + r.file + "   " + r.mutants + " mutants" +
                 (r.crashed ? `, ${r.crashed} crashed the test (bought nothing)` : "") +
                 (r.timedOut ? `, ${r.timedOut} killed at the ${(r.capMs / 1000).toFixed(1)}s cap` : ""));
+    /* A MIRROR TEST'S INERTNESS IS DISTRIBUTED, and marking it is the difference between a
+     * finding and a list nobody reads. Several tests here re-implement logic locally because
+     * the real code lives inside a GL draw call, then tie the mirror to reality with a separate
+     * assertion that reads the shipped source (covgap's header describes exactly this). Every
+     * assertion against the local mirror is inert ON ITS OWN — emptying the ui tree cannot move
+     * it — and the file is not, because a sibling carries the anchor. The first suite audit
+     * reported 78 flat INERT lines, most of them that shape.
+     *
+     * So they are marked, not cleared. A pin on one function does not anchor a mirror of
+     * another, and the reader still has to check that the anchor covers what the mirror
+     * assumes — which is a real question, and one they can now find. */
+    const anchors = r.guards.filter(g => g.state === "DEMONSTRATED" || g.state === "COARSE").length;
     const sorted = [...r.guards].sort((a, b) => (RANK[a.state] - RANK[b.state]) || (a.line - b.line));
+    let marked = 0;
     for (const g of sorted) {
       tally[g.state]++;
-      const head = "    " + g.state.padEnd(15) + (r.file + ":" + g.line).padEnd(30);
+      const anchored = g.state === "INERT" && anchors > 0;
+      if (anchored) marked++;
+      const head = "    " + (g.state + (anchored ? "*" : "")).padEnd(15) + (r.file + ":" + g.line).padEnd(30);
       if (g.state === "DEMONSTRATED") console.log(head + "by " + g.by);
       else console.log(head + textOf(r.file, g.line).slice(0, 76));
+    }
+    if (marked) {
+      console.log(`    * inert on its own, in a file whose other ${anchors} assertion(s) DO read the source —`);
+      console.log("      the mirror-test shape. Check that the anchor covers what the mirror assumes.");
     }
     console.log("");
   }
@@ -749,6 +871,6 @@ function print(results, scopeLabel, opt) {
 
 if (require.main === module) main(process.argv.slice(2));
 
-module.exports = { instrument, referentOf, noiseFor, sitesIn, fnDeletionSites, pick, pickBalanced,
+module.exports = { instrument, referentOf, noiseFor, sampleMatching, sitesIn, fnDeletionSites, pick, pickBalanced,
                    parseArgv, changedTestLines, buildScope, inRanges, measure, workingCopy,
                    runBudgetMs, FLIP, CONTRACT, RANK };

@@ -193,6 +193,42 @@ ok(state[LINE.declared] === "DEMONSTRATED" || state[LINE.declared] === "COARSE",
   const noise = D.noiseFor("const a = 1;\n", 'ok(!/FORBIDDEN/.test(S), "nope");\n');
   ok(noise.includes("const a = 1;"), "the real source survives in the saturated leg");
   ok(noise.includes("FORBIDDEN"), "and the pattern the test forbids is now present in it");
+
+  /* A regex's SOURCE TEXT is not a string the regex matches — `/a\.b/` matches `a.b`, and the
+   * source spells it `a\.b`. Putting the source in the file rescues nothing, and a sound
+   * negative assertion written as a regex then lands in INERT, which is an over-claim in the
+   * one class that has to be trustworthy. `test_vsync.js:93` was exactly that. */
+  const pats = [
+    ["markLoc\\.fade,\\s*\\d", "an escaped dot and a digit class"],
+    ["BIGCAP = bigCapOverride \\|\\| 48;", "escaped pipes, which a naive metachar strip removes"],
+    ["budget \\$\\{frameMsEMA \\? \\(100 \\* frameMsEMA", "escaped $ { ? ( * together"],
+    ["for \\(let cz = r0; cz <= r1; cz\\+\\+\\)", "escaped parens and plusses"],
+  ];
+  for (const [p, what] of pats) {
+    const s = D.sampleMatching(p);
+    ok(s !== null && new RegExp(p).test(s), `a matching sample is synthesised for ${what}`);
+  }
+  /* The synthesiser is a crude regex inverse and WILL be wrong on patterns nobody has met yet.
+   * That is affordable only because nothing is used unless the pattern really matches it — a
+   * wrong guess costs a rescued guard, never a false demonstration. */
+  ok(D.sampleMatching("(?<=x)(?!y)[[[") === null, "an unparseable pattern yields no sample rather than a wrong one");
+  const backref = D.sampleMatching("(a)\\1\\1x");
+  ok(backref === null || new RegExp("(a)\\1\\1x").test(backref),
+     "and anything it does return is verified against the real pattern before use");
+
+  const noisy = D.noiseFor("var q = 1;\n", 'ok(!/no\\.such\\.thing/.test(S), "x");\n');
+  ok(noisy.includes("no.such.thing"), "and the saturated leg carries the MATCHING form, not the pattern's source");
+
+  /* Several tests in this repo strip comments before searching, and the repo's `decomment` also
+   * strips `//` to end of LINE. With every literal joined onto one physical line, a single bit
+   * containing `//` deleted every bit after it — the token was in the file and gone by the time
+   * the assertion looked, and a sound negative guard went back to reading INERT. */
+  const decomment = s => s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const withSlashes = D.noiseFor("var q = 1;\n",
+    'const u = "http://example.com/x"; ok(!/NEEDLE/.test(S), "y");\n');
+  ok(withSlashes.includes("NEEDLE"), "the saturated leg carries the token");
+  ok(decomment(withSlashes).includes("NEEDLE"),
+     "AND IT SURVIVES decomment, with a `//` sitting in another literal beside it");
 }
 
 /* ---- 9. flag interactions ---- */
