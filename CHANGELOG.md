@@ -37,8 +37,12 @@ would notice if your code changed.
   verdict. Test count 44 → 45.
 
 ### Known limits, stated rather than discovered later
-- 14 of the 45 test files have no hookable helper and are reported UNREADABLE, in their own count,
-  never folded into the totals. Their guards are not measured at all.
+- 16 of the 45 test files are reported UNREADABLE — 9 with no hookable helper, 7 where hooking
+  changes the test's own output — in their own count, never folded into the totals. Their guards
+  are not measured at all.
+- The suite audit, for scale: 73 DEMONSTRATED · 46 COARSE · 72 INERT · 474 UNDEMONSTRATED of 665
+  guards, 5m03s. Every one of the 72 is INERT* — inert alone, in a file whose other assertions do
+  read the source. Nothing in this suite is inert in a file with no anchor.
 - Data under `samples/` is not perturbed — a replay file is input, not the code under test — so a
   guard about recording content reads UNDEMONSTRATED and should.
 - A mutant that makes a test throw fires no assertion and is counted as a crash, never as a
