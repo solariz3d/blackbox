@@ -102,12 +102,89 @@ console.log("the rest of the rig's smoothing was already rate-independent");
      `whereas a bare per-frame lerp converges far faster at 360 Hz (${n60.toFixed(2)} vs ${n360.toFixed(2)}) — the bug class being avoided`);
 }
 
+console.log("the RELEASE is debounced too — one clear frame must not un-fold the boom");
+{
+  /* The attack filter above was only half the rule. `collideSegment` is an exact
+   * per-triangle raycast along a single infinitely-thin ray, so sweeping it past a picket
+   * fence or a tree line gives hit / miss / hit / miss by construction — that is the
+   * collider being right. With the release unfiltered, every one-frame miss zeroed the
+   * hold, the target snapped back to 1, the next post folded it again, and the eye PUMPED
+   * along the boom at the flicker rate. Perfect frame times throughout.
+   *
+   * Mirrors the shipped rule: hold accumulates on contact, clear accumulates on release,
+   * and only a clear that PERSISTS releases the fold. */
+  const CLEAR_HOLD_S = 0.12;
+  /** returns the fracT series for a hit pattern, mirroring followUpdate */
+  function foldSeries(dt, pattern) {
+    const R = { hitTime: 0, clearTime: 0, lastHit: null };
+    const out = [];
+    for (const hit of pattern) {
+      const rawHit = hit > 0 && hit < 1;
+      if (rawHit) { R.hitTime += dt; R.clearTime = 0; R.lastHit = hit; }
+      else { R.clearTime += dt; if (R.clearTime >= CLEAR_HOLD_S) R.hitTime = 0; }
+      out.push(R.hitTime >= HIT_HOLD_S
+        ? Math.max(0.12, (rawHit ? hit : (R.lastHit != null ? R.lastHit : 1)) * 0.9) : 1);
+    }
+    return out;
+  }
+  /* THE OLD RULE, kept as the contrast so these assertions are visibly non-trivial — and
+   * because it fails in TWO different ways depending on how fast the ray flickers, which is
+   * not obvious and was found by measuring rather than by reading. */
+  function oldSeries(dt, pattern) {
+    const R = { hitTime: 0 }; const out = [];
+    for (const hit of pattern) {
+      const rawHit = hit > 0 && hit < 1;
+      R.hitTime = rawHit ? R.hitTime + dt : 0;          // release was instant
+      out.push(R.hitTime >= HIT_HOLD_S ? Math.max(0.12, hit * 0.9) : 1);
+    }
+    return out;
+  }
+  const dt = 1 / 360;
+  const engage = new Array(Math.round(0.05 / dt)).fill(0.5);
+  const line = (periodFrames, n) => {
+    const p = []; for (let i = 0; i < n; i++) p.push(i % periodFrames === 0 ? -1 : 0.5);
+    return p;
+  };
+  const swingsOf = (t) => t.filter((v, i) => i > 0 && Math.abs(v - t[i - 1]) > 0.2).length;
+  const openOf = (t) => t.filter(v => v === 1).length;
+
+  // REGIME 1 — fast flicker (a miss every 19 ms). Under the old rule the 33 ms attack hold
+  // can never be reached again, so the fold NEVER ENGAGES: the boom simply clips through.
+  {
+    const pat = engage.concat(line(7, 400));
+    const nu = foldSeries(dt, pat).slice(engage.length);
+    const od = oldSeries(dt, pat).slice(engage.length);
+    ok(openOf(od) === od.length, `old rule: fast flicker never folds at all (${openOf(od)}/${od.length} frames un-folded — the boom clips)`);
+    ok(nu.every(v => v < 1), `fixed: the fold stays engaged across the gaps (${openOf(nu)}/${nu.length} un-folded)`);
+  }
+
+  // REGIME 2 — slower flicker (a miss every 125 ms, roughly fence posts at speed). Here the
+  // old rule DOES re-engage between misses, so instead of clipping it PUMPS.
+  {
+    const pat = engage.concat(line(45, 400));
+    const nu = foldSeries(dt, pat).slice(engage.length);
+    const od = oldSeries(dt, pat).slice(engage.length);
+    ok(swingsOf(od) > 10, `old rule: slower flicker pumps the boom (${swingsOf(od)} swings > 0.2, ${openOf(od)}/${od.length} frames snapped fully open)`);
+    ok(swingsOf(nu) === 0, `fixed: no pumping (${swingsOf(nu)} swings)`);
+  }
+
+  // a genuine clear still releases — the filter must not weld the boom in
+  const cleared = foldSeries(dt, engage.concat(new Array(Math.round(0.30 / dt)).fill(-1)));
+  ok(cleared[cleared.length - 1] === 1, "a sustained clear does release the fold");
+  // and it releases at the registered duration, not whenever
+  const brief = foldSeries(dt, engage.concat(new Array(Math.round((CLEAR_HOLD_S - 0.02) / dt)).fill(-1)));
+  ok(brief[brief.length - 1] < 1, "a clear shorter than the hold does NOT release it");
+}
+
 console.log("constants match the shipped source");
 {
   const src = require("./testenv.js").uiSource();
   ok(src.includes("const HIT_HOLD_S = 0.033"), "HIT_HOLD_S present at 0.033 s");
-  ok(src.includes("R.hitTime = rawHit ? (R.hitTime || 0) + dt : 0"),
+  ok(src.includes("const CLEAR_HOLD_S = 0.12"), "CLEAR_HOLD_S present at 0.12 s");
+  ok(/R\.hitTime = \(R\.hitTime \|\| 0\) \+ dt/.test(src),
      "the hold accumulates dt, not frames");
+  ok(/R\.clearTime = \(R\.clearTime \|\| 0\) \+ dt/.test(src),
+     "and the clear accumulates dt as well — the release is filtered, not instant");
   // the STATE, not the word — the comment above the fix names hitFrames deliberately, to
   // record what was wrong, and a test that forbids mentioning it would forbid the
   // explanation along with the bug

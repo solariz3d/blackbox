@@ -230,10 +230,39 @@ function followUpdate(fp, dt) {
    * 33 ms preserves the original intent exactly — two frames at 60 Hz — and now means the
    * same length of time on every display. The rest of this rig was already dt-correct
    * (easeK is 1 - exp(-rate*dt)); this was the one constant counted in frames. */
+  /* THE DEBOUNCE IS SYMMETRIC. It was not, and the missing half produced the same class of
+   * artifact the duration fix above was written to kill.
+   *
+   * `R.hitTime = rawHit ? R.hitTime + dt : 0` filters the ATTACK — a contact must persist
+   * 33 ms before the boom folds — and filters the RELEASE not at all: ONE non-hit frame
+   * zeroed the timer. `collideSegment` is an exact per-triangle raycast along a single
+   * infinitely-thin ray, so sweeping it past a picket fence, a tree line, or barrier posts
+   * gives hit / miss / hit / miss BY CONSTRUCTION. That is the collider being correct.
+   *
+   * The consumer read every one-frame miss as all-clear: target snaps to 1, folds again at
+   * the next post, and the eye PUMPS in and out along the boom. Perfect frame times
+   * throughout — the frames were never slow, the camera was somewhere else, which is the
+   * sentence already written above about the bug that was fixed.
+   *
+   * So the clear must persist too, and the fold holds its last known depth while it does —
+   * otherwise the target still snaps to 1 during the bridging gap and the pump survives.
+   *
+   * CLEAR_HOLD_S = 0.12 s is chosen against the geometry that causes this: at 40 m/s it
+   * bridges 4.8 m, which covers typical post and tree spacing. Its cost is that a genuinely
+   * cleared object stays folded 120 ms longer — small beside the 1.6/s recovery ease already
+   * there (~600 ms), and asymmetric in the safe direction, since staying folded briefly is
+   * invisible while un-folding into an object is a clip. */
   const rawHit = hit > 0 && hit < 1;
   const HIT_HOLD_S = 0.033;
-  R.hitTime = rawHit ? (R.hitTime || 0) + dt : 0;
-  const fracT = R.hitTime >= HIT_HOLD_S ? Math.max(0.12, hit * 0.9) : 1;
+  const CLEAR_HOLD_S = 0.12;
+  if (rawHit) { R.hitTime = (R.hitTime || 0) + dt; R.clearTime = 0; R.lastHit = hit; }
+  else {
+    R.clearTime = (R.clearTime || 0) + dt;
+    if (R.clearTime >= CLEAR_HOLD_S) R.hitTime = 0;
+  }
+  const fracT = R.hitTime >= HIT_HOLD_S
+    ? Math.max(0.12, (rawHit ? hit : (R.lastHit != null ? R.lastHit : 1)) * 0.9)
+    : 1;
   const prevFrac = (R.collFrac == null) ? 1 : R.collFrac;
   const kColl = fracT < prevFrac ? easeK(7.0, dt) : easeK(1.6, dt);   // fold in fast, recover slow
   R.collFrac = (R.collFrac == null) ? fracT : R.collFrac + (fracT - R.collFrac) * kColl;
