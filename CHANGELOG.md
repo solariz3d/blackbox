@@ -1,5 +1,70 @@
 # Changelog
 
+## 2026-08-03 — the frame counter said 360 and the motion was still stepped, because it always would be
+
+The keeper's report was the whole diagnosis: *"when I watch the data it says its locked
+360hz, but it visually will have frame drops."* Two separate things were true at once and
+neither is a throughput problem.
+
+**The counter cannot show a dropped frame.** `index.html:734` smooths frame time with an EMA
+at α = 0.08 — a time constant of roughly twelve frames, ~33 ms at 360 Hz. A single 16 ms
+stall inside a run of 2.8 ms frames moves that average by a fraction of a millisecond. The
+number that *can* see it is already printed beside it: `frameMsWorst`, which resets every
+second. Nothing was wrong with the counter; it was averaging away exactly the event being
+looked for.
+
+**And the motion was stepped for a reason no frame rate fixes.** Replay data arrives at
+66.7 Hz (15 ms). `carModelMatrix` synthesises every render frame in between, and it did so
+**linearly**. A lerp is C0: position comes out continuous, but **velocity is piecewise
+constant and jumps at every sample boundary** — 66.7 kinks a second, with ~5.4 clean render
+frames between each at 360 Hz. The car travels a straight chord, kinks, travels another.
+That reads as stepped motion while the counter honestly reports locked.
+
+The file already showed someone reasoning about this problem and solving half of it: the
+comment above the velocity window says it is interpolated across the sub-frame *"so the steer
+angle — and thus the wheels + exo — is smooth at any refresh, not stepped at the 66 Hz
+frames."* **The steering was made smooth. The position it hangs on was not.**
+
+### Changed
+- **`ui/carrender.js` — position is now a cubic Hermite with Catmull-Rom tangents.** Each
+  segment leaves sample *i* along the tangent estimated from its neighbours and arrives at
+  *i+1* along that sample's tangent, so **the tangent is shared across the boundary and
+  velocity is continuous (C1)**. The kink is gone by construction rather than by tuning.
+  Only position changed: `nrm` and `fwd` stay linear, because they are directions that get
+  re-normalised immediately and bending them is a separate change with separate risks.
+- **Four samples must be real or it falls back to the lerp.** A Hermite spans `i−1 … i+2`, so
+  near either end of the run, or beside any gap frame, the old path is used. A curve is never
+  invented through data that is not there — the existing gap hold is unchanged.
+
+### Added
+- **`test_posesmooth.js`** — measures the defect rather than describing it, with no screen.
+  Drive a synthetic car around a circle at constant speed, sample the pose at 360 Hz, take the
+  discrete second difference of the translation. True circular motion has constant |a|, so
+  **max/mean = 1**; linear interpolation is ~0 inside each segment and spikes at every
+  boundary, so max/mean ≈ the frames-per-sample ratio.
+
+  **Measured before: 5.41. The predicted value was 5.4. Measured after: 1.01.**
+
+  Two more assertions beside it: the path must still *be* the circle (guards against
+  Catmull-Rom overshoot), and interpolation must still hard-stop at a gap.
+
+### Measured, including one nobody predicted
+- **max/mean second difference: 5.41 → 1.01** (a perfect circle is 1.00).
+- **Worst radial error: 1.499 mm → 0.002 mm.** This was not the target. The lerp had been
+  **cutting the chord through every corner** — at 30 m radius it sat 1.5 mm inside the true
+  line at each sample midpoint. So the old path was not merely jerky, it was slightly wrong,
+  and the fix corrects a geometry error while removing the kink.
+- Full suite 45 → **46 passing, 0 failing**.
+
+### What this does NOT address, stated so it is not assumed
+- **Frame pacing is untouched and untested.** If frames render on time and are *presented*
+  unevenly, this change does nothing about it. The discriminator is on the HUD and costs
+  nothing: watch `worst` rather than `fps` during a judder. Spikes to 8–16 ms mean real
+  stalls; flat at ~2.8 ms with visible stutter means pacing, which is a different problem in
+  a different layer.
+- **`carModelMatrix` is now exported** so it can be measured under node, following the
+  precedent set by `buildTireMarkMesh` / `computeWheelSlip`.
+
 ## 2026-08-01 — two assertions in the suite could never have failed, and now something says so
 
 The symptom: nothing failed. That is the problem. `test_markfade.js:64` asserts

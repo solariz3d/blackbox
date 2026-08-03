@@ -22,7 +22,34 @@ function carModelMatrix(fpos, src) {
   const i1 = Math.min(N - 1, i0 + 1);
   const f = E.gap[i1] ? 0 : Math.max(0, Math.min(1, fpos - i0));
   const lp = (A, o) => A[i0 * 3 + o] + (A[i1 * 3 + o] - A[i0 * 3 + o]) * f;
-  const px0 = lp(P, 0), py0 = lp(P, 1), pz0 = lp(P, 2);
+  // POSITION is a cubic Hermite (Catmull-Rom tangents), not a lerp — and the reason is
+  // motion, not accuracy. A lerp is C0: position is continuous, but VELOCITY IS PIECEWISE
+  // CONSTANT and jumps at every replay-sample boundary. At 15 ms samples that is 66.7 kinks
+  // a second with ~5.4 clean render frames between them at 360 Hz, which reads as stepped
+  // motion while the frame counter honestly says locked. Sharing the tangent across the
+  // boundary makes velocity continuous (C1) and the kink is gone by construction.
+  // test_posesmooth.js measures exactly this: max/mean of the second difference over a
+  // constant-speed circle. Linear scores 5.41 — the frames-per-sample ratio, as predicted.
+  // Only position is upgraded: `nrm` and `fwd` stay linear because they are directions that
+  // get re-normalised below, and bending them is a separate change with its own risks.
+  const im = i0 - 1, ip = i1 + 1;
+  // A Hermite spans FOUR samples, so all four must be real. Near a gap or either end we fall
+  // back to the lerp rather than invent a curve through data that is not there.
+  const cSmooth = f > 0 && im >= 0 && ip <= N - 1 && !E.gap[im] && !E.gap[i0] && !E.gap[ip];
+  let px0, py0, pz0;
+  if (cSmooth) {
+    const f2 = f * f, f3 = f2 * f;
+    const h00 = 2 * f3 - 3 * f2 + 1, h10 = f3 - 2 * f2 + f;
+    const h01 = -2 * f3 + 3 * f2,    h11 = f3 - f2;
+    const hp = (A, o) => {
+      const m0 = (A[i1 * 3 + o] - A[im * 3 + o]) * 0.5;   // tangent at i0, from its neighbours
+      const m1 = (A[ip * 3 + o] - A[i0 * 3 + o]) * 0.5;   // tangent at i1, from its neighbours
+      return h00 * A[i0 * 3 + o] + h10 * m0 + h01 * A[i1 * 3 + o] + h11 * m1;
+    };
+    px0 = hp(P, 0); py0 = hp(P, 1); pz0 = hp(P, 2);
+  } else {
+    px0 = lp(P, 0); py0 = lp(P, 1); pz0 = lp(P, 2);
+  }
   // up
   let ux = lp(NM, 0), uy = lp(NM, 1), uz = lp(NM, 2);
   const ul = Math.hypot(ux, uy, uz) || 1; ux /= ul; uy /= ul; uz /= ul;
@@ -944,7 +971,7 @@ function driverSeatedSkin(spin, key) {
 /** forget every cached pose — call when the car model or the run set changes */
 function driverPoseReset() { _dpose.clear(); }
 
-if (typeof module !== "undefined") module.exports = { gripSat, armSolve, gripLockCalib, driverSeatedPose, snapToMesh, palmGrip,
+if (typeof module !== "undefined") module.exports = { carModelMatrix, gripSat, armSolve, gripLockCalib, driverSeatedPose, snapToMesh, palmGrip,
   ksanimLocal, driverAnimWorlds, driverAnimInit, animT, steerOfFrame, steerRefCalib,
   // exported so the mark geometry can be measured on a real replay under node — the two are a
   // pair, since the mesh only exists where computeWheelSlip says the tyre was sliding

@@ -48,7 +48,7 @@ node runtests.js glow lamp    # only tests whose filename contains one of these
 status of the LAST test, not the worst one — on 2026-07-27 a loop printed a failure, exited 0,
 and a commit went out on top of a red test that had been printed to screen and read past.
 
-**All 45 tests currently pass.** The note that used to sit here — `test_kn5.js`,
+**All 46 tests currently pass.** The note that used to sit here — `test_kn5.js`,
 `test_kn5scene.js`, `test_kn5tex.js`, `test_lateral.js`, `test_roadedge.js`, `test_twolines.js`
 and `test_edgecoach.js` are broken with `Cannot find module './kn5.js'`, `test_parse.js` needs
 an argument — was true before the module split was cleaned up and is not any more. It is
