@@ -1,0 +1,123 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>frametest — can this shell hold the panel's refresh rate?</title>
+<!--
+  frametest.html — the shell question with the scene removed.
+
+  WHY THIS EXISTS. BLACKBOX spikes to 5.5 and 11 ms on a 360 Hz panel. Its own
+  instrumentation exonerates it: on a spiking frame the JS body runs ~1 ms and the GPU
+  ~1.2 ms inside a 5.5 ms frame, so ~3 ms is dead air where nothing of ours executes.
+  Five candidate causes have been eliminated by test. The remaining fork is the SHELL —
+  WebView2-inside-Tauri versus anything else — and the previous harness could not answer
+  it, because it tried to run the whole app and the app needs an Assetto Corsa install
+  that a browser sandbox cannot see.
+
+  So: no content, no loaders, no GL, no dependencies. One requestAnimationFrame loop and a
+  histogram of the gaps between frames. Open it in a browser, then open the same file in a
+  Tauri window, and compare the SHAPE.
+
+    even, near the refresh period, few doubles   -> the shell can hold the panel
+    bursts of exactly-doubled intervals          -> the same signature BLACKBOX shows, in
+                                                    a page that does nothing, which means
+                                                    it is not the app
+
+  WHAT IT DELIBERATELY DOES NOT DO: draw anything, allocate per frame, or touch the GPU.
+  If it stutters, nothing about the workload can be blamed.
+-->
+<style>
+  body { background:#0b0b0d; color:#dfe3e8; font:13px/1.5 ui-monospace,Consolas,monospace; margin:0; padding:18px 22px; }
+  h1 { font-size:15px; font-weight:600; margin:0 0 2px; color:#fff; }
+  .sub { color:#7d858f; margin-bottom:16px; }
+  .big { font-size:28px; font-weight:600; color:#fff; }
+  .row { display:flex; gap:34px; margin-bottom:16px; flex-wrap:wrap; }
+  .k { color:#7d858f; font-size:11px; text-transform:uppercase; letter-spacing:.06em; }
+  table { border-collapse:collapse; margin-top:6px; }
+  td { padding:1px 12px 1px 0; white-space:pre; }
+  .bar { color:#5ac8fa; }
+  .warn { color:#ff9f43; }
+  .bad { color:#ff5c5c; }
+  button { background:#1c1f24; color:#dfe3e8; border:1px solid #333; padding:6px 14px; font:inherit; cursor:pointer; }
+</style>
+
+<h1>frametest</h1>
+<div class="sub">one rAF loop, nothing drawn, nothing allocated. the gaps are the measurement.</div>
+
+<div class="row">
+  <div><div class="k">frames</div><div class="big" id="n">0</div></div>
+  <div><div class="k">median gap</div><div class="big" id="med">—</div></div>
+  <div><div class="k">implied hz</div><div class="big" id="hz">—</div></div>
+  <div><div class="k">worst (10s)</div><div class="big" id="worst">—</div></div>
+  <div><div class="k">doubled+</div><div class="big" id="dbl">—</div></div>
+  <div><div class="k">longest burst</div><div class="big" id="burst">—</div></div>
+</div>
+
+<button id="reset">reset</button>
+<div style="margin-top:14px" class="k">gap histogram — multiples of the median</div>
+<table id="hist"></table>
+
+<script>
+"use strict";
+/* Pre-allocated ring. A measurement loop that allocates per frame is measuring its own
+ * garbage, which is exactly the confusion this whole investigation has been about. */
+var N = 20000, gaps = new Float64Array(N), n = 0, total = 0;
+var last = 0, worst = 0, worstAt = 0, burst = 0, longestBurst = 0;
+
+function tick(ts) {
+  if (last) {
+    var d = ts - last;
+    gaps[n % N] = d; n++; total++;
+    if (d > worst || ts - worstAt > 10000) { worst = d; worstAt = ts; }
+  }
+  last = ts;
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+
+function median(a) { var c = Array.prototype.slice.call(a).sort(function (x, y) { return x - y; }); return c[c.length >> 1]; }
+
+setInterval(function () {
+  var count = Math.min(n, N);
+  if (count < 30) return;
+  var slice = gaps.subarray(0, count);
+  var med = median(slice);
+
+  /* A frame is "doubled" when its gap is a whole multiple of the median — the signature of
+   * missing a vsync deadline and waiting for the next one, rather than merely running slow. */
+  var buckets = {}, doubled = 0, run = 0;
+  longestBurst = 0;
+  for (var i = 0; i < count; i++) {
+    var mult = Math.round(slice[i] / med);
+    if (mult < 1) mult = 1;
+    if (mult > 8) mult = 8;
+    buckets[mult] = (buckets[mult] || 0) + 1;
+    if (mult >= 2) { doubled++; run++; if (run > longestBurst) longestBurst = run; }
+    else run = 0;
+  }
+
+  document.getElementById("n").textContent = total;
+  document.getElementById("med").textContent = med.toFixed(2) + " ms";
+  document.getElementById("hz").textContent = (1000 / med).toFixed(0);
+  var w = document.getElementById("worst");
+  w.textContent = worst.toFixed(2) + " ms";
+  w.className = "big " + (worst > med * 3 ? "bad" : worst > med * 1.8 ? "warn" : "");
+  var dp = (100 * doubled / count);
+  var de = document.getElementById("dbl");
+  de.textContent = dp.toFixed(2) + "%";
+  de.className = "big " + (dp > 1 ? "bad" : dp > 0.1 ? "warn" : "");
+  document.getElementById("burst").textContent = longestBurst;
+
+  var rows = "";
+  for (var m = 1; m <= 8; m++) {
+    var c = buckets[m] || 0;
+    var pct = 100 * c / count;
+    var bar = new Array(Math.min(60, Math.round(pct * 0.6)) + 1).join("█");
+    rows += "<tr><td>" + (m === 8 ? "8+" : m) + "×</td><td>" + (m * med).toFixed(1) + " ms</td><td>" +
+            c + "</td><td>" + pct.toFixed(2) + "%</td><td class='bar'>" + bar + "</td></tr>";
+  }
+  document.getElementById("hist").innerHTML = rows;
+}, 500);
+
+document.getElementById("reset").onclick = function () {
+  n = 0; total = 0; worst = 0; worstAt = 0; last = 0; longestBurst = 0;
+};
+</script>

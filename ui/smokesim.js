@@ -390,11 +390,18 @@ function smokeStepAndDraw(mvp, view, L, fogD, i, nightF, softOn, zNear, zFar) {
      * decoration, and nothing downstream measures it. */
     simAccum += dt;
     let steps = 0;
+    /* Timed, because the spike table could say a spike LANDED on a sim frame but never how
+     * much of that frame the sim actually was. Two frames read identically as "SIM" whether
+     * the sim took 0.3 ms or 5 ms, and the difference decides whether this loop is the cause
+     * or a bystander. One performance.now() pair per sim frame — one frame in six at 360 Hz,
+     * and nothing at all on the other five. */
+    const simT0 = performance.now();
     while (simAccum >= SIM_STEP && steps < SIM_MAX_CATCHUP) {
       if (playing && !scrubbing) airStep(SIM_STEP, i, tCur / ex.dt);   // cars stir the shared air first
       smokeStep(SIM_STEP, playing && !scrubbing, i, nightF);           // then smoke rides it
       simAccum -= SIM_STEP; steps++;
     }
+    lastSimMs = steps ? performance.now() - simT0 : 0;
     if (steps >= SIM_MAX_CATCHUP) simAccum = 0;   // gave up catching up; do not hold the debt
     /* Recorded so a spike can be checked against it. The sim is a FIXED 60 Hz while the
      * render loop runs at the panel's rate, so at 360 Hz these two cadences are 1:6 — the

@@ -13,6 +13,13 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["protocol-asset"] }
+# "devtools" turns the WebView2 inspector on in a RELEASE build. Tauri gives it away free in
+# debug builds, but a debug build is not usable here: the Assetto Corsa scan and the replay
+# parse are Rust, and unoptimised they take long enough that the app never reaches the render
+# loop being investigated. Measuring the stutter requires release speed AND the profiler, and
+# this flag is the only way to have both. It is what finally attributes the 183 KB/frame of
+# garbage to a function instead of to a guess — six candidates have been eliminated by test
+# and every one of them was chosen by reading source.
+tauri = { version = "2", features = ["protocol-asset", "devtools"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

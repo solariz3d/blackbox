@@ -46,7 +46,38 @@ const cv = document.getElementById("gl");
  * corridor frame rate gains. The keeper decides per machine, informed by the A/B. */
 let BB_MSAA = true;
 try { BB_MSAA = localStorage.getItem("bb_msaa") !== "off"; } catch (_) {}
-const gl = cv.getContext("webgl2", { antialias: BB_MSAA }) || cv.getContext("webgl", { antialias: BB_MSAA });
+
+/* DESYNCHRONIZED is the only lever in this file that touches PRESENTATION rather than
+ * rendering, and it is here because of a measured symptom the renderer cannot explain.
+ *
+ * On a 360 Hz panel this app spikes to 5.5 and 11.1 ms — exactly two and four refresh
+ * periods — in BURSTS of consecutive frames. Its own instrumentation clears it: on a spiking
+ * frame the JS body runs ~1 ms and the GPU ~1.2 ms inside a 5.5 ms frame, so roughly 3 ms is
+ * DEAD AIR in which neither our code nor the card is doing anything. Every spike row reads
+ * "CPU STALLED — not our code". Eliminated by test, not argument: the pose interpolation,
+ * the collision debounce, SMT (was disabled by MSI's "X3D Gaming Mode"), a mixed-refresh
+ * second monitor, garbage collection (heap moves ~20 MB, far too little for an 8 ms stall),
+ * and the 60 Hz sim (runs on 16.7% of frames, catches 22.9% of spikes — a nudge, not a cause).
+ *
+ * What is left is the path between our draw and the glass. `desynchronized: true` asks the
+ * browser for a low-latency canvas that does not round-trip through the normal compositor
+ * sync — which is precisely the gap the dead air sits in.
+ *
+ * THREE HONEST BOUNDS, because this is a hint and not a guarantee:
+ *   1. It is ADVISORY. The UA may ignore it entirely. Whether it was granted is reported by
+ *      getContextAttributes() and printed in the perf report — never assume it took.
+ *   2. It can TEAR. Decoupling from compositor sync is how it buys the latency. For a
+ *      cinematic tool that may be a worse trade than the stutter; that is a judgement to
+ *      make while looking at it, not one to settle here.
+ *   3. It is UNTESTED against the symptom. It is the best-motivated candidate, not a fix
+ *      that has been shown to work — the sixth thing tried, after five that did not.
+ *
+ * Off with localStorage bb_desync="off", then relaunch — context attributes cannot change
+ * at runtime, same as MSAA. */
+let BB_DESYNC = true;
+try { BB_DESYNC = localStorage.getItem("bb_desync") !== "off"; } catch (_) {}
+const BB_CTX = { antialias: BB_MSAA, desynchronized: BB_DESYNC, powerPreference: "high-performance" };
+const gl = cv.getContext("webgl2", BB_CTX) || cv.getContext("webgl", BB_CTX);
 const isGL2 = typeof WebGL2RenderingContext !== "undefined" && gl instanceof WebGL2RenderingContext;
 
 /* A shader that fails to compile throws, which kills glcore.js — and because every later

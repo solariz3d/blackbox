@@ -74,6 +74,53 @@ window.__TAURI__ = {
   window: null,   // controls.js already null-guards this one
 };
 console.log("[browsertest] Tauri shim installed — this is NOT the real app shell.");
+
+/* REPORT BACK. The browser is the only party that can see what actually went wrong, and
+ * asking a human to transcribe a console is how five wrong guesses happened. Everything the
+ * page throws, rejects, or logs as an error is POSTed to /_log, which the server appends to
+ * a file — so the failure is readable from outside the browser. */
+(function () {
+  var seen = 0;
+  function report(kind, detail) {
+    if (seen++ > 200) return;                       // never let the reporter become the load
+    try {
+      navigator.sendBeacon("/_log", JSON.stringify({ kind: kind, detail: String(detail), at: Date.now() }));
+    } catch (_) {}
+  }
+  window.addEventListener("error", function (e) {
+    report("error", (e.message || "") + " @ " + (e.filename || "?") + ":" + (e.lineno || "?") +
+                    (e.error && e.error.stack ? "\\n" + e.error.stack : ""));
+  });
+  window.addEventListener("unhandledrejection", function (e) {
+    var r = e.reason;
+    report("unhandledrejection", (r && r.stack) ? r.stack : r);
+  });
+  var _err = console.error;
+  console.error = function () { report("console.error", Array.prototype.join.call(arguments, " ")); _err.apply(console, arguments); };
+  report("boot", "page loaded, shim active, UA=" + navigator.userAgent);
+  // a heartbeat proves whether the RENDER LOOP is alive at all, which is the actual question
+  var frames = 0; requestAnimationFrame(function tick() { frames++; requestAnimationFrame(tick); });
+  setInterval(function () {
+    var tv = document.getElementById("tvname");
+    var sub = document.getElementById("gallerysub");
+    report("heartbeat",
+      "rAF/2s=" + frames +
+      " | stage=" + window.__bbStage +
+      " | tvname=" + (tv ? JSON.stringify(tv.textContent.slice(0, 60)) : "(no el)") +
+      " | gallerysub=" + (sub ? JSON.stringify(sub.textContent.slice(0, 40)) : "(no el)"));
+    frames = 0;
+  }, 2000);
+  /* Prove the shim's own promise settles. If this never logs, the shim is not the invoke
+   * the app is calling — which would mean something else defined __TAURI__ after us. */
+  setTimeout(function () {
+    try {
+      var t0 = performance.now();
+      window.__TAURI__.core.invoke("list_tracks").then(function (v) {
+        report("shim-probe", "list_tracks resolved in " + (performance.now() - t0).toFixed(2) + " ms with " + JSON.stringify(v));
+      }, function (e) { report("shim-probe", "list_tracks REJECTED: " + e); });
+    } catch (e) { report("shim-probe", "threw: " + e); }
+  }, 1500);
+})();
 </script>
 `;
 
@@ -81,8 +128,24 @@ const TYPES = { ".html": "text/html", ".js": "text/javascript", ".css": "text/cs
                 ".png": "image/png", ".jpg": "image/jpeg", ".json": "application/json",
                 ".wasm": "application/wasm", ".ico": "image/x-icon" };
 
+const LOG = path.join(require("os").tmpdir(), "blackbox_browsertest.log");
+try { fs.writeFileSync(LOG, `--- browsertest started ---\n`); } catch (_) {}
+
 http.createServer((req, res) => {
   let rel = decodeURIComponent(req.url.split("?")[0]);
+  // the page reporting its own failures — written where anyone can read them
+  if (rel === "/_log" && req.method === "POST") {
+    let body = "";
+    req.on("data", d => { body += d; if (body.length > 1e6) req.destroy(); });
+    req.on("end", () => {
+      let line = body;
+      try { const j = JSON.parse(body); line = `[${j.kind}] ${j.detail}`; } catch (_) {}
+      try { fs.appendFileSync(LOG, line + "\n"); } catch (_) {}
+      console.log(line);
+      res.writeHead(204); res.end();
+    });
+    return;
+  }
   if (rel === "/") rel = "/index.html";
   const file = path.join(ROOT, rel);
   // never serve outside ui/

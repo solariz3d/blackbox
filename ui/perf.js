@@ -153,7 +153,15 @@ let frameMsEMA = 0, fpsPrev = 0, frameMsWorst = 0, frameWorstAt = 0;
  * manufacture a budget that is confidently wrong, and every reading derived from it would
  * inherit the error while looking measured. */
 let displayHz = 0, displayName = "";
-function frameBudgetMs() { return displayHz ? 1000 / displayHz : 0; }
+/* The budget is what THIS RUN is actually trying to hit, not what the panel could do. Under
+ * the 60 Hz diagnostic cap the target is 16.667 ms, and reporting 2.778 made a perfectly
+ * smooth capped run read as "4682 spikes out of 4682 frames" — every drawn frame counted as a
+ * spike against a budget it was never aiming at. True numbers, useless label, and that exact
+ * shape has already cost this investigation a night. */
+function frameBudgetMs() {
+  if (!displayHz) return 0;
+  return (1000 / displayHz) * CAP_DIV;
+}
 async function refreshDisplayInfo() {
   if (!TAURI) return;
   try {
@@ -202,8 +210,49 @@ const spikeLog = [];
  * 0 is a clean second, and each unit is one visible hitch. That number is actionable in a
  * way a percentage never is. */
 let vsyncMissed = 0, vsyncMissedShown = 0, vsyncWindowAt = 0;
+/* CUMULATIVE, because "does this divider stutter" is a question about the whole run and the
+ * per-second figure answers only about the last second. A rung that drops one frame a minute
+ * reads 0/s almost every time it is looked at, and that single dropped frame is exactly the
+ * transient stutter the divider is being chosen to eliminate. Zero here over a long run is
+ * the only form the criterion can take. */
+let vsyncMissedTotal = 0, vsyncFramesLate = 0;
+/* Allocation accounting — summed in the frame loop, reported below. Positive deltas only;
+ * see the note at the call site for why a collection must not cancel the garbage that
+ * caused it. */
+let allocBytes = 0, allocPrevHeap = 0, allocSince = 0;
 let lastSimSteps = 0;          // smoke/air sim steps taken on the frame just drawn
+/* How long those steps took. Declared here beside the count and written by smokesim.js, the
+ * same split lastSimSteps already uses. Without it the table can say a spike landed on a sim
+ * frame but not whether the sim WAS the frame — and the burst openers on 2026-08-04 read
+ * "our JS ran long" at 5.7-5.9 ms cpu with no way to say which of our JS. */
+let lastSimMs = 0;
 let simFrames = 0, simSpikes = 0, allFrames = 0, allSpikes = 0;   // for the correlation readout
+let simMsTotal = 0, simMsWorst = 0, simStepsWorst = 0;            // and for the sim's cost, not just its incidence
+/* THE VSYNC DIVIDER (Shift+6 cycles it). The presentation rate is not a free parameter: rAF
+ * fires on vsync, so the only rates a panel can actually HOLD are refreshHz/n. Ask for 240 on
+ * a 360 Hz panel and frames land on a 1.5-vsync cadence — 2.78, 5.56, 2.78, 5.56 — which
+ * judders worse than a locked 60 despite the bigger number. So the choice is which integer
+ * divider to sit on, and nothing else is on offer.
+ *
+ * This is why the cap is a DIVIDER rather than a target framerate: a hardcoded 120 is
+ * unreachable on a 60 Hz panel, while ÷3 means "a third of whatever this machine has" and is
+ * correct everywhere. Caring about the divider is what lets the app stop caring about the
+ * user's refresh rate.
+ *
+ * 1 = uncapped, the default — nothing changes for anyone who never presses the key.
+ * Counted in vsyncs rather than milliseconds because the timestamps jitter ±0.15 ms and a
+ * millisecond threshold would occasionally admit or drop a frame at the boundary. */
+const CAP_DIVS = [1, 2, 3, 4, 6];
+let CAP_DIV = 1, _capTick = 0;
+function resetPerfStats() {
+  frameMsEMA = 0; fpsPrev = 0; frameMsWorst = 0; frameWorstAt = 0;
+  simFrames = 0; simSpikes = 0; allFrames = 0; allSpikes = 0;
+  simMsTotal = 0; simMsWorst = 0; simStepsWorst = 0;
+  spikeLog.length = 0;
+  vsyncMissed = 0; vsyncMissedShown = 0; vsyncWindowAt = 0;
+  vsyncMissedTotal = 0; vsyncFramesLate = 0;
+  allocBytes = 0; allocPrevHeap = 0; allocSince = 0;
+}
 let cpuMsPrev = 0;                        // wall time inside our own frame body, last frame
 let bakesPrev = 0;                        // so a spike can report whether a bake ran THAT frame
 function recordSpike(ts, dtMs) {
@@ -216,7 +265,8 @@ function recordSpike(ts, dtMs) {
     gpuMs: null,                          // filled in when the timer query resolves
     _frame: GT.ok ? GT.frame() - 1 : -1,   // the frame this spike measured
     bakedThisFrame: cullStat.bakes !== bakesPrev,
-    sim: lastSimSteps,                    // did the 60 Hz smoke/air sim run on this frame?
+    sim: lastSimSteps,                    // how many 60 Hz sim steps ran on this frame — >1 means catch-up
+    simMs: +lastSimMs.toFixed(2),         // and how much of the frame they were
     chunks: cullStat.track + "+" + cullStat.shadow,
     trees: cullStat.trees,
     smoke: smoke.pool.length,
@@ -296,14 +346,14 @@ function renderSpikePanel() {
     return;
   }
   out += `<span class="hdr">${"at".padStart(7)}${"frame".padStart(8)}${"cpu".padStart(7)}` +
-         `${"gpu".padStart(7)}  ${"sim".padStart(3)}  ${"bake".padStart(4)} ${"chunks".padStart(9)} ${"trees".padStart(5)} ` +
+         `${"gpu".padStart(7)}${"sim".padStart(4)}${"simMs".padStart(7)}  ${"bake".padStart(4)} ${"chunks".padStart(9)} ${"trees".padStart(5)} ` +
          `${"smk".padStart(4)} ${"heapMB".padStart(7)}  verdict</span>\n`;
   for (const s of spikeLog.slice().reverse()) {
     const v = spikeVerdict(s);
     const cls = v.startsWith("CPU STALLED") ? "hot" : (v.startsWith("GPU") ? "cool" : "");
     out += `${String(s.at).padStart(7)}${s.frameMs.toFixed(2).padStart(8)}` +
            `${s.cpuMs.toFixed(2).padStart(7)}${(s.gpuMs === null ? "—" : s.gpuMs.toFixed(2)).padStart(7)}` +
-           `  ${(s.sim > 0 ? "SIM" : "-").padStart(3)}` +
+           `${(s.sim > 0 ? "x" + s.sim : "-").padStart(4)}${(s.sim > 0 ? (s.simMs || 0).toFixed(2) : "-").padStart(7)}` +
            `  ${(s.bakedThisFrame ? "YES" : "-").padStart(4)} ${esc(s.chunks).padStart(9)} ` +
            `${String(s.trees).padStart(5)} ${String(s.smoke).padStart(4)} ` +
            `${(s.heapMB === null ? "—" : s.heapMB.toFixed(0)).padStart(7)}  <span class="${cls}">${v}</span>\n`;
@@ -316,6 +366,19 @@ addEventListener("keydown", (e) => {
   SPIKES_SHOWN = !SPIKES_SHOWN;
   if (spikePanel) spikePanel.style.display = SPIKES_SHOWN ? "block" : "none";
   renderSpikePanel();
+});
+/* Shift+6 toggles the 60 Hz diagnostic cap. Matched on e.code, not e.key: with Shift held,
+ * "6" reports as "^" on a US layout and as something else again elsewhere, so keying off the
+ * character would work on this machine and quietly fail on another. */
+addEventListener("keydown", (e) => {
+  if (e.code !== "Digit6" || !e.shiftKey) return;
+  if (e.target && /input|textarea/i.test(e.target.tagName)) return;
+  CAP_DIV = CAP_DIVS[(CAP_DIVS.indexOf(CAP_DIV) + 1) % CAP_DIVS.length];
+  _capTick = 0;
+  resetPerfStats();               // samples taken at different dividers must never share an average
+  console.log(`[perf] vsync divider ÷${CAP_DIV} = ${displayHz ? (displayHz / CAP_DIV).toFixed(0) : "?"} Hz ` +
+              `· budget ${frameBudgetMs().toFixed(2)} ms — stats cleared`);
+  renderSpikePanel();             // the panel header carries the state; see perfReport()
 });
 // still available from a dev build's console, where one exists
 window.spikes = function () { resolveSpikes(); console.table(spikeLog.map(s => ({ ...s, verdict: spikeVerdict(s) }))); };
@@ -341,10 +404,48 @@ function perfReport() {
   L.push(`budget ${bud ? bud.toFixed(3) : "?"} ms · spike threshold ${bud ? (bud * SPIKE_FACTOR).toFixed(2) : "?"} ms`);
   L.push(`frames ${allFrames} · spikes ${allSpikes} · missed periods last second ${vsyncMissedShown}`);
   L.push(`ema ${frameMsEMA.toFixed(3)} ms · worst(1s) ${frameMsWorst.toFixed(2)} ms`);
+  /* Stated in the report rather than left to be remembered. A capped run and an uncapped run
+   * produce files that look alike apart from the numbers, and a diagnostic reading applied to
+   * the wrong one is worse than no reading — it would say the stutter was fixed. */
+  if (CAP_DIV > 1) L.push(`*** VSYNC DIVIDER ÷${CAP_DIV} = ${(displayHz / CAP_DIV).toFixed(0)} Hz — this is not a panel-rate run ***`);
+  /* THE VERDICT ON A DIVIDER, in the terms the choice is actually made in: a rung "works" if
+   * it never drops a frame, not if it averages well. One late frame a minute is invisible in
+   * an EMA and is precisely the transient stutter being hunted. */
+  {
+    const mins = allFrames && frameMsEMA ? (allFrames * frameMsEMA) / 60000 : 0;
+    L.push(`late frames ${vsyncFramesLate} · periods lost ${vsyncMissedTotal} total` +
+           (mins > 0.2 ? ` over ${mins.toFixed(1)} min → ${(vsyncFramesLate / mins).toFixed(1)}/min` : "") +
+           (vsyncFramesLate === 0 ? "   ← CLEAN at this divider" : ""));
+  }
+  /* WHAT THE CONTEXT ACTUALLY GRANTED, not what was asked for. `desynchronized` and
+   * `powerPreference` are HINTS — the UA may ignore either. A run read as "the low-latency
+   * path did not help" when it was never granted would be a false negative on the only lever
+   * this app has over presentation, so the state is read rather than assumed. */
+  /* THE NUMBER THAT NAMES THE CULPRIT. If this is large, the stalls are collections and the
+   * garbage is ours — regardless of what the per-spike verdict column says, because that
+   * column cannot see a stopped world. If it is near zero and the stalls persist, GC is
+   * genuinely excluded and the dead air is somebody else's. */
+  if (performance.memory && allocSince) {
+    const secs = (performance.now() - allocSince) / 1000;
+    const mbs = secs > 0 ? (allocBytes / 1048576) / secs : 0;
+    const perFrame = allFrames > 0 ? allocBytes / allFrames / 1024 : 0;
+    L.push(`allocation · ${mbs.toFixed(1)} MB/s · ${perFrame.toFixed(1)} KB/frame · heap now ${(performance.memory.usedJSHeapSize / 1048576).toFixed(1)} MB`);
+  } else {
+    L.push("allocation · not measurable (performance.memory unavailable — not Chromium)");
+  }
+  try {
+    const a = (typeof gl !== "undefined" && gl.getContextAttributes) ? gl.getContextAttributes() : null;
+    if (a) L.push(`ctx granted · antialias ${a.antialias} · desynchronized ${a.desynchronized} · power ${a.powerPreference || "(unreported)"}`);
+    else L.push("ctx granted · (getContextAttributes unavailable)");
+  } catch (e) { L.push("ctx granted · unreadable: " + e); }
   if (allFrames > 0) {
     const base = 100 * simFrames / allFrames;
     const onSim = allSpikes ? 100 * simSpikes / allSpikes : 0;
     L.push(`sim(60Hz) runs on ${base.toFixed(1)}% of frames · ${onSim.toFixed(1)}% of spikes land there (${simSpikes}/${allSpikes})`);
+    if (simFrames) {
+      L.push(`sim cost · mean ${(simMsTotal / simFrames).toFixed(2)} ms · worst ${simMsWorst.toFixed(2)} ms ` +
+             `· most steps in one frame x${simStepsWorst} of ${4} allowed · budget ${frameBudgetMs().toFixed(2)} ms`);
+    }
   }
   // isOn(), not .enabled — the flag is module-private and only exposed through the getter.
   // Reading .enabled would have quietly reported "off" forever, which is exactly the kind of
@@ -353,12 +454,13 @@ function perfReport() {
   L.push(`audio ${audioOn === null ? "?" : audioOn ? "ON" : "off"} · cars ${1 + (typeof ghostDraws !== "undefined" ? ghostDraws.length : 0)}` +
          ` · smoke ${smoke.pool.length} · air ${AIR.cells.size} · trees ${cullStat.trees}/${cullStat.treesTotal}`);
   L.push("");
-  L.push("      at   frame     cpu     gpu  sim  bake    chunks trees  smk   heapMB  verdict");
+  L.push("      at   frame     cpu     gpu  sim   simMs  bake    chunks trees  smk   heapMB  verdict");
   for (const s of spikeLog) {
     L.push(
       String(s.at).padStart(8) + s.frameMs.toFixed(2).padStart(8) + s.cpuMs.toFixed(2).padStart(8) +
       (s.gpuMs === null ? "-" : s.gpuMs.toFixed(2)).padStart(8) +
-      (s.sim > 0 ? "SIM" : "-").padStart(5) + (s.bakedThisFrame ? "YES" : "-").padStart(6) +
+      (s.sim > 0 ? "x" + s.sim : "-").padStart(5) + (s.sim > 0 ? (s.simMs || 0).toFixed(2) : "-").padStart(8) +
+      (s.bakedThisFrame ? "YES" : "-").padStart(6) +
       String(s.chunks).padStart(10) + String(s.trees).padStart(6) + String(s.smoke).padStart(5) +
       (s.heapMB === null ? "-" : s.heapMB.toFixed(1)).padStart(9) + "  " + spikeVerdict(s));
   }
@@ -382,3 +484,7 @@ function maybeWritePerf(ts) {
   resolveSpikes();
   try { tinvoke("write_perf_log", { body: perfReport() }); } catch (_) {}
 }
+
+/* HUD throttle clock — see the note at its use site in index.html. Lives here because the
+ * frame loop's own scope is rebuilt per call and this must persist across frames. */
+let _hudAt = 0;

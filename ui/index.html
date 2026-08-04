@@ -724,6 +724,18 @@ let showThruster = true;
 
 
 function loop(ts) {
+  /* THE VSYNC DIVIDER — Shift+6 cycles it; see the note beside CAP_DIVS in perf.js for why a
+   * divider is the only honest form this can take.
+   *
+   * Draw one vsync in CAP_DIV. Counting ticks rather than comparing elapsed milliseconds is
+   * deliberate: rAF timestamps jitter about ±0.15 ms around the true period, so a threshold
+   * of "16 ms since the last draw" admits a frame early or drops one late right at the
+   * boundary, and the resulting cadence is uneven for a reason that has nothing to do with
+   * the workload. A counter cannot drift.
+   *
+   * Skipping inside rAF rather than slowing the loop keeps the presentation path identical,
+   * so a capped run and an uncapped run differ only in how often we draw. */
+  if (CAP_DIV > 1 && (_capTick++ % CAP_DIV) !== 0) { requestAnimationFrame(loop); return; }
   const _cpu0 = performance.now();
   _treeTime = ts * 0.001;   // one sway clock per frame — lit and depth must agree
   if (fpsPrev) {
@@ -745,7 +757,40 @@ function loop(ts) {
        * rate: at 360 Hz roughly one frame in six is a sim frame, so if spikes were
        * independent of the sim about 17% of them would land there. */
       allFrames++;
-      if (lastSimSteps > 0) simFrames++;
+      /* The base rate of the sim's COST, not just of its occurrence. "24% of spikes land on
+       * sim frames" was the only sim number available, and it cannot separate a sim that is
+       * expensive from a sim that merely happens to be running. Mean and worst over every sim
+       * frame since load answer that directly: a mean well under the 2.78 ms budget with a
+       * worst several times it means the sim is not uniformly heavy, it OCCASIONALLY is —
+       * which points at the catch-up loop rather than at the per-particle work. */
+      if (lastSimSteps > 0) {
+        simFrames++;
+        simMsTotal += lastSimMs;
+        if (lastSimMs > simMsWorst) simMsWorst = lastSimMs;
+        if (lastSimSteps > simStepsWorst) simStepsWorst = lastSimSteps;
+      }
+      /* ALLOCATION RATE, because the spike log named the wrong culprit for a whole night.
+       *
+       * Every spike row reads "CPU STALLED — not our code", which is measured as "our JS body
+       * did not run long". During a garbage collection it does not: the VM has stopped the
+       * world, so our own timer sees nothing. The label was true and pointed away from the
+       * cause. The tell was in a column nobody was summing — the heap went 443.1 -> 347.3 MB
+       * across a 41.6 ms frame, which is a 96 MB major collection, not a scheduling hiccup.
+       *
+       * So: sum the POSITIVE deltas only. A drop is a collection and must not cancel out the
+       * allocation that caused it, or a perfect sawtooth averages to zero and reports a leak-
+       * free, garbage-free app while it stalls fifteen refresh periods at a time.
+       *
+       * HONEST BOUNDS. usedJSHeapSize is Chromium-only (null elsewhere, never zero), coarsely
+       * quantised, and updated on its own schedule — so this is a RATE over many frames, and
+       * a per-frame figure from it would be noise wearing a decimal point. It also cannot see
+       * allocations that never reach the JS heap, GPU-side buffers among them. */
+      if (performance.memory) {
+        const h = performance.memory.usedJSHeapSize;
+        if (allocPrevHeap && h > allocPrevHeap) allocBytes += h - allocPrevHeap;
+        allocPrevHeap = h;
+        if (!allocSince) allocSince = ts;
+      }
       const isSpike = bud > 0 && dtMs > bud * SPIKE_FACTOR;
       if (isSpike) { recordSpike(ts, dtMs); allSpikes++; if (lastSimSteps > 0) simSpikes++; }
       /* Count LOST REFRESH PERIODS, not slow frames. A frame of 2.9 ms on a 2.78 ms panel
@@ -755,7 +800,7 @@ function loop(ts) {
        * a clean frame never counts, which a floor or a naive threshold would get wrong. */
       if (frameBudgetMs() > 0) {
         const lost = Math.max(0, Math.round(dtMs / frameBudgetMs()) - 1);
-        if (lost > 0) vsyncMissed += lost;
+        if (lost > 0) { vsyncMissed += lost; vsyncMissedTotal += lost; vsyncFramesLate++; }
         if (ts - vsyncWindowAt > 1000) { vsyncMissedShown = vsyncMissed; vsyncMissed = 0; vsyncWindowAt = ts; }
       }
     }
@@ -863,9 +908,35 @@ function loop(ts) {
      * period, so "104% of budget" describes an average that no individual frame ever had
      * and implies 4% of work to remove that does not exist. Dropped periods per second is
      * the event count: 0 is clean, and every unit is one hitch you can actually see. */
+    /* THE HUD IS BUILT AT 60 Hz, NOT AT PANEL RATE, and the reason is allocation rather than
+     * tidiness.
+     *
+     * Measured: 52.7 MB/s · 152.9 KB/frame. V8's young generation is ~16 MB, so that fills
+     * about three times a second and every fill is a stop-the-world scavenge — which is
+     * exactly the 5.5 ms (two refresh periods) this app spikes to, in bursts. The per-spike
+     * verdict reads "CPU STALLED — not our code" because during a collection our JS body
+     * genuinely is not running; the label is true and points away from the cause.
+     *
+     * What follows below allocates every frame: a ~300-character template with ~25
+     * interpolations, GT.text() spreading a Map into an array and sorting and mapping and
+     * joining it, and a full scrub redraw. None of it is visible faster than the eye. At
+     * 360 Hz it runs six times more often than anything can be read.
+     *
+     * THIS IS A CANDIDATE, NOT A DIAGNOSIS. The allocation line in the perf report is the
+     * arbiter: if the MB/s figure drops sharply this was a real source, and if it barely
+     * moves the garbage is elsewhere and nothing has been lost — a HUD at 60 Hz is correct
+     * either way. Six things have been tried on this stutter and five were wrong, so the
+     * number decides, not this comment. */
+    const _hudDue = !_hudAt || ts - _hudAt >= 16;
+    if (_hudDue) {
+    _hudAt = ts;
     const _bud = frameBudgetMs();
+    /* Under a divider the panel is still 360 Hz but the TARGET is not, so print both. Showing
+     * "panel 360Hz 16.67ms" would pair a real number with a budget that contradicts it, and
+     * a glance at that HUD would read as the panel having changed. */
     const _hud = displayHz
-      ? ` · panel ${displayHz}Hz ${_bud.toFixed(2)}ms · missed ${vsyncMissedShown}/s`
+      ? ` · panel ${displayHz}Hz${CAP_DIV > 1 ? ` ÷${CAP_DIV}→${(displayHz / CAP_DIV).toFixed(0)}Hz` : ""} ` +
+        `${_bud.toFixed(2)}ms · missed ${vsyncMissedShown}/s`
       : (TAURI ? " · panel —" : "");
     // spike count is on the HUD so a stutter is visible as a NUMBER while it happens,
     // without needing the console open — `spikes()` there gives the attribution
@@ -873,6 +944,7 @@ function loop(ts) {
     timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)})${_hud}${_spk} · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
     drawScrub();
     renderSpikePanel();      // only does work while the panel is open
+    }
   }
   render();
   /* Wall time spent INSIDE this function. Note what it does and does not include: our own
