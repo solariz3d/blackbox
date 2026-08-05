@@ -396,12 +396,25 @@ function smokeStepAndDraw(mvp, view, L, fogD, i, nightF, softOn, zNear, zFar) {
      * or a bystander. One performance.now() pair per sim frame — one frame in six at 360 Hz,
      * and nothing at all on the other five. */
     const simT0 = performance.now();
+    /* SPLIT, because "the sim took 4.40 ms" is where the last investigation stalled.
+     *
+     * Measured 2026-08-04 at 180 Hz: mean sim cost 0.52 ms, worst 5.30 ms -- ten times its own
+     * average -- and the only two steady-state spikes in the run were sim frames where the sim
+     * was 79% and 63% of the whole CPU frame. So the sim is the remaining cause, and the two
+     * candidates inside it are a Map walk over ~1550 air cells and ~790 collider raycasts.
+     * Timing them apart costs two clock reads on one frame in three and settles it; guessing
+     * has been tried eight times on this app's frame budget and has been wrong eight times. */
+    let airMs = 0, smokeMs = 0;
     while (simAccum >= SIM_STEP && steps < SIM_MAX_CATCHUP) {
+      const t0 = performance.now();
       if (playing && !scrubbing) airStep(SIM_STEP, i, tCur / ex.dt);   // cars stir the shared air first
+      const t1 = performance.now();
       smokeStep(SIM_STEP, playing && !scrubbing, i, nightF);           // then smoke rides it
+      airMs += t1 - t0; smokeMs += performance.now() - t1;
       simAccum -= SIM_STEP; steps++;
     }
     lastSimMs = steps ? performance.now() - simT0 : 0;
+    lastAirMs = airMs; lastSmokeMs = smokeMs;
     if (steps >= SIM_MAX_CATCHUP) simAccum = 0;   // gave up catching up; do not hold the debt
     /* Recorded so a spike can be checked against it. The sim is a FIXED 60 Hz while the
      * render loop runs at the panel's rate, so at 360 Hz these two cadences are 1:6 — the

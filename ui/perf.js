@@ -99,6 +99,17 @@ const GT = (function () {
       return " · " + [...ms.entries()].sort((a, b) => b[1] - a[1])
         .map(([k, v]) => `${k} ${v.toFixed(2)}`).join(" ");
     },
+    /* The same numbers, for the WRITTEN report. These have existed on the HUD since the pass
+     * timer was built and have never reached the file, so every GPU conclusion drawn from a
+     * perf log so far has been about a single total: "the GPU took 1.7 ms" with no way to say
+     * which pass took it. That is precisely the attribution gap this extension was added to
+     * close, left open by the report not asking for it. */
+    passes() {
+      if (!ms.size) return null;
+      const rows = [...ms.entries()].sort((a, b) => b[1] - a[1]);
+      const total = rows.reduce((s, r) => s + r[1], 0);
+      return { rows, total };
+    },
   };
 })();
 /* How many chunks survived culling, for the HUD. Reported rather than assumed: a culling
@@ -220,12 +231,20 @@ let vsyncMissedTotal = 0, vsyncFramesLate = 0;
  * see the note at the call site for why a collection must not cancel the garbage that
  * caused it. */
 let allocBytes = 0, allocPrevHeap = 0, allocSince = 0;
+/* The windowed twin of the above — see the note at the accumulation site. Reported on the HUD
+ * so a subsystem can be switched off and its contribution read within a second. */
+let allocWinBytes = 0, allocWinFrames = 0, allocWinAt = 0, allocWinMBs = 0, allocWinKBf = 0;
 let lastSimSteps = 0;          // smoke/air sim steps taken on the frame just drawn
 /* How long those steps took. Declared here beside the count and written by smokesim.js, the
  * same split lastSimSteps already uses. Without it the table can say a spike landed on a sim
  * frame but not whether the sim WAS the frame — and the burst openers on 2026-08-04 read
  * "our JS ran long" at 5.7-5.9 ms cpu with no way to say which of our JS. */
 let lastSimMs = 0;
+/* The same number split in two — the air field walk vs the particle step. See the note at the
+ * timing site: the sim is now the measured cause of the remaining spikes, and these two are
+ * the only expensive things inside it. */
+let lastAirMs = 0, lastSmokeMs = 0;
+let airMsTotal = 0, airMsWorst = 0, smokeMsTotal = 0, smokeMsWorst = 0;
 let simFrames = 0, simSpikes = 0, allFrames = 0, allSpikes = 0;   // for the correlation readout
 let simMsTotal = 0, simMsWorst = 0, simStepsWorst = 0;            // and for the sim's cost, not just its incidence
 /* THE VSYNC DIVIDER (Shift+6 cycles it). The presentation rate is not a free parameter: rAF
@@ -244,16 +263,73 @@ let simMsTotal = 0, simMsWorst = 0, simStepsWorst = 0;            // and for the
  * millisecond threshold would occasionally admit or drop a frame at the boundary. */
 const CAP_DIVS = [1, 2, 3, 4, 6];
 let CAP_DIV = 1, _capTick = 0;
+/* PERSISTED, because a rate is a setting and not an experiment.
+ *
+ * The divider started as a diagnostic and the measurements turned it into the answer: the
+ * frame does not fit in 2.778 ms and does fit comfortably in 5.56 ms, so a locked 180 is a
+ * better picture than a 360 that drops ~28 frames a minute. Left unpersisted, that choice
+ * costs a keypress every single launch, which is how a real setting gets abandoned.
+ *
+ * Stored as the DIVIDER, never as a framerate: "÷2" is half of whatever panel it lands on and
+ * is correct on a 60 Hz laptop and a 500 Hz panel alike, where a stored "180" would be
+ * unreachable on the first and a waste on the second. Validated on read -- a hand-edited or
+ * stale value must fall back to uncapped rather than silently pick a rate nobody chose. */
+try {
+  const s = parseInt(localStorage.getItem("bb_cap_div"), 10);
+  if (CAP_DIVS.indexOf(s) > 0) CAP_DIV = s;
+} catch (_) {}
+/* SHADOW UPDATE DIVIDER (Shift+7) — an experiment that measures the CEILING of a win before
+ * anyone pays for it.
+ *
+ * Measured 2026-08-04: the shadow pass is 0.544 ms, 19.6% of the 2.778 ms budget, and the
+ * near cascade re-renders track AND cars every frame while only the cars move. The proper
+ * fix is CSP's: cache the static track depth and re-render only dynamic casters — but that
+ * requires texel-snapped stabilised cascades first, or a cached map shimmers as the box
+ * scrolls with the car. That is real work, and it should not be started on the assumption
+ * that the saving is worth having.
+ *
+ * Skipping the whole pass every Nth frame is not shippable — the car's shadow goes stale by
+ * N-1 frames — but it costs nothing to try and it puts an UPPER BOUND on the prize. If N=3
+ * takes shadow to ~0.18 ms and the late-frame rate falls, the cached version is justified. If
+ * the late-frame rate does not move, the entire line of work is refuted for one keypress,
+ * which is the cheapest possible way to find that out.
+ *
+ * At 360 Hz N=3 is still a 120 Hz shadow update, and at 55 m/s the car's shadow lags ~15 cm.
+ * The high refresh rate is what makes this measurable at all without obvious artifacts. */
+const SHADOW_EVERYS = [1, 2, 3];
+let SHADOW_EVERY = 1, _shadowTick = 0;
 function resetPerfStats() {
   frameMsEMA = 0; fpsPrev = 0; frameMsWorst = 0; frameWorstAt = 0;
   simFrames = 0; simSpikes = 0; allFrames = 0; allSpikes = 0;
   simMsTotal = 0; simMsWorst = 0; simStepsWorst = 0;
+  airMsTotal = 0; airMsWorst = 0; smokeMsTotal = 0; smokeMsWorst = 0;
   spikeLog.length = 0;
   vsyncMissed = 0; vsyncMissedShown = 0; vsyncWindowAt = 0;
   vsyncMissedTotal = 0; vsyncFramesLate = 0;
+  lastLagMs = 0; lagTotal = 0; lagWorst = 0; lagFrames = 0;
   allocBytes = 0; allocPrevHeap = 0; allocSince = 0;
+  allocWinBytes = 0; allocWinFrames = 0; allocWinAt = 0; allocWinMBs = 0; allocWinKBf = 0;
 }
 let cpuMsPrev = 0;                        // wall time inside our own frame body, last frame
+/* THE UPSTREAM/DOWNSTREAM DISCRIMINATOR.
+ *
+ * rAF's `ts` argument is the frame time CHROMIUM assigned; performance.now() at callback
+ * entry is when our code actually started. They share a time origin, so the difference is
+ * how long after the scheduled frame time we were handed control.
+ *
+ * That splits the one fork that decides whether any optimisation can help:
+ *
+ *   ts jumps two periods, lag steady   -> the BeginFrame was never generated. Upstream, in
+ *                                         the compositor or the vsync source. Nothing we
+ *                                         write in this app can recover it.
+ *   ts advances one period, lag spikes -> the tick existed and we were handed it late, or
+ *                                         took too long. Ours, and fixable.
+ *
+ * Measured because the alternative is arguing about it: an empty page on this machine drops
+ * 0.05% of frames and this app drops 0.82%, so most of the gap is load-dependent -- but
+ * "load-dependent" still does not say whether the load delays OUR callback or starves the
+ * compositor that schedules it. */
+let lastLagMs = 0, lagTotal = 0, lagWorst = 0, lagFrames = 0;
 let bakesPrev = 0;                        // so a spike can report whether a bake ran THAT frame
 function recordSpike(ts, dtMs) {
   spikeLog.push({
@@ -262,6 +338,7 @@ function recordSpike(ts, dtMs) {
     // our own JS body. If this is ~0 and the frame was 14 ms, the stall was NOT our code
     // running long — it was our code being suspended, or the GPU, or the compositor.
     cpuMs: +cpuMsPrev.toFixed(2),
+    lagMs: +lastLagMs.toFixed(2),         // scheduled frame time -> our callback actually starting
     gpuMs: null,                          // filled in when the timer query resolves
     _frame: GT.ok ? GT.frame() - 1 : -1,   // the frame this spike measured
     bakedThisFrame: cullStat.bakes !== bakesPrev,
@@ -346,13 +423,14 @@ function renderSpikePanel() {
     return;
   }
   out += `<span class="hdr">${"at".padStart(7)}${"frame".padStart(8)}${"cpu".padStart(7)}` +
-         `${"gpu".padStart(7)}${"sim".padStart(4)}${"simMs".padStart(7)}  ${"bake".padStart(4)} ${"chunks".padStart(9)} ${"trees".padStart(5)} ` +
+         `${"lag".padStart(7)}${"gpu".padStart(7)}${"sim".padStart(4)}${"simMs".padStart(7)}  ${"bake".padStart(4)} ${"chunks".padStart(9)} ${"trees".padStart(5)} ` +
          `${"smk".padStart(4)} ${"heapMB".padStart(7)}  verdict</span>\n`;
   for (const s of spikeLog.slice().reverse()) {
     const v = spikeVerdict(s);
     const cls = v.startsWith("CPU STALLED") ? "hot" : (v.startsWith("GPU") ? "cool" : "");
     out += `${String(s.at).padStart(7)}${s.frameMs.toFixed(2).padStart(8)}` +
-           `${s.cpuMs.toFixed(2).padStart(7)}${(s.gpuMs === null ? "—" : s.gpuMs.toFixed(2)).padStart(7)}` +
+           `${s.cpuMs.toFixed(2).padStart(7)}${(s.lagMs === undefined ? "—" : s.lagMs.toFixed(2)).padStart(7)}` +
+           `${(s.gpuMs === null ? "—" : s.gpuMs.toFixed(2)).padStart(7)}` +
            `${(s.sim > 0 ? "x" + s.sim : "-").padStart(4)}${(s.sim > 0 ? (s.simMs || 0).toFixed(2) : "-").padStart(7)}` +
            `  ${(s.bakedThisFrame ? "YES" : "-").padStart(4)} ${esc(s.chunks).padStart(9)} ` +
            `${String(s.trees).padStart(5)} ${String(s.smoke).padStart(4)} ` +
@@ -370,11 +448,53 @@ addEventListener("keydown", (e) => {
 /* Shift+6 toggles the 60 Hz diagnostic cap. Matched on e.code, not e.key: with Shift held,
  * "6" reports as "^" on a US layout and as something else again elsewhere, so keying off the
  * character would work on this machine and quietly fail on another. */
+/* ABLATION CYCLE (Shift+8) — switch one subsystem off at a time and read the windowed
+ * allocation rate on the HUD.
+ *
+ * Why this exists rather than another look at the source: EIGHT candidates for this app's
+ * per-frame garbage have been chosen by reading code and eight were wrong, including one
+ * (cullLights) that allocated an object per lamp per frame and still moved the number by
+ * 1 KB/frame. Reading is not working. Turning things off and watching is uncurated: it
+ * returns a number nobody chose, including numbers nobody wanted.
+ *
+ * It restores what it changed, so cycling back to `none` leaves the app as it was — except
+ * the smoke pool, which is cleared by TYRE_MODE 0 and refills on its own within a lap.
+ *
+ * NOT a shipping feature and not a fix: every arm here removes something the app is for. */
+const ABLATIONS = ["none", "no sim/smoke", "no shadows", "no track lamps", "no sim + no shadows"];
+let ABLATE = 0;
+function applyAblation() {
+  const a = ABLATIONS[ABLATE];
+  TYRE_MODE = (a === "no sim/smoke" || a === "no sim + no shadows") ? 0 : 1;
+  if (TYRE_MODE === 0) { smoke.pool.length = 0; AIR.cells.clear(); }
+  SHADOW_ON = !(a === "no shadows" || a === "no sim + no shadows");
+  TRACK_LIGHTS_ON = (a === "no track lamps") ? 0 : 1;
+}
+addEventListener("keydown", (e) => {
+  if (e.code !== "Digit8" || !e.shiftKey) return;
+  if (e.target && /input|textarea/i.test(e.target.tagName)) return;
+  ABLATE = (ABLATE + 1) % ABLATIONS.length;
+  applyAblation();
+  resetPerfStats();
+  console.log(`[perf] ablation: ${ABLATIONS[ABLATE]} — stats cleared, watch the alloc figure on the HUD`);
+  renderSpikePanel();
+});
+addEventListener("keydown", (e) => {
+  if (e.code !== "Digit7" || !e.shiftKey) return;
+  if (e.target && /input|textarea/i.test(e.target.tagName)) return;
+  SHADOW_EVERY = SHADOW_EVERYS[(SHADOW_EVERYS.indexOf(SHADOW_EVERY) + 1) % SHADOW_EVERYS.length];
+  _shadowTick = 0;
+  resetPerfStats();               // the late-frame rate is the whole point; it must not mix settings
+  console.log(`[perf] shadow update every ${SHADOW_EVERY} frame(s)` +
+              (displayHz ? ` = ${(displayHz / SHADOW_EVERY).toFixed(0)} Hz shadows` : "") + " — stats cleared");
+  renderSpikePanel();
+});
 addEventListener("keydown", (e) => {
   if (e.code !== "Digit6" || !e.shiftKey) return;
   if (e.target && /input|textarea/i.test(e.target.tagName)) return;
   CAP_DIV = CAP_DIVS[(CAP_DIVS.indexOf(CAP_DIV) + 1) % CAP_DIVS.length];
   _capTick = 0;
+  try { localStorage.setItem("bb_cap_div", String(CAP_DIV)); } catch (_) {}
   resetPerfStats();               // samples taken at different dividers must never share an average
   console.log(`[perf] vsync divider ÷${CAP_DIV} = ${displayHz ? (displayHz / CAP_DIV).toFixed(0) : "?"} Hz ` +
               `· budget ${frameBudgetMs().toFixed(2)} ms — stats cleared`);
@@ -408,6 +528,8 @@ function perfReport() {
    * produce files that look alike apart from the numbers, and a diagnostic reading applied to
    * the wrong one is worse than no reading — it would say the stutter was fixed. */
   if (CAP_DIV > 1) L.push(`*** VSYNC DIVIDER ÷${CAP_DIV} = ${(displayHz / CAP_DIV).toFixed(0)} Hz — this is not a panel-rate run ***`);
+  if (ABLATE) L.push(`*** ABLATION ACTIVE: ${ABLATIONS[ABLATE]} — a subsystem is switched OFF, this is not a normal run ***`);
+  if (SHADOW_EVERY > 1) L.push(`*** SHADOW UPDATE EVERY ${SHADOW_EVERY} FRAMES = ${(displayHz / SHADOW_EVERY).toFixed(0)} Hz — experiment, shadows are stale by ${SHADOW_EVERY - 1} frame(s) ***`);
   /* THE VERDICT ON A DIVIDER, in the terms the choice is actually made in: a rung "works" if
    * it never drops a frame, not if it averages well. One late frame a minute is invisible in
    * an EMA and is precisely the transient stutter being hunted. */
@@ -430,6 +552,7 @@ function perfReport() {
     const mbs = secs > 0 ? (allocBytes / 1048576) / secs : 0;
     const perFrame = allFrames > 0 ? allocBytes / allFrames / 1024 : 0;
     L.push(`allocation · ${mbs.toFixed(1)} MB/s · ${perFrame.toFixed(1)} KB/frame · heap now ${(performance.memory.usedJSHeapSize / 1048576).toFixed(1)} MB`);
+    if (allocWinMBs) L.push(`allocation (last 1 s window) · ${allocWinMBs.toFixed(1)} MB/s · ${allocWinKBf.toFixed(1)} KB/frame — the one that responds to a toggle`);
   } else {
     L.push("allocation · not measurable (performance.memory unavailable — not Chromium)");
   }
@@ -445,6 +568,11 @@ function perfReport() {
     if (simFrames) {
       L.push(`sim cost · mean ${(simMsTotal / simFrames).toFixed(2)} ms · worst ${simMsWorst.toFixed(2)} ms ` +
              `· most steps in one frame x${simStepsWorst} of ${4} allowed · budget ${frameBudgetMs().toFixed(2)} ms`);
+      /* WHICH HALF. The worst figures matter more than the means here: the sim's mean is fine
+       * and its TAIL is what drops frames, so a half with a modest mean and a large worst is
+       * the culprit even if it looks cheap on average. */
+      L.push(`   air field  mean ${(airMsTotal / simFrames).toFixed(2)} ms · worst ${airMsWorst.toFixed(2)} ms   (Map walk over ${AIR.cells.size} cells)`);
+      L.push(`   particles  mean ${(smokeMsTotal / simFrames).toFixed(2)} ms · worst ${smokeMsWorst.toFixed(2)} ms   (${smoke.pool.length} particles, 2 collider casts each)`);
     }
   }
   // isOn(), not .enabled — the flag is module-private and only exposed through the getter.
@@ -454,10 +582,32 @@ function perfReport() {
   L.push(`audio ${audioOn === null ? "?" : audioOn ? "ON" : "off"} · cars ${1 + (typeof ghostDraws !== "undefined" ? ghostDraws.length : 0)}` +
          ` · smoke ${smoke.pool.length} · air ${AIR.cells.size} · trees ${cullStat.trees}/${cullStat.treesTotal}`);
   L.push("");
-  L.push("      at   frame     cpu     gpu  sim   simMs  bake    chunks trees  smk   heapMB  verdict");
+  /* WHERE THE GPU TIME WENT, ranked. The budget at 360 Hz is 2.778 ms and the GPU total was
+   * measured at 1.5-1.8 ms of it, so this table decides what to cut -- and cutting the wrong
+   * pass is the documented failure here already (the sakura foliage optimisation was aimed by
+   * inference and did nothing). The share column is against the frame budget, not against the
+   * GPU total, because 30% of the GPU is meaningless next to 30% of the frame. */
+  {
+    const P = GT.passes(), bud = frameBudgetMs();
+    if (P) {
+      L.push(`gpu passes (EMA) · total ${P.total.toFixed(2)} ms of ${bud.toFixed(2)} ms budget ` +
+             `= ${(100 * P.total / bud).toFixed(0)}% of the frame`);
+      for (const [k, v] of P.rows) {
+        L.push(`   ${k.padEnd(16)} ${v.toFixed(3).padStart(7)} ms   ${(100 * v / bud).toFixed(1).padStart(5)}% of budget`);
+      }
+    } else {
+      L.push(`gpu passes · UNAVAILABLE (EXT_disjoint_timer_query_webgl2 absent) — no attribution possible`);
+    }
+  }
+  if (lagFrames) {
+    L.push(`callback lag · mean ${(lagTotal / lagFrames).toFixed(2)} ms · worst ${lagWorst.toFixed(2)} ms ` +
+           `(rAF frame time -> our code starting; steady lag + doubled frame = the tick never came)`);
+  }
+  L.push("      at   frame     cpu     lag     gpu  sim   simMs  bake    chunks trees  smk   heapMB  verdict");
   for (const s of spikeLog) {
     L.push(
       String(s.at).padStart(8) + s.frameMs.toFixed(2).padStart(8) + s.cpuMs.toFixed(2).padStart(8) +
+      (s.lagMs === undefined ? "-" : s.lagMs.toFixed(2)).padStart(8) +
       (s.gpuMs === null ? "-" : s.gpuMs.toFixed(2)).padStart(8) +
       (s.sim > 0 ? "x" + s.sim : "-").padStart(5) + (s.sim > 0 ? (s.simMs || 0).toFixed(2) : "-").padStart(8) +
       (s.bakedThisFrame ? "YES" : "-").padStart(6) +

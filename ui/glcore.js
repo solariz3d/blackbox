@@ -44,8 +44,17 @@ const cv = document.getElementById("gl");
  * while delivering NO anti-aliasing on the leaf cutouts themselves, because alpha-test
  * discard kills all four samples together. Geometry silhouettes lose smoothing with it off;
  * corridor frame rate gains. The keeper decides per machine, informed by the A/B. */
-let BB_MSAA = true;
-try { BB_MSAA = localStorage.getItem("bb_msaa") !== "off"; } catch (_) {}
+/* DEFAULT FLIPPED TO OFF, 2026-08-04, on measurement rather than taste. The 360 Hz budget is
+ * 2.778 ms and the GPU alone was measured at 1.5-1.8 ms of it -- 55-65% of the whole frame,
+ * before any CPU work at all -- with the frame-time EMA sitting at 2.783 ms against a 2.778 ms
+ * period. Riding exactly on the line is why 5, 8 and 11 ms frames looked random: nothing was
+ * firing, the edge was simply being crossed. MSAA is the largest single GPU lever available
+ * and the only one that costs nothing to try, so it goes first.
+ *
+ * Kept as an override, not deleted: silhouettes genuinely lose smoothing, and on a machine
+ * with headroom it is the better picture. `localStorage.setItem("bb_msaa","on")` + relaunch. */
+let BB_MSAA = false;
+try { BB_MSAA = localStorage.getItem("bb_msaa") === "on"; } catch (_) {}
 
 /* DESYNCHRONIZED is the only lever in this file that touches PRESENTATION rather than
  * rendering, and it is here because of a measured symptom the renderer cannot explain.

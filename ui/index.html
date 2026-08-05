@@ -737,6 +737,12 @@ function loop(ts) {
    * so a capped run and an uncapped run differ only in how often we draw. */
   if (CAP_DIV > 1 && (_capTick++ % CAP_DIV) !== 0) { requestAnimationFrame(loop); return; }
   const _cpu0 = performance.now();
+  /* How late our callback started relative to the frame time Chromium assigned. See the note
+   * beside lastLagMs in perf.js: this is what separates "the vsync tick never came" from "we
+   * were handed it late", and those two have no fixes in common. */
+  lastLagMs = _cpu0 - ts;
+  lagTotal += lastLagMs; lagFrames++;
+  if (lastLagMs > lagWorst) lagWorst = lastLagMs;
   _treeTime = ts * 0.001;   // one sway clock per frame — lit and depth must agree
   if (fpsPrev) {
     const dtMs = ts - fpsPrev;
@@ -767,6 +773,9 @@ function loop(ts) {
         simFrames++;
         simMsTotal += lastSimMs;
         if (lastSimMs > simMsWorst) simMsWorst = lastSimMs;
+        airMsTotal += lastAirMs; smokeMsTotal += lastSmokeMs;
+        if (lastAirMs > airMsWorst) airMsWorst = lastAirMs;
+        if (lastSmokeMs > smokeMsWorst) smokeMsWorst = lastSmokeMs;
         if (lastSimSteps > simStepsWorst) simStepsWorst = lastSimSteps;
       }
       /* ALLOCATION RATE, because the spike log named the wrong culprit for a whole night.
@@ -787,9 +796,31 @@ function loop(ts) {
        * allocations that never reach the JS heap, GPU-side buffers among them. */
       if (performance.memory) {
         const h = performance.memory.usedJSHeapSize;
-        if (allocPrevHeap && h > allocPrevHeap) allocBytes += h - allocPrevHeap;
+        if (allocPrevHeap && h > allocPrevHeap) {
+          const d = h - allocPrevHeap;
+          allocBytes += d;
+          allocWinBytes += d;
+        }
         allocPrevHeap = h;
         if (!allocSince) allocSince = ts;
+        /* A SECOND, WINDOWED RATE — so ablation is a live experiment instead of a rebuild.
+         *
+         * The cumulative figure above is the honest one for a whole run, and it is useless for
+         * bisecting: switch a subsystem off and a number averaged over four minutes barely
+         * moves, so the tell is buried under everything that came before. Eight candidates for
+         * this app's garbage have now been chosen by reading source and eight were wrong; the
+         * only way left is to turn things off and watch. That needs a rate that answers within
+         * a second.
+         *
+         * Both are reported. The window is what you steer by; the cumulative is what you quote. */
+        allocWinFrames++;
+        if (!allocWinAt) allocWinAt = ts;
+        else if (ts - allocWinAt >= 1000) {
+          const secs = (ts - allocWinAt) / 1000;
+          allocWinMBs = (allocWinBytes / 1048576) / secs;
+          allocWinKBf = allocWinFrames ? allocWinBytes / allocWinFrames / 1024 : 0;
+          allocWinBytes = 0; allocWinFrames = 0; allocWinAt = ts;
+        }
       }
       const isSpike = bud > 0 && dtMs > bud * SPIKE_FACTOR;
       if (isSpike) { recordSpike(ts, dtMs); allSpikes++; if (lastSimSteps > 0) simSpikes++; }
@@ -941,7 +972,9 @@ function loop(ts) {
     // spike count is on the HUD so a stutter is visible as a NUMBER while it happens,
     // without needing the console open — `spikes()` there gives the attribution
     const _spk = spikeLog.length ? ` · spikes ${spikeLog.length}` : "";
-    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)})${_hud}${_spk} · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
+    // live, 1 s window — the number to watch while switching a subsystem off
+    const _alloc = allocWinMBs ? ` · alloc ${allocWinMBs.toFixed(1)}MB/s ${allocWinKBf.toFixed(0)}KB/f` : "";
+    timelabel.textContent = `${fmtT(tCur - ra * ex.dt)} / ${fmtT((rb - ra) * ex.dt)} · ${rate}×${lapOnly && ex.laps.length >= 2 ? " · lap" : ""} · ${(frameMsEMA ? 1000 / frameMsEMA : 0).toFixed(0)} fps ${frameMsEMA.toFixed(1)}ms (worst ${frameMsWorst.toFixed(1)})${_hud}${_spk}${_alloc} · smk ${smoke.pool.length} air ${AIR.cells.size} slip ${_smk.toFixed(2)} · chunks ${cullStat.track}+${cullStat.shadow}/${cullStat.total} far ${cullStat.far}(${cullStat.bakes})${cullStat.treesTotal ? " trees " + cullStat.trees + "/" + cullStat.treesTotal : ""}${GT.text()}${matLegend}`;
     drawScrub();
     renderSpikePanel();      // only does work while the panel is open
     }

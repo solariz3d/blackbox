@@ -134,9 +134,17 @@ function render() {
   solveGhostPoses();
   if (SHADOW_ON && shadowReady && cm) {
     const timeChanged = timeOfDay !== staticBakeTime;
-    GT.begin("shadow"); renderCarDepth(cm, L.dir, timeChanged); GT.end();
-    if (trackAABB) staticBakeTime = timeOfDay;   // mark the static bake as current for this sun angle
-    gl.viewport(0, 0, cv.width, cv.height);
+    /* The shadow-update divider (Shift+7) — see the note beside SHADOW_EVERYS in perf.js.
+     * A skipped frame reuses the previous depth map rather than clearing it, so the shadow
+     * is STALE, never absent. Never skipped when the sun has moved: the far cascade's bake
+     * lives inside this call, and deferring it would leave the whole track's shadows at the
+     * wrong sun angle, which is a different and much more visible artifact. */
+    const shadowDue = SHADOW_EVERY <= 1 || timeChanged || (_shadowTick++ % SHADOW_EVERY) === 0;
+    if (shadowDue) {
+      GT.begin("shadow"); renderCarDepth(cm, L.dir, timeChanged); GT.end();
+      if (trackAABB) staticBakeTime = timeOfDay;   // mark the static bake as current for this sun angle
+      gl.viewport(0, 0, cv.width, cv.height);
+    }
   }
   // headlight-occlusion pass: scene depth from the headlight's view (night only, when the beam is on)
   let headVP = null;

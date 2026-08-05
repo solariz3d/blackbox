@@ -143,6 +143,24 @@ console.log("\nculling: a slot budget, not a distance cull");
      "a lamp far beyond its own RANGE is still sent — it lights the ground around itself");
   ok(T.cullLights([mk(50000, 50)], [0,0,0], 4).length === 1, "distance alone never rejects");
   ok(T.cullLights([], [0,0,0], 4).length === 0, "no lights is not a crash");
+
+  /* cullLights reuses scratch between calls so the night path allocates nothing per lamp.
+   * The scratch must never reach the CALLER: two results held at once have to stay
+   * independent. Untested, this is the exact regression a future "return the shared array
+   * too" would introduce, and it would show up as lamps flickering to another frame's set
+   * rather than as anything that looks like an aliasing bug. */
+  const first = T.cullLights(lights, [0, 0, 0], 2);
+  const second = T.cullLights(lights, [1000, 0, 0], 2);
+  ok(first[0].pos[0] === 10 && first[1].pos[0] === 20, "an earlier result survives a later call");
+  ok(second[0].pos[0] === 500, "and the later call is correct for its own eye");
+  ok(first !== second, "each call returns its own array");
+
+  /* The scratch grows to the largest track seen. Shrinking afterwards must not leave the
+   * previous track's lamps trailing off the end of the index list. */
+  const big = Array.from({ length: 200 }, (_, i) => mk((i + 1) * 5, 50));
+  ok(T.cullLights(big, [0, 0, 0], 3).length === 3, "a bigger track than any seen before is capped");
+  ok(T.cullLights(lights, [0, 0, 0], 4).length === 4, "and a smaller one after it is not padded");
+  ok(T.cullLights(lights, [0, 0, 0], 0).length === 0, "a zero budget sends nothing");
 }
 
 console.log("\nfrustum cull: exact, unlike the budget");
